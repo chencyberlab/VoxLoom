@@ -1,0 +1,18 @@
+{
+  "synthetic_fixture_only": true,
+  "business_quality_unverified": true,
+  "reports": [
+    {
+      "model": "gemma-3-1b-it-qat-Q4_0.gguf",
+      "result": "PASS",
+      "seconds": 14.636095499998191,
+      "synthetic_meeting_notes": "Overview\nThe team is coordinating a staff induction workshop focused on customer privacy and accessible communication. The workshop is slated for 45 minutes and incorporates a hands-on privacy exercise.\n\nKey Discussion Points\n\u2022 Workshop duration: 45 minutes\n\u2022 Hands-on privacy exercise\n\u2022 Accessibility of video captions\n\nDecisions\n\u2022 Sarah will draft the facilitator guide by Friday.\n\u2022 David will book the meeting room. No deadline for booking.\n\nAction Items\n\u2022 Sarah: Draft facilitator guide by Friday.\n\u2022 David: Book meeting room.\n\nNext Steps\n\u2022 Confirm accessible video captions before publishing workshop materials."
+    },
+    {
+      "model": "gemma-4-E2B-it-Q4_0.gguf",
+      "result": "PASS",
+      "seconds": 25.45563830700121,
+      "synthetic_meeting_notes": "Overview\nThe group discussed planning a staff induction workshop focusing on customer privacy and accessible communication.\n\nKey discussion points\nThe workshop duration was agreed to be forty five minutes. The workshop will include a hands on privacy exercise.\n\nDecisions\nThe workshop will be kept to forty five minutes. A hands on privacy exercise will be included.\n\nAction items\nSarah will draft the facilitator guide by Friday. David will book the meeting room.\n\nNext steps\nThe team needs to confirm accessible video captions before publishing the workshop materials."
+    }
+  ]
+}

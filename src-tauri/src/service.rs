@@ -1,0 +1,1539 @@
+use crate::{
+    audio::{self, Capture},
+    db::{self, Db},
+    err, search, Result,
+};
+use rusqlite::{params, OptionalExtension};
+use serde_json::{json, Value};
+use std::{
+    fs::{self, File},
+    io::{BufRead, BufReader, Write},
+    os::unix::fs::PermissionsExt,
+    path::{Path, PathBuf},
+    process::Stdio,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
+    time::{Duration, Instant},
+};
+
+pub struct Service {
+    pub db: Mutex<Db>,
+    pub data: PathBuf,
+    pub cache: PathBuf,
+    pub resources: PathBuf,
+    capture: Mutex<Option<Capture>>,
+    running: Mutex<Option<(String, u32)>>,
+    inference: Mutex<()>,
+    quit: AtomicBool,
+    setup_active: AtomicBool,
+    setup_cancel: AtomicBool,
+    live_poll: Mutex<Instant>,
+    pub notify: Arc<dyn Fn(Value) + Send + Sync>,
+}
+/// How often a recording's newest audio is offered to live transcription.
+const LIVE_POLL: Duration = Duration::from_millis(2500);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accurate_transcription_falls_back_until_downloaded() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = Service::open(
+            temp.path().join("data"),
+            temp.path().join("cache"),
+            temp.path().into(),
+            Arc::new(|_| {}),
+        )
+        .unwrap();
+        let models = temp.path().join("data/models");
+        fs::create_dir_all(&models).unwrap();
+        fs::write(models.join("ggml-base.en.bin"), b"base").unwrap();
+        assert!(service
+            .dispatch("save_settings", json!({"transcription_profile":"anything"}))
+            .is_err());
+        service
+            .dispatch("save_settings", json!({"transcription_profile":"accurate"}))
+            .unwrap();
+        let chosen = |s: &Service| s.request("transcribe", None).unwrap()["models"]["whisper"].clone();
+        assert!(chosen(&service).as_str().unwrap().ends_with("ggml-base.en.bin"));
+        fs::write(models.join("ggml-small.en-q8_0.bin"), b"small").unwrap();
+        assert!(chosen(&service).as_str().unwrap().ends_with("ggml-small.en-q8_0.bin"));
+        service
+            .dispatch("save_settings", json!({"transcription_profile":"standard"}))
+            .unwrap();
+        assert!(chosen(&service).as_str().unwrap().ends_with("ggml-base.en.bin"));
+        service.shutdown();
+    }
+
+    #[test]
+    fn asr_batches_checkpoint_atomically_resume_and_preserve_edits() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = Service::open(
+            temp.path().join("data"),
+            temp.path().join("cache"),
+            temp.path().into(),
+            Arc::new(|_| {}),
+        )
+        .unwrap();
+        {
+            let db = service.db.lock().unwrap();
+            db.create("meeting", "Fixture", 60000, "ready").unwrap();
+            db.add_track(
+                "meeting",
+                &temp.path().join("s0000-system-000000.flac"),
+                "system",
+                0,
+            )
+            .unwrap();
+            db.conn.execute("INSERT INTO transcript_segments(meeting_id,start_ms,end_ms,text,source,edited) VALUES('meeting',1000,2000,'My correction','system',1)",[]).unwrap();
+        }
+        let good = json!({"type":"asr_batch","stream":"system:s0000","covered_ms":28000,"overlap_text":"","segments":[{"start_ms":1000,"end_ms":2000,"text":"Model replacement","source":"system"},{"start_ms":3000,"end_ms":4000,"text":"A complete sentence.","source":"system"},{"start_ms":3000,"end_ms":4500,"text":"Another sentence with an imprecise timestamp.","source":"system"}]});
+        service.ingest("meeting", &good).unwrap();
+        service.ingest("meeting", &good).unwrap();
+        let mut invalid = good.clone();
+        invalid["covered_ms"] = json!(50000);
+        invalid["segments"] = json!([{"start_ms":5000,"end_ms":6000,"text":"Must roll back","source":"system"},{"start_ms":9000,"end_ms":8000,"text":"Invalid range","source":"system"}]);
+        assert!(service.ingest("meeting", &invalid).is_err());
+        let request = service.request("transcribe_live", Some("meeting")).unwrap();
+        assert_eq!(request["asr_progress"]["system:s0000"]["covered_ms"], 28000);
+        assert_eq!(request["finalize"], true);
+        assert_eq!(request["context_tracks"].as_array().unwrap().len(), 1);
+        assert_eq!(request["segments"].as_array().unwrap().len(), 3);
+        let segments = request["segments"].to_string();
+        assert!(segments.contains("My correction"));
+        assert!(!segments.contains("Model replacement") && !segments.contains("Must roll back"));
+        service.shutdown();
+        drop(service);
+        let reopened = Service::open(
+            temp.path().join("data"),
+            temp.path().join("cache"),
+            temp.path().into(),
+            Arc::new(|_| {}),
+        )
+        .unwrap();
+        assert_eq!(
+            reopened
+                .request("transcribe_live", Some("meeting"))
+                .unwrap()["asr_progress"]["system:s0000"]["covered_ms"],
+            28000
+        );
+        {
+            let db = reopened.db.lock().unwrap();
+            db.conn
+                .execute("DELETE FROM meetings WHERE id='meeting'", [])
+                .unwrap();
+            assert_eq!(
+                db.conn
+                    .query_row("SELECT count(*) FROM asr_progress", [], |r| r
+                        .get::<_, i64>(0))
+                    .unwrap(),
+                0
+            );
+        }
+        reopened.shutdown();
+    }
+}
+fn text<'a>(v: &'a Value, key: &str) -> Result<&'a str> {
+    v[key].as_str().ok_or_else(|| format!("Missing {key}"))
+}
+fn private_dir(p: &Path) -> Result<()> {
+    fs::create_dir_all(p).map_err(err)?;
+    fs::set_permissions(p, fs::Permissions::from_mode(0o700)).map_err(err)
+}
+fn free_disk_bytes(path: &Path) -> u64 {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+        return 0;
+    };
+    let mut info = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    if unsafe { libc::statvfs(path.as_ptr(), info.as_mut_ptr()) } != 0 {
+        return 0;
+    }
+    let info = unsafe { info.assume_init() };
+    info.f_bavail.saturating_mul(info.f_frsize)
+}
+struct ScratchDir(PathBuf);
+impl Drop for ScratchDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+impl Service {
+    pub fn open(
+        data: PathBuf,
+        cache: PathBuf,
+        resources: PathBuf,
+        notify: Arc<dyn Fn(Value) + Send + Sync>,
+    ) -> Result<Arc<Self>> {
+        for p in [
+            &data,
+            &cache,
+            &data.join("recordings"),
+            &data.join("models"),
+        ] {
+            private_dir(p)?;
+        }
+        // Interrupted jobs can leave private request/chunk scratch files. They
+        // are disposable and never serve as a second recording archive.
+        for entry in fs::read_dir(&cache).map_err(err)? {
+            let path = entry.map_err(err)?.path();
+            let name = path.file_name().unwrap().to_string_lossy();
+            if path.is_dir() && (name.starts_with("request-") || name.starts_with("job-")) {
+                fs::remove_dir_all(path).map_err(err)?;
+            }
+        }
+        let db = Db::open(&data.join("library.db"))?;
+        fs::set_permissions(data.join("library.db"), fs::Permissions::from_mode(0o600))
+            .map_err(err)?;
+        let s = Arc::new(Self {
+            db: Mutex::new(db),
+            data,
+            cache,
+            resources,
+            capture: Mutex::new(None),
+            running: Mutex::new(None),
+            inference: Mutex::new(()),
+            quit: AtomicBool::new(false),
+            setup_active: AtomicBool::new(false),
+            setup_cancel: AtomicBool::new(false),
+            live_poll: Mutex::new(Instant::now()),
+            notify,
+        });
+        s.recover_tracks()?;
+        let weak = Arc::downgrade(&s);
+        std::thread::spawn(move || loop {
+            let Some(s) = weak.upgrade() else {
+                break;
+            };
+            if s.quit.load(Ordering::SeqCst) {
+                break;
+            }
+            s.tick();
+            drop(s);
+            std::thread::sleep(Duration::from_millis(250));
+        });
+        Ok(s)
+    }
+    fn recover_tracks(&self) -> Result<()> {
+        let db = self.db.lock().unwrap();
+        for meeting in db.meetings()?.iter().filter(|m| m.status == "interrupted") {
+            let dir = self.data.join("recordings").join(&meeting.id);
+            let existing = db.tracks(&meeting.id)?;
+            if !dir.is_dir() {
+                continue;
+            }
+            for entry in fs::read_dir(dir).map_err(err)? {
+                let path = entry.map_err(err)?.path();
+                let name = path.file_name().unwrap().to_string_lossy();
+                if path.extension().and_then(|s| s.to_str()) != Some("flac")
+                    || existing.iter().any(|t| t.path == path.to_string_lossy())
+                {
+                    continue;
+                }
+                let index = name
+                    .trim_end_matches(".flac")
+                    .rsplit('-')
+                    .next()
+                    .and_then(|x| x.parse::<i64>().ok())
+                    .unwrap_or(0);
+                db.add_track(
+                    &meeting.id,
+                    &path,
+                    if name.contains("-mic-") {
+                        "mic"
+                    } else {
+                        "system"
+                    },
+                    {
+                        let session = name
+                            .split('-')
+                            .next()
+                            .unwrap_or("s0000")
+                            .trim_start_matches('s');
+                        let offset = fs::read_to_string(
+                            path.parent()
+                                .unwrap()
+                                .join(format!("session-{session}.json")),
+                        )
+                        .ok()
+                        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+                        .and_then(|v| v["offset_ms"].as_i64())
+                        .unwrap_or(0);
+                        offset + index * 30000
+                    },
+                )?;
+            }
+        }
+        Ok(())
+    }
+    /// The selected transcription model. Accurate falls back to the standard
+    /// model until it is downloaded, so live transcription never stops.
+    fn whisper_model(&self, db: &Db) -> PathBuf {
+        let models =
+            PathBuf::from(db.setting("models_dir", &self.data.join("models").to_string_lossy()));
+        let accurate = models.join("ggml-small.en-q8_0.bin");
+        if db.setting("transcription_profile", "standard") == "accurate" && accurate.is_file() {
+            accurate
+        } else {
+            models.join("ggml-base.en.bin")
+        }
+    }
+    fn python(&self) -> String {
+        self.db
+            .lock()
+            .unwrap()
+            .setting("python", &self.default_tool("python"))
+    }
+    fn default_tool(&self, tool: &str) -> String {
+        let (dev, installed, fallback) = match tool {
+            "python" => (
+                ".venv/bin/python",
+                "runtimes/inference/bin/python",
+                "python3",
+            ),
+            "whisper_cli" => (
+                ".runtimes/whisper-build/bin/whisper-cli",
+                "runtimes/whisper/bin/whisper-cli",
+                "whisper-cli",
+            ),
+            _ => (
+                ".runtimes/llama-build/bin/llama-completion",
+                "runtimes/llama/bin/llama-completion",
+                "llama-completion",
+            ),
+        };
+        let optimized = fs::read_to_string("/proc/cpuinfo")
+            .map(|s| {
+                ["avx2", "fma", "f16c", "bmi2"]
+                    .iter()
+                    .all(|feature| s.split_whitespace().any(|word| word == *feature))
+            })
+            .unwrap_or(false);
+        let bundled = self
+            .resources
+            .join("engines")
+            .join(if tool != "python" && !optimized {
+                format!("{fallback}-generic")
+            } else {
+                fallback.into()
+            });
+        if tool != "python" && !optimized {
+            let generic = self.resources.join(".runtimes/generic").join(fallback);
+            if generic.is_file() {
+                return generic.to_string_lossy().to_string();
+            }
+        }
+        for path in [bundled, self.resources.join(dev), self.data.join(installed)] {
+            if path.is_file() {
+                return path.to_string_lossy().to_string();
+            }
+        }
+        fallback.into()
+    }
+    fn request(&self, kind: &str, meeting: Option<&str>) -> Result<Value> {
+        let (finalize, growing) = match self.capture.lock().unwrap().as_ref() {
+            Some(c) if Some(c.meeting.as_str()) == meeting && !c.paused => {
+                (false, c.open_tracks().unwrap_or_default())
+            }
+            _ => (true, vec![]),
+        };
+        let db = self.db.lock().unwrap();
+        let models =
+            PathBuf::from(db.setting("models_dir", &self.data.join("models").to_string_lossy()));
+        let mut v = json!({"kind":kind,"cache_dir":self.cache,"models":{"whisper":self.whisper_model(&db),"embedding":models.join("embeddinggemma-2-740m.litertlm"),"summary":db.setting("summary_model",&models.join("gemma-3-1b-it-qat-Q4_0.gguf").to_string_lossy())},"threads":db.setting("threads","2").parse::<u32>().unwrap_or(2).clamp(1,8),"language":db.setting("language","en"),"whisper_cli":db.setting("whisper_cli",&self.default_tool("whisper_cli")),"llama_cli":db.setting("llama_cli",&self.default_tool("llama_cli"))});
+        let profile = db.setting("summary_profile", "1b");
+        v["models"]["summary"] = json!(match profile.as_str() {
+            "e2b" => models
+                .join("gemma-4-E2B-it-Q4_0.gguf")
+                .to_string_lossy()
+                .to_string(),
+            "custom" => db.setting("summary_model", ""),
+            _ => models
+                .join("gemma-3-1b-it-qat-Q4_0.gguf")
+                .to_string_lossy()
+                .to_string(),
+        });
+        if let Some(m) = meeting {
+            let mut tracks = serde_json::to_value(db.tracks(m)?).map_err(err)?;
+            for track in tracks.as_array_mut().unwrap() {
+                let duration: Option<i64> = db
+                    .conn
+                    .query_row(
+                        "SELECT duration_ms FROM audio_durations WHERE track_id=?",
+                        [track["id"].as_str().unwrap()],
+                        |r| r.get(0),
+                    )
+                    .optional()
+                    .map_err(err)?;
+                if let Some(duration) = duration {
+                    track["duration_ms"] = json!(duration);
+                }
+            }
+            if kind == "transcribe_live" {
+                v["context_tracks"] = tracks.clone();
+                v["finalize"] = json!(finalize);
+                v["growing"] = json!(growing
+                    .iter()
+                    .map(|(path, source, offset)| json!({"path":path,"source":source,"offset_ms":offset}))
+                    .collect::<Vec<_>>());
+                let mut progress = serde_json::Map::new();
+                let mut query = db
+                    .conn
+                    .prepare("SELECT stream,covered_ms,overlap_text FROM asr_progress WHERE meeting_id=?")
+                    .map_err(err)?;
+                let rows = query
+                    .query_map([m], |r| {
+                        Ok((
+                            r.get::<_, String>(0)?,
+                            r.get::<_, i64>(1)?,
+                            r.get::<_, String>(2)?,
+                        ))
+                    })
+                    .map_err(err)?;
+                for row in rows {
+                    let (stream, covered, overlap_text) = row.map_err(err)?;
+                    progress.insert(
+                        stream,
+                        json!({"covered_ms":covered,"overlap_text":overlap_text}),
+                    );
+                }
+                v["asr_progress"] = json!(progress);
+                tracks.as_array_mut().unwrap().retain(|t| {
+                    db.conn
+                        .query_row(
+                            "SELECT transcribed FROM audio_tracks WHERE id=?",
+                            [t["id"].as_str().unwrap()],
+                            |r| r.get::<_, i64>(0),
+                        )
+                        .unwrap_or(0)
+                        == 0
+                });
+            }
+            v["tracks"] = json!(tracks);
+            v["segments"] = json!(db.segments(m)?);
+            if kind == "index" {
+                db.conn.execute("DELETE FROM embedding_items WHERE meeting_id=? AND (revision<>? OR dimensions<>768 OR chunk_version<>1 OR backend<>'litert-lm-cpu')",params![m,search::REVISION]).map_err(err)?;
+                let mut stmt=db.conn.prepare("SELECT modality,track_id,start_ms,end_ms FROM embedding_items WHERE meeting_id=?").map_err(err)?;
+                let rows = stmt
+                    .query_map([m], |r| {
+                        Ok(json!([
+                            r.get::<_, String>(0)?,
+                            r.get::<_, Option<String>>(1)?,
+                            r.get::<_, i64>(2)?,
+                            r.get::<_, i64>(3)?
+                        ]))
+                    })
+                    .map_err(err)?;
+                v["indexed"] = json!(rows
+                    .collect::<std::result::Result<Vec<_>, _>>()
+                    .map_err(err)?);
+            }
+        }
+        Ok(v)
+    }
+    fn tick(&self) {
+        let mut recording = false;
+        {
+            let mut capture = self.capture.lock().unwrap();
+            if let Some(c) = capture.as_mut() {
+                recording = true;
+                let tracks = c.closed_tracks().unwrap_or_default();
+                let mut poll = self.live_poll.lock().unwrap();
+                // Live passes read the file still being written, so words can
+                // appear seconds after a pause instead of when a chunk closes.
+                if !tracks.is_empty() || (!c.paused && poll.elapsed() >= LIVE_POLL) {
+                    *poll = Instant::now();
+                    let db = self.db.lock().unwrap();
+                    for (path, source, offset) in tracks {
+                        let _ = db.add_track(&c.meeting, &path, &source, offset);
+                    }
+                    if self.whisper_model(&db).is_file() {
+                        let _ = db.enqueue(&c.meeting, "transcribe_live");
+                    }
+                }
+            }
+        }
+        let next: Option<(String, String, String)> = {
+            let db = self.db.lock().unwrap();
+            db.conn.query_row("SELECT id,meeting_id,kind FROM jobs WHERE status='pending' AND (?=0 OR kind='transcribe_live') ORDER BY CASE kind WHEN 'transcribe_live' THEN 0 WHEN 'transcribe' THEN 1 WHEN 'index' THEN 2 ELSE 3 END,created_at,rowid LIMIT 1",[recording as i64],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().ok().flatten()
+        };
+        let Some((job, meeting, kind)) = next else {
+            return;
+        };
+        let Ok(_guard) = self.inference.try_lock() else {
+            return;
+        };
+        let _ = self
+            .db
+            .lock()
+            .unwrap()
+            .job_status(&job, "running", 0., None);
+        (self.notify)(json!({"type":"jobs"}));
+        let mut provisional = false;
+        let result = self.request(&kind, Some(&meeting)).and_then(|req| {
+            provisional = req["finalize"] == false;
+            let result = self.run_worker(&job, &req, Some((&meeting, &kind)));
+            if result.is_ok() && (kind == "transcribe" || kind == "transcribe_live") {
+                let db = self.db.lock().unwrap();
+                for t in req["tracks"].as_array().unwrap() {
+                    let _ = db.conn.execute(
+                        "UPDATE audio_tracks SET transcribed=1 WHERE id=?",
+                        [t["id"].as_str().unwrap_or("")],
+                    );
+                }
+            }
+            result
+        });
+        let (recording, capturing_meeting) = {
+            let capture = self.capture.lock().unwrap();
+            let active = capture.as_ref().is_some_and(|c| c.meeting == meeting && !c.paused);
+            (capture.is_some(), active)
+        };
+        let db = self.db.lock().unwrap();
+        let status: String = db
+            .conn
+            .query_row("SELECT status FROM jobs WHERE id=?", [&job], |r| r.get(0))
+            .unwrap_or_default();
+        if status != "cancelled" {
+            match result {
+                Ok(_) => {
+                    if kind == "transcribe_live" {
+                        // Frequent live passes carry no state of their own:
+                        // progress lives in asr_progress. Keep the job list small.
+                        let _ = db.conn.execute("DELETE FROM jobs WHERE id=?", [&job]);
+                    } else {
+                        let _ = db.job_status(&job, "completed", 1., None);
+                    }
+                    let remaining: i64 = if kind == "transcribe_live" {
+                        db.conn.query_row("SELECT count(*) FROM audio_tracks WHERE meeting_id=? AND transcribed=0",[&meeting],|r|r.get(0)).unwrap_or(0)
+                    } else {
+                        0
+                    };
+                    // A pass that started before Stop/Pause may have left the
+                    // tail waiting for a pause: run a final pass to flush it.
+                    if remaining > 0 || (provisional && !capturing_meeting) {
+                        let _ = db.enqueue(&meeting, "transcribe_live");
+                    }
+                    if !recording
+                        && remaining == 0
+                        && (kind == "transcribe" || kind == "transcribe_live")
+                        && PathBuf::from(
+                            db.setting("models_dir", &self.data.join("models").to_string_lossy()),
+                        )
+                        .join("embeddinggemma-2-740m.litertlm")
+                        .is_file()
+                    {
+                        let _ = db.enqueue(&meeting, "index");
+                    }
+                }
+                Err(e) => {
+                    if (recording && kind != "transcribe_live") || self.quit.load(Ordering::SeqCst)
+                    {
+                        let _ = db.job_status(
+                            &job,
+                            "pending",
+                            0.,
+                            Some("Deferred while recording / closing"),
+                        );
+                    } else {
+                        let _ = db.job_status(&job, "failed", 0., Some(&e));
+                        if kind == "transcribe_live" {
+                            // Live passes repeat every few seconds: keep one
+                            // failure visible and back off before retrying.
+                            let _ = db.conn.execute("DELETE FROM jobs WHERE meeting_id=? AND kind='transcribe_live' AND status='failed' AND id<>?", params![meeting, job]);
+                            *self.live_poll.lock().unwrap() =
+                                Instant::now() + Duration::from_secs(30);
+                        }
+                    }
+                }
+            }
+        }
+        (self.notify)(json!({"type":"jobs"}));
+    }
+    fn run_worker(
+        &self,
+        job: &str,
+        request: &Value,
+        ingest: Option<(&str, &str)>,
+    ) -> Result<Vec<Value>> {
+        if self.quit.load(Ordering::SeqCst) {
+            return Err("Application is closing".into());
+        }
+        let folder = self.cache.join(format!("request-{}", db::id()));
+        private_dir(&folder)?;
+        let _scratch = ScratchDir(folder.clone());
+        let input = folder.join("input.json");
+        let output = folder.join("output.jsonl");
+        fs::write(&input, serde_json::to_vec(request).map_err(err)?).map_err(err)?;
+        let capture_guard = self.capture.lock().unwrap();
+        if capture_guard.is_some() && request["kind"] != "transcribe_live" {
+            return Err("Inference deferred while recording".into());
+        }
+        let mut child = audio::command(&self.python())
+            .arg(self.resources.join("worker/engine.py"))
+            .arg("--request")
+            .arg(&input)
+            .arg("--response")
+            .arg(&output)
+            .env("HF_HUB_OFFLINE", "1")
+            .env("HF_HUB_DISABLE_TELEMETRY", "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|_| {
+                "Cannot launch Python worker. Configure its local executable in Settings."
+                    .to_string()
+            })?;
+        let pid = child.id();
+        *self.running.lock().unwrap() = Some((job.into(), pid));
+        drop(capture_guard);
+        let start = Instant::now();
+        let mut reader: Option<BufReader<File>> = None;
+        let mut pending = String::new();
+        let mut answers = vec![];
+        let mut failure = None;
+        let mut peak_tree = 0;
+        if let Some((meeting, "transcribe")) = ingest {
+            let db = self.db.lock().unwrap();
+            db.conn
+                .execute(
+                    "DELETE FROM transcript_segments WHERE meeting_id=? AND edited=0",
+                    [meeting],
+                )
+                .map_err(err)?;
+            db.conn
+                .execute("DELETE FROM embedding_items WHERE meeting_id=?", [meeting])
+                .map_err(err)?;
+            db.conn
+                .execute("DELETE FROM asr_progress WHERE meeting_id=?", [meeting])
+                .map_err(err)?;
+        }
+        let mut exited = false;
+        let processing = (|| -> Result<()> {
+            loop {
+                peak_tree = peak_tree.max(crate::metrics::tree_rss_kib(std::process::id()));
+                if reader.is_none() && output.exists() {
+                    reader = Some(BufReader::new(File::open(&output).map_err(err)?));
+                }
+                if let Some(r) = reader.as_mut() {
+                    loop {
+                        let mut line = String::new();
+                        let n = r.read_line(&mut line).map_err(err)?;
+                        if n == 0 {
+                            break;
+                        }
+                        pending.push_str(&line);
+                        if !pending.ends_with('\n') {
+                            break;
+                        }
+                        if let Ok(v) = serde_json::from_str::<Value>(&pending) {
+                            match v["type"].as_str().unwrap_or("") {
+                                "progress" => {
+                                    let _=self.db.lock().unwrap().conn.execute("UPDATE jobs SET progress=? WHERE id=? AND status='running'",params![v["progress"].as_f64().unwrap_or(0.),job]);
+                                    (self.notify)(
+                                        json!({"type":"jobs","job":job,"progress":v["progress"]}),
+                                    );
+                                }
+                                "error" => {
+                                    failure = Some(
+                                        v["message"]
+                                            .as_str()
+                                            .unwrap_or("Local inference failed")
+                                            .to_string(),
+                                    )
+                                }
+                                "segment" | "asr_batch" | "track_duration" | "embedding"
+                                | "summary" => {
+                                    if let Some((meeting, _)) = ingest {
+                                        self.ingest(meeting, &v)?;
+                                        (self.notify)(
+                                            json!({"type":"detail","meeting_id":meeting}),
+                                        );
+                                    }
+                                }
+                                "metrics" => {
+                                    let mut v = v.clone();
+                                    v["host_tree_peak_rss_kib"] = json!(peak_tree);
+                                    v["kind"] = request["kind"].clone();
+                                    let _ = fs::write(
+                                        self.cache.join("last-inference-metrics.json"),
+                                        serde_json::to_vec_pretty(&v).unwrap(),
+                                    );
+                                    let name = format!(
+                                        "metrics-{}.json",
+                                        request["kind"].as_str().unwrap_or("unknown")
+                                    );
+                                    let _ = fs::write(
+                                        self.cache.join(name),
+                                        serde_json::to_vec_pretty(&v).unwrap(),
+                                    );
+                                }
+                                _ => answers.push(v),
+                            }
+                        }
+                        pending.clear();
+                    }
+                }
+                if exited {
+                    break;
+                }
+                if child.try_wait().map_err(err)?.is_some() {
+                    exited = true;
+                    continue;
+                }
+                if self.quit.load(Ordering::SeqCst) || start.elapsed() > Duration::from_secs(7200) {
+                    audio::kill_group(pid, libc::SIGKILL);
+                    let _ = child.wait();
+                    failure = Some("Inference stopped or timed out".into());
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(150));
+            }
+            Ok(())
+        })();
+        // Also reap a worker's descendants if a runtime exits unexpectedly.
+        audio::kill_group(pid, libc::SIGKILL);
+        let status = child.wait().map_err(err);
+        *self.running.lock().unwrap() = None;
+        let _ = fs::remove_dir_all(&folder);
+        processing?;
+        let status = status?;
+        if let Some(e) = failure {
+            return Err(e);
+        }
+        if !status.success() {
+            return Err("Local worker stopped. Check installed runtime/model compatibility, or retry the job.".into());
+        }
+        Ok(answers)
+    }
+    fn ingest(&self, meeting: &str, v: &Value) -> Result<()> {
+        let mut db = self.db.lock().unwrap();
+        match v["type"].as_str().unwrap_or("") {
+            "track_duration" => {
+                db.conn.execute("INSERT OR REPLACE INTO audio_durations(track_id,duration_ms) SELECT id,? FROM audio_tracks WHERE id=? AND meeting_id=?", params![v["duration_ms"].as_i64(),v["track_id"].as_str(),meeting]).map_err(err)?;
+            }
+            "asr_batch" => {
+                let tx = db.conn.transaction().map_err(err)?;
+                for segment in v["segments"]
+                    .as_array()
+                    .ok_or("Missing transcription batch")?
+                {
+                    tx.execute("INSERT INTO transcript_segments(meeting_id,start_ms,end_ms,text,source) SELECT ?,?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM transcript_segments WHERE meeting_id=? AND source=? AND ((start_ms=? AND text=?) OR (edited=1 AND start_ms<? AND end_ms>?)))", params![meeting,segment["start_ms"].as_i64(),segment["end_ms"].as_i64(),segment["text"].as_str(),segment["source"].as_str(),meeting,segment["source"].as_str(),segment["start_ms"].as_i64(),segment["text"].as_str(),segment["end_ms"].as_i64(),segment["start_ms"].as_i64()]).map_err(err)?;
+                }
+                tx.execute("INSERT INTO asr_progress(meeting_id,stream,covered_ms,overlap_text) VALUES(?,?,?,?) ON CONFLICT(meeting_id,stream) DO UPDATE SET covered_ms=excluded.covered_ms,overlap_text=excluded.overlap_text WHERE excluded.covered_ms>=covered_ms",params![meeting,v["stream"].as_str(),v["covered_ms"].as_i64(),v["overlap_text"].as_str().unwrap_or("")]).map_err(err)?;
+                tx.commit().map_err(err)?;
+            }
+            "segment" => {
+                db.conn.execute("INSERT INTO transcript_segments(meeting_id,start_ms,end_ms,text,source) SELECT ?,?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM transcript_segments WHERE meeting_id=? AND source=? AND start_ms=?)",params![meeting,v["start_ms"].as_i64(),v["end_ms"].as_i64(),v["text"].as_str(),v["source"].as_str(),meeting,v["source"].as_str(),v["start_ms"].as_i64()]).map_err(err)?;
+            }
+            "embedding" => {
+                let vector: Vec<f32> = serde_json::from_value(v["vector"].clone()).map_err(err)?;
+                let vector = search::normalized(&vector)?;
+                let item = format!(
+                    "{meeting}:{}:{}:{}:{}",
+                    v["track_id"], v["modality"], v["start_ms"], v["end_ms"]
+                );
+                let tx = db.conn.transaction().map_err(err)?;
+                tx.execute("INSERT INTO model_registry(id,revision,path,dimensions) VALUES(?,?,?,768) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,path=excluded.path,dimensions=excluded.dimensions",params![search::MODEL_ID,search::REVISION,"embeddinggemma-2-740m.litertlm"]).map_err(err)?;
+                tx.execute("INSERT OR REPLACE INTO embedding_items(id,meeting_id,track_id,modality,start_ms,end_ms,text,model_id,revision,backend,dimensions,chunk_version) VALUES(?,?,?,?,?,?,?,?,?,'litert-lm-cpu',768,1)",params![item,meeting,v["track_id"].as_str(),v["modality"].as_str(),v["start_ms"].as_i64(),v["end_ms"].as_i64(),v["text"].as_str(),search::MODEL_ID,search::REVISION]).map_err(err)?;
+                tx.execute(
+                    "INSERT OR REPLACE INTO embedding_vectors(item_id,vector) VALUES(?,?)",
+                    params![item, search::bytes(&vector)],
+                )
+                .map_err(err)?;
+                tx.commit().map_err(err)?;
+            }
+            "summary" => {
+                db.conn
+                    .execute(
+                        "UPDATE meetings SET summary=? WHERE id=?",
+                        params![v["text"].as_str(), meeting],
+                    )
+                    .map_err(err)?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+    pub fn dispatch(self: &Arc<Self>, action: &str, p: Value) -> Result<Value> {
+        match action {
+            "library" => Ok(json!(self.db.lock().unwrap().meetings()?)),
+            "detail" => self.db.lock().unwrap().detail(text(&p, "id")?),
+            "jobs" => self.db.lock().unwrap().jobs(),
+            "devices" => audio::devices(),
+            "status" => Ok(self
+                .capture
+                .lock()
+                .unwrap()
+                .as_mut()
+                .map(|c| c.status())
+                .unwrap_or(Value::Null)),
+            "import" => self.import(Path::new(text(&p, "path")?)),
+            "update" => {
+                let db = self.db.lock().unwrap();
+                let id = text(&p, "id")?;
+                if let Some(t) = p["title"].as_str() {
+                    if t.trim().is_empty() || t.len() > 300 {
+                        return Err("Title must contain 1–300 characters".into());
+                    }
+                    db.conn
+                        .execute(
+                            "UPDATE meetings SET title=? WHERE id=?",
+                            params![t.trim(), id],
+                        )
+                        .map_err(err)?;
+                }
+                if let Some(n) = p["notes"].as_str() {
+                    db.conn
+                        .execute("UPDATE meetings SET notes=? WHERE id=?", params![n, id])
+                        .map_err(err)?;
+                }
+                Ok(Value::Null)
+            }
+            "edit_segment" => {
+                let db = self.db.lock().unwrap();
+                let m = text(&p, "meeting_id")?;
+                db.conn.execute("UPDATE transcript_segments SET text=?,edited=1 WHERE id=? AND meeting_id=?",params![text(&p,"text")?,p["id"].as_i64(),m]).map_err(err)?;
+                db.conn
+                    .execute("DELETE FROM embedding_items WHERE meeting_id=?", [m])
+                    .map_err(err)?;
+                Ok(Value::Null)
+            }
+            "enqueue" => Ok(json!(self
+                .db
+                .lock()
+                .unwrap()
+                .enqueue(text(&p, "id")?, text(&p, "kind")?)?)),
+            "rebuild_index" => {
+                let db = self.db.lock().unwrap();
+                let id = text(&p, "id")?;
+                let job = db.enqueue(id, "index")?;
+                db.conn
+                    .execute("DELETE FROM embedding_items WHERE meeting_id=?", [id])
+                    .map_err(err)?;
+                Ok(json!(job))
+            }
+            "cancel" => {
+                let id = text(&p, "id")?;
+                let running = self.running.lock().unwrap();
+                self.db
+                    .lock()
+                    .unwrap()
+                    .job_status(id, "cancelled", 0., None)?;
+                if let Some((job, pid)) = running.as_ref() {
+                    if job == id {
+                        audio::kill_group(*pid, libc::SIGKILL);
+                    }
+                }
+                Ok(Value::Null)
+            }
+            "search" => self.search(&p),
+            "answer" => {
+                let _guard = self
+                    .inference
+                    .try_lock()
+                    .map_err(|_| "Inference is busy. Wait or cancel the current job.")?;
+                if self.capture.lock().unwrap().is_some() {
+                    return Err("Q&A is deferred while recording".into());
+                }
+                let mut req = self.request("answer", None)?;
+                req["query"] = p["query"].clone();
+                req["evidence"] = p["evidence"].clone();
+                Ok(json!(self.run_worker("interactive", &req, None)?))
+            }
+            "models" => self.models(),
+            "runtime_status" => {
+                let db = self.db.lock().unwrap();
+                let available = |tool: &str| {
+                    let path = db.setting(tool, &self.default_tool(tool));
+                    if Path::new(&path).is_file() {
+                        true
+                    } else {
+                        std::process::Command::new("which")
+                            .arg(path)
+                            .output()
+                            .map(|o| o.status.success())
+                            .unwrap_or(false)
+                    }
+                };
+                let python = db.setting("python", &self.default_tool("python"));
+                let inference = audio::command(&python)
+                    .args([
+                        "-I",
+                        "-c",
+                        "import importlib.metadata as m; assert m.version('litert-lm') == '0.18.0'",
+                    ])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false);
+                Ok(
+                    json!({"inference":inference,"whisper":available("whisper_cli"),"llama":available("llama_cli"),"python":python,"storage":self.data,"disk_free_bytes":free_disk_bytes(&self.data)}),
+                )
+            }
+            "setup" => {
+                let s = self.clone();
+                let mode = text(&p, "mode")?.to_string();
+                if ![
+                    "check",
+                    "download",
+                    "import",
+                    "runtime",
+                    "recommended",
+                    "offline_bundle",
+                ]
+                .contains(&mode.as_str())
+                {
+                    return Err("Invalid setup action".into());
+                }
+                let guard = self
+                    .inference
+                    .try_lock()
+                    .map_err(|_| "Inference/setup already running")?;
+                if self.setup_active.swap(true, Ordering::SeqCst) {
+                    return Err("Setup is already running".into());
+                }
+                self.setup_cancel.store(false, Ordering::SeqCst);
+                drop(guard);
+                std::thread::spawn(move || {
+                    let _guard = s.inference.lock().unwrap();
+                    let result = s.provision(&mode, &p);
+                    s.setup_active.store(false, Ordering::SeqCst);
+                    (s.notify)(json!({"type":"setup_done","error":result.err()}));
+                });
+                Ok(Value::Null)
+            }
+            "cancel_setup" => {
+                self.setup_cancel.store(true, Ordering::SeqCst);
+                if let Some((job, pid)) = self.running.lock().unwrap().as_ref() {
+                    if job == "setup" {
+                        audio::kill_group(*pid, libc::SIGKILL);
+                    }
+                }
+                Ok(Value::Null)
+            }
+            "settings" => {
+                let db = self.db.lock().unwrap();
+                Ok(
+                    json!({"threads":db.setting("threads","2"),"language":db.setting("language","en"),"whisper_cli":db.setting("whisper_cli",&self.default_tool("whisper_cli")),"llama_cli":db.setting("llama_cli",&self.default_tool("llama_cli")),"python":db.setting("python",&self.default_tool("python")),"models_dir":db.setting("models_dir",&self.data.join("models").to_string_lossy()),"summary_profile":db.setting("summary_profile","1b"),"summary_model":db.setting("summary_model",""),"transcription_profile":db.setting("transcription_profile","standard"),"storage":self.data,"low_memory":true}),
+                )
+            }
+            "save_settings" => {
+                let db = self.db.lock().unwrap();
+                for k in [
+                    "threads",
+                    "language",
+                    "whisper_cli",
+                    "llama_cli",
+                    "python",
+                    "models_dir",
+                    "summary_model",
+                    "summary_profile",
+                    "transcription_profile",
+                ] {
+                    if let Some(v) = p[k].as_str() {
+                        if k == "threads" && !(1..=8).contains(&v.parse::<u32>().unwrap_or(0)) {
+                            return Err("CPU threads must be 1–8".into());
+                        }
+                        if k == "summary_profile" && !["1b", "e2b", "custom"].contains(&v) {
+                            return Err("Unknown summary profile".into());
+                        }
+                        if k == "transcription_profile" && !["standard", "accurate"].contains(&v) {
+                            return Err("Unknown transcription profile".into());
+                        }
+                        if [
+                            "whisper_cli",
+                            "llama_cli",
+                            "python",
+                            "models_dir",
+                            "summary_model",
+                        ]
+                        .contains(&k)
+                            && (v.contains('\0')
+                                || v.starts_with("http:")
+                                || v.starts_with("https:"))
+                        {
+                            return Err("Use only local executable and model paths".into());
+                        }
+                        db.set_setting(k, v)?;
+                    }
+                }
+                Ok(Value::Null)
+            }
+            "diagnostics" => {
+                let tools = [
+                    "ffmpeg",
+                    "ffprobe",
+                    "pactl",
+                    "whisper-cli",
+                    "llama-cli",
+                    "python3",
+                ]
+                .iter()
+                .map(|name| {
+                    let found = std::process::Command::new("which")
+                        .arg(name)
+                        .output()
+                        .map(|o| o.status.success())
+                        .unwrap_or(false);
+                    json!({"name":name,"available":found})
+                })
+                .collect::<Vec<_>>();
+                Ok(
+                    json!({"tools":tools,"audio":audio::devices().ok(),"data":self.data,"network":"No runtime networking. Only explicit model setup can download.","last_metrics":fs::read_to_string(self.cache.join("last-inference-metrics.json")).ok().and_then(|s|serde_json::from_str::<Value>(&s).ok())}),
+                )
+            }
+            "record" => self.record(p),
+            "pause" => {
+                self.finish_capture(false)?;
+                Ok(Value::Null)
+            }
+            "resume" => {
+                let mut c = self.capture.lock().unwrap();
+                let c = c.as_mut().ok_or("No paused recording")?;
+                if !c.paused {
+                    return Err("Recording is already active".into());
+                }
+                c.start()?;
+                Ok(Value::Null)
+            }
+            "stop" => {
+                self.finish_capture(true)?;
+                Ok(Value::Null)
+            }
+            "delete" => self.delete(text(&p, "id")?),
+            "export" => self.export(&p),
+            _ => Err("Unknown application command".into()),
+        }
+    }
+    fn import(&self, path: &Path) -> Result<Value> {
+        let path = path
+            .canonicalize()
+            .map_err(|_| "Selected media no longer exists")?;
+        if !path.is_file() {
+            return Err("Choose a local audio or video file".into());
+        }
+        let ext = path
+            .extension()
+            .and_then(|x| x.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+        if ![
+            "wav", "mp3", "flac", "ogg", "m4a", "aac", "opus", "mp4", "mkv", "webm", "mov",
+        ]
+        .contains(&ext.as_str())
+        {
+            return Err("Unsupported media extension".into());
+        }
+        let duration = audio::duration(&path)?;
+        let id = db::id();
+        let folder = self.data.join("recordings").join(&id);
+        private_dir(&folder)?;
+        // Video is decoded to FLAC without storing picture frames or blobs.
+        let target = folder.join("original.flac");
+        let status = audio::command("ffmpeg")
+            .args([
+                "-nostdin",
+                "-protocol_whitelist",
+                "file,pipe",
+                "-v",
+                "error",
+                "-y",
+                "-i",
+            ])
+            .arg(&path)
+            .args(["-vn", "-c:a", "flac"])
+            .arg(&target)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map_err(err)?;
+        if !status.success() {
+            let _ = fs::remove_dir_all(&folder);
+            return Err("FFmpeg could not decode this media. No recording was added.".into());
+        }
+        let db = self.db.lock().unwrap();
+        db.create(
+            &id,
+            &path.file_stem().unwrap().to_string_lossy(),
+            duration,
+            "ready",
+        )?;
+        db.add_track(&id, &target, "imported", 0)?;
+        let models =
+            PathBuf::from(db.setting("models_dir", &self.data.join("models").to_string_lossy()));
+        if self.whisper_model(&db).is_file() {
+            let _ = db.enqueue(&id, "transcribe");
+        } else if models.join("embeddinggemma-2-740m.litertlm").is_file() {
+            let _ = db.enqueue(&id, "index");
+        }
+        Ok(json!({"id":id}))
+    }
+    fn models(&self) -> Result<Value> {
+        let mut manifest: Value =
+            serde_json::from_str(include_str!("../../models/manifest.json")).map_err(err)?;
+        let db = self.db.lock().unwrap();
+        let directory =
+            PathBuf::from(db.setting("models_dir", &self.data.join("models").to_string_lossy()));
+        for model in manifest["models"].as_array_mut().unwrap() {
+            let path = directory.join(model["filename"].as_str().unwrap());
+            model["present"] = json!(path
+                .metadata()
+                .map(|m| m.len() == model["bytes"].as_u64().unwrap())
+                .unwrap_or(false));
+            model["path"] = json!(path);
+        }
+        Ok(manifest)
+    }
+    fn provision(&self, mode: &str, p: &Value) -> Result<()> {
+        if self.quit.load(Ordering::SeqCst) || self.setup_cancel.load(Ordering::SeqCst) {
+            return Err("Setup cancelled. You can continue later.".into());
+        }
+        if mode == "recommended" || mode == "offline_bundle" {
+            let summary_profile = p["summary_profile"].as_str().unwrap_or("1b");
+            let summary_model = match summary_profile {
+                "1b" => "summary",
+                "e2b" => "summary_e2b",
+                _ => return Err("Choose a supported summary model: 1B or E2B.".into()),
+            };
+            let python = self.python();
+            let ready = audio::command(&python)
+                .args([
+                    "-I",
+                    "-c",
+                    "import importlib.metadata as m; assert m.version('litert-lm') == '0.18.0'",
+                ])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if !ready {
+                let mut runtime = json!({});
+                if mode == "offline_bundle" {
+                    let wheels = Path::new(text(p, "path")?).join("wheels");
+                    if !wheels.is_dir() {
+                        return Err("These setup files are missing search support. Connect once and choose Download & set up, or choose a complete offline setup folder.".into());
+                    }
+                    runtime["wheelhouse"] = json!(wheels);
+                }
+                self.provision("runtime", &runtime)?;
+            }
+            let mut models = p.clone();
+            if mode == "offline_bundle" {
+                let folder = Path::new(text(p, "path")?).join("models");
+                if folder.is_dir() {
+                    models["path"] = json!(folder);
+                }
+            }
+            let model_mode = if mode == "recommended" {
+                "download"
+            } else {
+                "import"
+            };
+            // Install core tools independently, then only the explicitly chosen
+            // summary model. E2B must never pull in the default 1B as well.
+            models.as_object_mut().unwrap().remove("model");
+            models["core_only"] = json!(true);
+            self.provision(model_mode, &models)?;
+            if p["core_only"] != true {
+                models["model"] = json!(summary_model);
+                self.provision(model_mode, &models)?;
+                self.db
+                    .lock()
+                    .unwrap()
+                    .set_setting("summary_profile", summary_profile)?;
+            }
+            return Ok(());
+        }
+        let directory = self
+            .db
+            .lock()
+            .unwrap()
+            .setting("models_dir", &self.data.join("models").to_string_lossy());
+        let mut cmd = audio::command("python3");
+        if mode == "runtime" {
+            cmd.arg(self.resources.join("worker/setup_runtime.py"))
+                .arg("--install")
+                .arg("--directory")
+                .arg(self.data.join("runtimes/inference"));
+            if let Some(wheelhouse) = p["wheelhouse"].as_str() {
+                cmd.arg("--wheelhouse").arg(wheelhouse);
+            }
+        } else {
+            cmd.arg(self.resources.join("worker/provision.py"))
+                .arg("--directory")
+                .arg(directory);
+        }
+        match mode {
+            "check" => {
+                cmd.arg("--check");
+            }
+            "download" => {
+                cmd.arg("--download");
+            }
+            "import" => {
+                cmd.arg("--offline-import").arg(text(p, "path")?);
+            }
+            "runtime" => {}
+            _ => return Err("Invalid setup mode".into()),
+        }
+        if mode != "runtime" && p["core_only"] == true {
+            cmd.arg("--core-only");
+        }
+        if let Some(model) = p["model"].as_str() {
+            if !["whisper", "whisper_accurate", "embedding", "summary", "summary_e2b"].contains(&model) {
+                return Err("Unknown model".into());
+            }
+            cmd.arg("--model").arg(model);
+        }
+        let mut child = cmd
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(err)?;
+        *self.running.lock().unwrap() = Some(("setup".into(), child.id()));
+        if self.setup_cancel.load(Ordering::SeqCst) || self.quit.load(Ordering::SeqCst) {
+            audio::kill_group(child.id(), libc::SIGKILL);
+        }
+        for line in BufReader::new(child.stdout.take().unwrap())
+            .lines()
+            .map_while(std::result::Result::ok)
+        {
+            if let Ok(value) = serde_json::from_str::<Value>(&line) {
+                (self.notify)(json!({"type":"setup_progress","value":value}));
+            }
+        }
+        let success = child.wait().map_err(err)?.success();
+        *self.running.lock().unwrap() = None;
+        if !success {
+            if mode == "runtime" {
+                return Err("Local search runtime setup did not finish. Check the connection and disk space, then retry or import offline wheels.".into());
+            }
+            return Err("Model setup did not finish. Review status, then retry or import a file matching the manifest.".into());
+        }
+        if mode == "runtime" {
+            self.db.lock().unwrap().set_setting(
+                "python",
+                &self
+                    .data
+                    .join("runtimes/inference/bin/python")
+                    .to_string_lossy(),
+            )?;
+        }
+        Ok(())
+    }
+    fn search(&self, p: &Value) -> Result<Value> {
+        let query = text(p, "query")?.trim();
+        if query.is_empty() {
+            return Ok(json!([]));
+        }
+        if query.len() > 2000 {
+            return Err("Search query is too long".into());
+        }
+        let mode = p["mode"].as_str().unwrap_or("exact");
+        let filter = &p["filter"];
+        let exact = if mode != "semantic" {
+            search::exact(&self.db.lock().unwrap(), query, filter)?
+        } else {
+            vec![]
+        };
+        if mode == "exact" {
+            return Ok(json!(search::dedup(exact, 40)));
+        }
+        if self.capture.lock().unwrap().is_some() {
+            return Err("Semantic search waits while recording. Exact search is available.".into());
+        }
+        let _guard = self
+            .inference
+            .try_lock()
+            .map_err(|_| "Inference is busy. Exact search is available while jobs finish.")?;
+        let mut request = self.request("query", None)?;
+        request["query"] = json!(query);
+        let results = self.run_worker("interactive", &request, None)?;
+        let vector = results
+            .iter()
+            .find(|v| v["type"] == "query")
+            .ok_or("Embedding runtime returned no query vector")?;
+        let v: Vec<f32> = serde_json::from_value(vector["vector"].clone()).map_err(err)?;
+        let semantic = search::semantic(&self.db.lock().unwrap(), &v, filter)?;
+        Ok(json!(if mode == "combined" {
+            search::combined(exact, semantic)
+        } else {
+            semantic
+        }))
+    }
+    fn record(&self, p: Value) -> Result<Value> {
+        let mut capture = self.capture.lock().unwrap();
+        if capture.is_some() {
+            return Err("A recording is already active".into());
+        }
+        let devices = audio::devices()?;
+        let mic = p["mic"]
+            .as_str()
+            .filter(|v| !v.is_empty())
+            .map(str::to_string);
+        let system = p["system"]
+            .as_str()
+            .filter(|v| !v.is_empty())
+            .map(str::to_string);
+        for (source, monitor) in [(&mic, false), (&system, true)] {
+            if let Some(name) = source {
+                if !devices
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|d| d["name"] == *name && d["monitor"] == monitor)
+                {
+                    return Err("Selected audio source is unavailable. Refresh devices.".into());
+                }
+            }
+        }
+        let id = db::id();
+        let folder = self.data.join("recordings").join(&id);
+        private_dir(&folder)?;
+        let mut c = Capture::new(id.clone(), folder, mic, system);
+        c.start()?;
+        self.db.lock().unwrap().create(
+            &id,
+            p["title"]
+                .as_str()
+                .filter(|x| !x.trim().is_empty())
+                .unwrap_or("Untitled recording"),
+            0,
+            "recording",
+        )?;
+        *capture = Some(c);
+        if let Some((_, pid)) = self.running.lock().unwrap().as_ref() {
+            audio::kill_group(*pid, libc::SIGKILL);
+        }
+        Ok(json!({"id":id}))
+    }
+    fn finish_capture(&self, stop: bool) -> Result<()> {
+        let mut guard = self.capture.lock().unwrap();
+        let c = guard.as_mut().ok_or("No active recording")?;
+        let tracks = c.pause()?;
+        let db = self.db.lock().unwrap();
+        for (path, source, offset) in tracks {
+            db.add_track(&c.meeting, &path, &source, offset)?;
+        }
+        db.conn
+            .execute(
+                "UPDATE meetings SET duration_ms=?,status=? WHERE id=?",
+                params![
+                    c.elapsed(),
+                    if stop { "ready" } else { "recording" },
+                    c.meeting
+                ],
+            )
+            .map_err(err)?;
+        if stop {
+            if self.whisper_model(&db).is_file() {
+                let _ = db.enqueue(&c.meeting, "transcribe_live");
+            }
+            *guard = None;
+        }
+        (self.notify)(json!({"type":"capture"}));
+        Ok(())
+    }
+    fn delete(&self, id: &str) -> Result<Value> {
+        uuid::Uuid::parse_str(id).map_err(|_| "Invalid recording ID")?;
+        if self
+            .capture
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|c| c.meeting == id)
+            .unwrap_or(false)
+        {
+            return Err("Stop this recording before deleting".into());
+        }
+        let db = self.db.lock().unwrap();
+        let active: i64 = db
+            .conn
+            .query_row(
+                "SELECT count(*) FROM jobs WHERE meeting_id=? AND status IN ('pending','running')",
+                [id],
+                |r| r.get(0),
+            )
+            .map_err(err)?;
+        if active > 0 {
+            return Err("Cancel pending/running jobs before deleting".into());
+        }
+        let folder = self.data.join("recordings").join(id);
+        let trash = self.data.join("recordings").join(format!(".deleted-{id}"));
+        if folder.exists() {
+            fs::rename(&folder, &trash).map_err(err)?;
+        }
+        if let Err(e) = db.conn.execute("DELETE FROM meetings WHERE id=?", [id]) {
+            let _ = fs::rename(&trash, &folder);
+            return Err(err(e));
+        }
+        if trash.exists() {
+            fs::remove_dir_all(trash).map_err(err)?;
+        }
+        Ok(Value::Null)
+    }
+    fn export(&self, p: &Value) -> Result<Value> {
+        let db = self.db.lock().unwrap();
+        let id = text(p, "id")?;
+        let target = PathBuf::from(text(p, "path")?);
+        let resolved = if target.exists() {
+            target.canonicalize().map_err(err)?
+        } else {
+            target
+                .parent()
+                .ok_or("Export needs a parent directory")?
+                .canonicalize()
+                .map_err(err)?
+                .join(target.file_name().ok_or("Export needs a filename")?)
+        };
+        if resolved.starts_with(self.data.canonicalize().map_err(err)?)
+            || resolved.starts_with(self.cache.canonicalize().map_err(err)?)
+        {
+            return Err(
+                "Choose an export location outside the application's managed data/cache folders"
+                    .into(),
+            );
+        }
+        let format = text(p, "format")?;
+        let detail = db.detail(id)?;
+        let segments = db.segments(id)?;
+        if format == "summary_docx" || format == "docx" {
+            let summary = format == "summary_docx";
+            let body = if summary {
+                crate::meeting_notes(detail["meeting"]["summary"].as_str().unwrap_or(""))
+            } else {
+                segments
+                    .iter()
+                    .map(|s| {
+                        format!(
+                            "[{}] {}: {}\n\n",
+                            crate::timestamp(s.start_ms),
+                            s.source,
+                            s.text
+                        )
+                    })
+                    .collect::<String>()
+            };
+            let mut child = audio::command("python3")
+                .arg(self.resources.join("worker/export_docx.py"))
+                .arg(&target)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(|_| {
+                    "Word export could not start. Check that Python 3 is installed.".to_string()
+                })?;
+            let payload = serde_json::to_vec(
+                &json!({"title":detail["meeting"]["title"],"text":body,"summary":summary}),
+            )
+            .map_err(err)?;
+            let written = child
+                .stdin
+                .take()
+                .ok_or("Word export input is unavailable")?
+                .write_all(&payload);
+            let status = child.wait().map_err(err)?;
+            if written.is_err() || !status.success() {
+                return Err(
+                    "The Word document could not be saved. Check the folder and available space."
+                        .into(),
+                );
+            }
+            fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).map_err(err)?;
+            return Ok(Value::Null);
+        }
+        let content = match format {
+            "json" => serde_json::to_string_pretty(&detail).map_err(err)?,
+            "srt" => segments
+                .iter()
+                .enumerate()
+                .map(|(i, s)| {
+                    format!(
+                        "{}\n{},{:03} --> {},{:03}\n{}\n\n",
+                        i + 1,
+                        crate::timestamp(s.start_ms),
+                        s.start_ms % 1000,
+                        crate::timestamp(s.end_ms),
+                        s.end_ms % 1000,
+                        s.text
+                    )
+                })
+                .collect(),
+            "summary" => crate::meeting_notes(detail["meeting"]["summary"].as_str().unwrap_or("")),
+            "txt" | "md" => {
+                let body = segments
+                    .iter()
+                    .map(|s| {
+                        format!(
+                            "[{}] {}: {}\n",
+                            crate::timestamp(s.start_ms),
+                            s.source,
+                            s.text
+                        )
+                    })
+                    .collect::<String>();
+                if format == "md" {
+                    format!(
+                        "# {}\n\n{}\n\n## Notes\n\n{}",
+                        detail["meeting"]["title"].as_str().unwrap_or("Recording"),
+                        body,
+                        detail["meeting"]["notes"].as_str().unwrap_or("")
+                    )
+                } else {
+                    body
+                }
+            }
+            "audio" => {
+                let tracks = db.tracks(id)?;
+                let track = tracks
+                    .iter()
+                    .find(|t| Some(t.id.as_str()) == p["track_id"].as_str())
+                    .ok_or("Select an audio track")?;
+                let mut source_tracks = tracks
+                    .iter()
+                    .filter(|t| t.source == track.source)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                source_tracks.sort_by_key(|t| t.offset_ms);
+                audio::export_audio(&source_tracks, &target)?;
+                fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).map_err(err)?;
+                return Ok(Value::Null);
+            }
+            _ => return Err("Unsupported export format".into()),
+        };
+        fs::write(&target, content).map_err(err)?;
+        fs::set_permissions(target, fs::Permissions::from_mode(0o600)).map_err(err)?;
+        Ok(Value::Null)
+    }
+    pub fn shutdown(&self) {
+        if self.quit.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        {
+            let running = self.running.lock().unwrap();
+            if let Some((_, pid)) = running.as_ref() {
+                audio::kill_group(*pid, libc::SIGKILL);
+            }
+        }
+        if self.capture.lock().unwrap().is_some() {
+            let _ = self.finish_capture(true);
+        }
+        // Give the supervisor time to wait/reap the killed worker before exit.
+        for _ in 0..40 {
+            if self.running.lock().unwrap().is_none() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+}

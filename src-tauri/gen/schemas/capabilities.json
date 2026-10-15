@@ -1,0 +1,1 @@
+{"main":{"identifier":"main","description":"Local windows and user file dialogs only","local":true,"windows":["main","mini"],"permissions":["core:default","core:window:allow-start-dragging","dialog:allow-open","dialog:allow-save"]}}

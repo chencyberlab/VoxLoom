@@ -1,0 +1,192 @@
+# AGENTS.md: how to work on VoxLoom
+
+This is the single source of truth for every coding agent (Codex, Claude, others) and human contributor. Read it before changing anything. If you change how VoxLoom is built, tested, stored or released, update this file in the same change. `CLAUDE.md` only points here.
+
+## What VoxLoom is
+
+A private Linux desktop app (Ubuntu 24.04, x86_64) that records microphone and/or system audio, transcribes it live, and offers local search and on-demand summaries. Everything runs on the user's own CPU; nothing is sent anywhere.
+
+- **Desktop shell:** Tauri 2 hosting a React/TypeScript UI in the system WebKitGTK.
+- **Rust host** (`src-tauri/src`): capture, SQLite library, job queue, worker supervision.
+- **Python worker** (`worker/engine.py`): one fresh process per job. It drives:
+  - `whisper-cli` (whisper.cpp v1.9.5) for transcripts
+  - LiteRT-LM EmbeddingGemma 2 740M for search
+  - `llama-completion` (llama.cpp v0.6.0, patched) for summaries
+- **Target hardware:** ordinary business laptops with 4–8 CPU cores and 16 GB RAM, no GPU. Measure CPU and latency on that class of machine before making anything heavier.
+
+## Ground rules (do not break these)
+
+1. **Losing transcript content is unacceptable.** See "Transcription invariants" below. A transcript that is late or has extra words is acceptable; a missing one is not.
+2. **Local only.** The app makes no network requests at runtime. Model/runtime downloads happen only after the user clicks Download in setup.
+   - No telemetry, CDN, fonts or update plugins.
+   - `scripts/privacy-check.py` (part of `npm run check`) enforces this.
+3. **Private data stays out of command lines and logs.** Transcript text, audio and file names are never put on a command line, in a shell string or in routine logs. Pass them through files or stdin. This is why Whisper gets no `--prompt`.
+4. **Models are never in Git or the package.** `models/manifest.json` pins repository, revision, size and SHA-256 for each model. Downloads verify hashes before use.
+5. **Summaries run only when the user asks.** Recording and import never trigger one.
+6. **Recording comes first.** Only one heavy job runs at a time, and live transcription outranks indexing and summaries. Each worker exits when its job ends; no model stays loaded.
+7. **Several agents share this checkout.**
+   - Run `git status` before you start.
+   - Never delete build caches (`.runtimes/`, `src-tauri/target/`, `.toolchain/`, `.local-data/`) or `release/` contents without saying so to the user.
+   - Do not commit unless the user asks.
+8. **Never commit or package private recordings or transcripts.** If you analyse the user's real recordings, copy them to a temporary folder and delete the copies when done.
+
+## Repository map
+
+| Path | What it is |
+|---|---|
+| `src/` | React UI. `App.tsx` holds most of it; `api.ts` sends every call through one Tauri command, `dispatch(action, payload)`. |
+| `src-tauri/src/service.rs` | All `dispatch` actions, the job queue (`tick`), worker launch (`run_worker`), result ingestion and the live-transcription scheduler. |
+| `src-tauri/src/audio.rs` | Capture: FFmpeg reads Pulse/PipeWire sources and writes 30-second FLAC files (`sNNNN-mic-NNNNNN.flac`, `sNNNN-system-NNNNNN.flac`). This is the boundary for future Windows/macOS backends. |
+| `src-tauri/src/db.rs`, `src-tauri/migrations/` | SQLite (WAL, FTS5). Migrations are idempotent SQL files applied in order on every open. |
+| `src-tauri/src/search.rs` | Vector storage, exact/semantic/combined search. |
+| `src-tauri/tests/` | Integration tests. The real-engine and real-capture tests are `#[ignore]`d and opt-in. |
+| `worker/engine.py` | Transcription, indexing, summaries, Q&A. Uses only the Python standard library, except LiteRT for embeddings. |
+| `worker/provision.py`, `worker/setup_runtime.py` | Model download/import with hash checks; private Python venv for LiteRT. |
+| `models/manifest.json` | Pinned model sources. Changes must keep the SHA-256 and revision pinning. |
+| `scripts/` | Build, run and test tools (listed below). |
+| `tests/` | Python unit tests (`test_worker.py`, `test_notes.py`) and Playwright UI tests (`tests/ui`). |
+| `docs/` | `ARCHITECTURE.md` (how it works), `TESTING.md` (what was verified, with numbers), `IMPLEMENTATION.md` (per-version log), `PERFORMANCE.md`, `MODEL_SOURCES.md`, `WINDOWS_FUTURE.md`, `reports/` (JSON measurement reports). |
+
+## Where things are stored
+
+| Location | Contents | In Git? |
+|---|---|---|
+| `~/.local/share/voxloom/` (`VOXLOOM_DATA_DIR`) | Installed app's library: `library.db`, `recordings/<id>/`, `models/`, `runtimes/inference` (LiteRT venv). Private (0700). | Never |
+| `~/.cache/voxloom/` (`VOXLOOM_CACHE_DIR`) | Temporary job folders and the last inference metrics. | Never |
+| `.local-data/` | This checkout's own library, models and compiled engines (`.local-data/runtimes/{whisper,llama}{,-generic}/bin`). Used by `run-local.sh` and `build-app.sh`, so development never touches the installed app's data. | Ignored |
+| `.toolchain/` | Private Rust (`rustup`, `cargo`) and, if needed, Node (`node/`). Created by `build-app.sh`. | Ignored |
+| `.venv/` | Development Python with LiteRT, for real-engine tests. | Ignored |
+| `.runtimes/` | Older layout for engine builds (`whisper-build/bin`, `llama-build/bin`, `generic/`). Still accepted by `desktop.sh`. | Ignored |
+| `src-tauri/engines/` | Engines staged by `desktop.sh` just before packaging. | Ignored |
+| `src-tauri/target/` | Cargo build output; the package lands in `target/release/bundle/deb/`. | Ignored |
+| `dist/` | Built UI (`npm run build`). | Ignored |
+| `release/` | Hand-off artifacts: `voxloom_<version>_amd64.deb` plus `VoxLoom-<version>/` (the extracted package with `voxloom` symlink and `START HERE.txt`). Keep the previous version until the user says otherwise. | Ignored |
+| `/tmp/voxloom-*.wav` | Synthetic speech fixtures from `scripts/make-fixtures.sh`. | No |
+
+Audio, models and databases match `.gitignore` patterns (`*.flac`, `*.wav`, `*.bin`, `*.gguf`, `*.litertlm`, `*.db*`). Never force-add them.
+
+## Set up a development machine
+
+Easiest: `bash scripts/build-app.sh --install-deps`. It installs missing Ubuntu packages (with sudo), private Node/Rust, the npm dependencies and the compiled engines, then builds the package.
+
+Manual equivalent:
+
+```bash
+sudo apt-get install -y --no-install-recommends build-essential cmake pkg-config curl \
+  libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev patchelf \
+  ffmpeg pulseaudio-utils python3 python3-venv
+# Optional, for tests: espeak-ng xvfb, and Google Chrome or `npx playwright install chromium`
+npm ci
+VOXLOOM_DATA_DIR="$PWD/.local-data" bash scripts/setup-runtimes.sh   # engines + LiteRT venv
+```
+
+For direct `cargo` commands with the private toolchain:
+
+```bash
+export RUSTUP_HOME="$PWD/.toolchain/rustup" CARGO_HOME="$PWD/.toolchain/cargo" PATH="$PWD/.toolchain/cargo/bin:$PATH"
+```
+
+`scripts/desktop.sh` does this by itself.
+
+## Run the app from source
+
+```bash
+bash scripts/desktop.sh build --debug --no-bundle   # compile a debug app
+bash scripts/run-local.sh                           # run it with .local-data/ (not your installed library)
+```
+
+Use the app's first-run "Download & set up", or `bash scripts/provision-models.sh --download --directory .local-data/models`, to get models for this checkout.
+
+## Tests
+
+Run the fast set before every hand-off:
+
+```bash
+npm run check                 # TypeScript + privacy rules
+npm test                      # Python unit tests (python3 -m unittest discover -s tests)
+npm run test:ui               # Playwright UI tests (PLAYWRIGHT_CHROME=/path/to/chrome to choose a browser)
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --offline
+cargo clippy --manifest-path src-tauri/Cargo.toml --offline -- -D warnings
+```
+
+`cargo clippy --all-targets` currently reports `items_after_test_module` in `service.rs`, an older layout issue. The documented check is without `--all-targets`.
+
+Real-engine checks are opt-in. They need models and fixtures, and they never download anything. Point `--models` at an existing models folder; `~/.local/share/voxloom/models` is fine read-only.
+
+| Check | Command |
+|---|---|
+| Speech fixtures | `bash scripts/make-fixtures.sh` |
+| Live transcription, sentences across 30 s file boundaries | `python3 scripts/test-transcript-continuity.py --models <models> --whisper-cli <whisper-cli>` |
+| **Replay a real recording exactly as captured** (closed files + growing file, one live pass per 2.5 s); prints coverage, lag and rows | `python3 scripts/replay-live-asr.py --recording ~/.local/share/voxloom/recordings/<id> --model <models>/ggml-base.en.bin --whisper-cli <whisper-cli> --out /tmp/rows.json` |
+| Real capture through a temporary PipeWire test sink (removed afterwards; defaults unchanged) | `VOXLOOM_TEST_MODELS=<models> VOXLOOM_TEST_WHISPER_CLI=<whisper-cli> python3 scripts/test-capture.py` |
+| Full import → transcribe → index → search → summary → export → delete | see `docs/TESTING.md`, "Real local engines and full workflow" |
+| Packaged app launches, floats/expands and quits cleanly (hidden Xvfb display, throwaway data) | `xvfb-run -a python3 scripts/native-smoke.py <path>/usr/bin/voxloom` |
+| Engines, summaries, clipboard | `scripts/probe-engines.py`, `scripts/test-meeting-notes.py`, `scripts/test-native-notes.py` |
+
+`<whisper-cli>` can be `.local-data/runtimes/whisper/bin/whisper-cli` or the installed `/usr/lib/voxloom/engines/whisper-cli`.
+
+To judge transcription quality on real audio, compare against a stronger reference transcript (e.g. large-v3-turbo over the whole file). Report word error rate and runs of missing words, not impressions. Record the numbers in `docs/TESTING.md`.
+
+## Build and release
+
+```bash
+bash scripts/build-app.sh            # add --check to run the fast tests first
+```
+
+The script checks system packages, installs private Node/Rust when needed, runs `npm ci`, and compiles the engines once into `.local-data/runtimes`. It then runs `desktop.sh build --bundles deb` and copies the `.deb` plus the run-in-place folder into `release/`. Use `--release-dir DIR` to build somewhere else, for example while the user is installing the current release. The first build spends most of its time compiling the engines; it took about 9 minutes in total on a 4-core laptop. `VOXLOOM_BUILD_JOBS` limits the number of parallel compile jobs, which defaults to all cores. Later builds reuse the engines and take 1–2 minutes.
+
+When releasing a new version:
+
+1. Bump the version in all five places: `package.json`, `package-lock.json` (the root entries only), `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml` and the `voxloom` entry in `src-tauri/Cargo.lock`.
+2. Run the fast tests and the real checks relevant to the change.
+3. Build, then run the native smoke test on `release/VoxLoom-<version>/usr/bin/voxloom`.
+4. Add a version section to `docs/IMPLEMENTATION.md` (implemented / verified / limitations / release result / next) and to `docs/TESTING.md` (with measured numbers). Update `README.md` paths and user-visible behaviour.
+5. Tell the user the install command (`sudo apt install ./release/voxloom_<version>_amd64.deb`) and the SHA-256. Upgrades keep the user's recordings, models and settings.
+
+## Transcription invariants
+
+The live path: `service.rs::tick` polls every 2.5 s → `request("transcribe_live")` → `engine.py::transcribe`. Rules:
+
+- **Every millisecond belongs to exactly one chunk.** Chunks never overlap and never leave gaps. Each chunk is at most 28 s, one Whisper window.
+- **Cuts happen only inside pauses** found by `plan_chunk`. Pauses are speech-band (250–3800 Hz) levels relative to an adaptive noise floor (`noise_floor`). Never use a fixed dB threshold: real microphones sit around −32 dBFS and system audio around −55 dBFS. Only nonstop speech longer than a window is cut, at its quietest moment.
+- **Never skip audio on a doubtful estimate.** Skip only digital silence, or audio with clear voice/pause contrast (`has_contrast`) and no voiced frames. Without contrast (music bed, nonstop talk), transcribe everything.
+- **Never drop Whisper text because of timestamps.** Timestamps only place rows on the timeline.
+- **Whisper can silently skip trailing speech** ("single timestamp ending"). `transcribe_chunk` re-decodes voiced stretches that returned no words. Keep that safety net.
+- **Rows are sentences.** An unfinished sentence is carried in the checkpoint and finished by the next chunk, or flushed after silence, at 300 characters / 30 s, or at Stop/Pause.
+- **Checkpoints are atomic.** Coverage (`covered_ms`), rows and carry state commit in one transaction. The state is stored as JSON in `asr_progress.overlap_text`; the column name is historical.
+- **The file still being recorded** is read up to its last CRC-valid frame (`decode_pcm(growing=True)`). It is never registered or cached. This depends on FFmpeg's `-segment_format_options flush_packets=1` in `audio.rs`; without it the newest file is unreadable for about 16 s.
+- **A provisional (non-final) pass that ends after Stop/Pause** must trigger a final pass. `tick` does this.
+- **Before claiming a transcription improvement,** run the unit tests (`LiveTranscription` in `tests/test_worker.py`), the continuity script and a replay of a real recording.
+
+Transcription model choice: Settings → Transcription (`transcription_profile`: `standard` = `ggml-base.en.bin`, `accurate` = optional manual download `ggml-small.en-q8_0.bin`). `Service::whisper_model` is the only place that picks the file; it falls back to Standard until Accurate is downloaded. Never hard-code a model filename elsewhere.
+
+Tried and rejected (0.1.5): DTW word timestamps (`-dtw`, needs `-nfa`) to judge skipped speech. They triggered re-reads over music beds, producing "[MUSIC PLAYING]" rows, repeated phrases and Whisper's "transcription by ESO" hallucination, which raised the word error rate from 4.7% to 8.3%. Segment-span coverage stays.
+
+Performance reference (i7-11370H, 4 cores), one 28 s chunk:
+
+| Model | 2 threads | 4 threads | Notes |
+|---|---|---|---|
+| base.en (default) | 3.6 s | 2.5 s | |
+| small.en (full size) | 10.7 s | 8.8 s | About 4 points lower word error rate on a noisy mic |
+| small.en q8_0 ("Accurate") | about 40% of real time at 2 threads | | Fastest small variant on CPU; q5_1 is slower here |
+| large-v3-turbo q5_0 | 35 s | 23 s | Too slow for live use |
+
+## Database changes
+
+Add `src-tauri/migrations/00N.sql`. Make it idempotent (`IF NOT EXISTS`) and end it with `PRAGMA user_version = N`. Include it in `Db::open` in `db.rs`, and raise the "created by a newer VoxLoom version" guard there. Never rewrite an existing migration. User libraries must upgrade in place.
+
+## Code conventions
+
+- Match the surrounding code. `App.tsx` and parts of `service.rs` are deliberately dense; don't reformat files you aren't changing.
+- Comments explain why (constraints, failure modes found in testing), not what.
+- The worker stays standard-library Python apart from LiteRT. FFmpeg does audio work; pure Python handles small per-frame maths.
+- New dependencies, runtimes or model downloads need a clear reason and the user's agreement. Anything downloaded must be pinned (version + SHA-256).
+- User-facing text is plain and short; technical detail belongs under Advanced settings.
+
+## Known gotchas
+
+- FFmpeg's segment muxer can leave the full recording length in a later file's FLAC header. Count decoded samples (`duration()`), and decode segmented files before seeking.
+- Whisper output varies with exact chunk boundaries: the same audio cut a few milliseconds differently can gain or lose words. Compare runs, not single results.
+- whisper.cpp always encodes a full 30 s window, so short chunks cost almost as much as long ones.
+- Playwright uses `/opt/google/chrome/chrome` if present. Set `PLAYWRIGHT_CHROME`, or install Playwright's Chromium, on other machines.
+- `desktop.sh build` needs the engines in `.runtimes/…` or `$VOXLOOM_DATA_DIR/runtimes/…`. A cleanup that removes them breaks packaging until `build-app.sh` (or `setup-runtimes.sh --engines-only`) rebuilds them.

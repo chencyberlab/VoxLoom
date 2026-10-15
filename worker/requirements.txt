@@ -1,0 +1,2 @@
+# CPU LiteRT only. No Torch, Transformers, remote inference or model hub loader.
+litert-lm==0.18.0

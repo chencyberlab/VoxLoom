@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=VoxLoom
+Comment=Private offline meeting recorder and memory
+Exec={{exec}}
+Icon={{icon}}
+Type=Application
+Categories=AudioVideo;Audio;Utility;
+Terminal=false

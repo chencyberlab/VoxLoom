@@ -1,0 +1,30 @@
+{
+  "whisper": {
+    "passed": true,
+    "seconds": 2.083033699000225,
+    "fixture_transcript": "a project budget is approved. Sarah will send a final invoice on Friday.",
+    "child_peak_rss_kib": 289460
+  },
+  "embedding": {
+    "passed": true,
+    "dimensions": 768,
+    "backend": "CPU x86_64, 2 threads",
+    "text_scores": [
+      0.8721387689559915,
+      0.6160942872435129
+    ],
+    "native_audio_scores": [
+      0.7720270642293666,
+      0.5578175930929836
+    ],
+    "load_plus_three_text_seconds": 1.604662197001744,
+    "two_audio_seconds": 1.305656655000348,
+    "worker_peak_rss_kib": 551012
+  },
+  "summary": {
+    "passed": true,
+    "seconds": 3.2657159230002435,
+    "fixture_reply": "The budget was approved at [00:00:03].",
+    "child_peak_rss_kib": 1191024
+  }
+}

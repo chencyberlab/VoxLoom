@@ -1,0 +1,26 @@
+{
+  "index": {
+    "child_peak_rss_kib": 238272,
+    "elapsed_seconds": 3.9651014230003057,
+    "host_tree_peak_rss_kib": 553652,
+    "kind": "index",
+    "type": "metrics",
+    "worker_peak_rss_kib": 546296
+  },
+  "summary": {
+    "child_peak_rss_kib": 1193064,
+    "elapsed_seconds": 4.474401278999721,
+    "host_tree_peak_rss_kib": 1223008,
+    "kind": "summarize",
+    "type": "metrics",
+    "worker_peak_rss_kib": 24280
+  },
+  "transcribe": {
+    "child_peak_rss_kib": 288788,
+    "elapsed_seconds": 2.445987233997585,
+    "host_tree_peak_rss_kib": 318456,
+    "kind": "transcribe",
+    "type": "metrics",
+    "worker_peak_rss_kib": 24280
+  }
+}

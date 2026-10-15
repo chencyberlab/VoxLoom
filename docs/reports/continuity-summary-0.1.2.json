@@ -1,0 +1,27 @@
+{
+  "fixture_only": true,
+  "user_models_reused_read_only": true,
+  "reports": [
+    {
+      "continuous_live_asr": "PASS",
+      "seconds": 5.082419401001971,
+      "audio_ms": 67574,
+      "covered_ms": 67574,
+      "synthetic_transcript": "The committee approved the Community Center renovation budget, and Sarah will send the final invoice on Friday morning. The emergency inspection will take place on Tuesday afternoon, and David will bring the complete safety report to the meeting."
+    },
+    {
+      "summary_model": "gemma-3-1b-it-qat-Q4_0.gguf",
+      "result": "PASS",
+      "seconds": 4.978905058997043,
+      "synthetic_reply": "The model did not produce a reliably cited response. Relevant evidence extracts:\n\n[00:00:03] The budget was approved. Sarah will send the final invoice on Friday.",
+      "evidence_extract_fallback": true
+    },
+    {
+      "summary_model": "gemma-4-E2B-it-Q4_0.gguf",
+      "result": "PASS",
+      "seconds": 11.281969136001862,
+      "synthetic_reply": "* [00:00:03] The budget was approved. Sarah will send the final invoice on Friday.",
+      "evidence_extract_fallback": false
+    }
+  ]
+}

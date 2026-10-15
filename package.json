@@ -1,0 +1,34 @@
+{
+  "name": "voxloom",
+  "private": true,
+  "version": "0.1.5",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc --noEmit && vite build",
+    "check": "tsc --noEmit && python3 scripts/privacy-check.py",
+    "test": "python3 -m unittest discover -s tests -v",
+    "test:ui": "playwright test",
+    "tauri": "tauri",
+    "desktop": "bash scripts/desktop.sh dev",
+    "desktop:build": "bash scripts/desktop.sh build --bundles deb",
+    "start": "bash scripts/run-local.sh",
+    "build:app": "bash scripts/build-app.sh"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.8.0",
+    "@tauri-apps/plugin-dialog": "^2.4.0",
+    "lucide-react": "^0.468.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.58.0",
+    "@tauri-apps/cli": "^2.8.0",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@vitejs/plugin-react": "^4.7.0",
+    "typescript": "^5.9.0",
+    "vite": "^6.4.0"
+  }
+}
