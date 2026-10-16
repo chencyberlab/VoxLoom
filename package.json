@@ -1,12 +1,12 @@
 {
   "name": "voxloom",
   "private": true,
-  "version": "0.1.8",
+  "version": "0.1.10",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc --noEmit && vite build",
-    "check": "tsc --noEmit && python3 scripts/privacy-check.py",
+    "check": "tsc --noEmit && python3 scripts/privacy-check.py && python3 scripts/version.py",
     "test": "python3 -m unittest discover -s tests -v",
     "test:ui": "playwright test",
     "tauri": "tauri",

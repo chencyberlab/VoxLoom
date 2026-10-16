@@ -113,7 +113,8 @@ if ((run_checks)); then
   cargo clippy --manifest-path src-tauri/Cargo.toml --offline -- -D warnings
 fi
 
-version="$(node -p "require('./package.json').version")"
+python3 scripts/version.py >/dev/null || { python3 scripts/version.py; fail "Version copies differ from VERSION"; }
+version="$(tr -d '[:space:]' < VERSION)"
 step "Building VoxLoom $version"
 bash scripts/desktop.sh build --bundles deb
 deb="src-tauri/target/release/bundle/deb/voxloom_${version}_amd64.deb"

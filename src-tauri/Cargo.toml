@@ -1,6 +1,6 @@
 [package]
 name = "voxloom"
-version = "0.1.8"
+version = "0.1.10"
 description = "Private, offline meeting memory for Linux"
 edition = "2021"
 rust-version = "1.85"

@@ -110,3 +110,17 @@ Verified: see TESTING.md, "Version 0.1.8".
 Known limitations: first-run setup grows from about 1.5 GB to 3.6 GB. E2B needs about 4 GB of free memory while summarising.
 Release result: release/voxloom_0.1.8_amd64.deb (15,003,902 bytes; no model weights) and release/VoxLoom-0.1.8/voxloom. Packaged engine.py, notes.py, provision.py and manifest match source; the package holds only whisper-cli and llama-completion (plus generic builds). Native launch, compact/expand and Quit passed in Xvfb (exit 0; three observed processes released; idle sampled RSS 434,488 KiB).
 Next: user installs 0.1.8, then removes the old 1B file from Settings → Local intelligence.
+
+
+Version 0.1.9: appearance, readability, single version file
+Implemented: light/dark/System appearance on colour tokens (user's theme work), stored in settings and in local storage, applied before first paint by `public/theme-boot.js` (a file because the CSP allows only `script-src 'self'`). Review fixes: the sidebar no longer pushes Settings/Quit off screen at 900×720 (it scrolls, and the privacy card hides below 800 px tall); icons no longer shrink to dots in narrow flex rows; one focus ring around the search box. Readability: no text under 11 px (labels 12-13 px), consistent button heights, control borders at 3:1 contrast (`--control-line`), visible focus rings, card shadow in light mode. Settings split into Transcription & summaries (with Save), Local intelligence and Appearance; Advanced settings have their own Save. The sidebar's three-way switch became one button beside Quit. `VERSION` is the single version source (`scripts/version.py`).
+Verified: contrast of every text/background token pair computed (all at least 4.5:1 in both themes); visual tour of every page in both themes at 1280×860 and 900×720; 15 browser checks including appearance cycling, persistence and the first paint after reload; `version.py set` changed exactly the six version fields on a copy.
+Release result: release/voxloom_0.1.9_amd64.deb (15,005,652 bytes; no model weights; package version 0.1.9 read through tauri.conf.json → package.json) and release/VoxLoom-0.1.9/voxloom. Version bumped with `python3 scripts/version.py set 0.1.9`. Packaged engine.py, notes.py, provision.py and manifest match source; theme-boot.js is embedded. Native launch, compact/expand and Quit passed in Xvfb (exit 0; four observed processes released; idle sampled RSS 446,844 KiB).
+Next: user installs 0.1.9 and checks both themes on the real desktop.
+
+
+Version 0.1.10: queued-job message
+Implemented: queuing a summary, transcription or search indexing said "You can cancel it below", left over from the progress panel that moved to the top bar in 0.1.6. It now says "Its progress shows at the top; click it to cancel."
+Verified: a browser check clicks Summarise and reads the new message; full fast set and 13 browser checks pass.
+Release result: release/voxloom_0.1.10_amd64.deb (15,005,634 bytes; no model weights; package version 0.1.10) and release/VoxLoom-0.1.10/voxloom, built with `python3 scripts/version.py set 0.1.10` and `build-app.sh --check`. The packaged web build has the new message and not the old one. Native launch, compact/expand and Quit passed in Xvfb (exit 0; three observed processes released; idle sampled RSS 434,876 KiB).
+Next: user installs 0.1.10.

@@ -141,6 +141,26 @@ mod tests {
     }
 
     #[test]
+    fn appearance_is_system_light_or_dark() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = Service::open(
+            temp.path().join("data"),
+            temp.path().join("cache"),
+            temp.path().into(),
+            Arc::new(|_| {}),
+        )
+        .unwrap();
+        assert_eq!(service.dispatch("settings", json!({})).unwrap()["appearance"], "system");
+        for value in ["light", "dark", "system"] {
+            service.dispatch("save_settings", json!({"appearance": value})).unwrap();
+            assert_eq!(service.dispatch("settings", json!({})).unwrap()["appearance"], value);
+        }
+        assert!(service.dispatch("save_settings", json!({"appearance": "grove"})).is_err());
+        assert_eq!(service.dispatch("settings", json!({})).unwrap()["appearance"], "system");
+        service.shutdown();
+    }
+
+    #[test]
     fn removing_models_frees_only_pinned_files_when_idle() {
         let temp = tempfile::tempdir().unwrap();
         let cache = temp.path().join("cache");
@@ -1091,7 +1111,7 @@ impl Service {
             "settings" => {
                 let db = self.db.lock().unwrap();
                 Ok(
-                    json!({"threads":db.setting("threads","2"),"language":db.setting("language","en"),"whisper_cli":db.setting("whisper_cli",&self.default_tool("whisper_cli")),"llama_cli":db.setting("llama_cli",&self.default_tool("llama_cli")),"python":db.setting("python",&self.default_tool("python")),"models_dir":db.setting("models_dir",&self.data.join("models").to_string_lossy()),"summary_profile":summary_profile(&db),"summary_model":db.setting("summary_model",""),"summary_style":db.setting("summary_style","counselling"),"summary_prompt":db.setting("summary_prompt",""),"transcription_profile":db.setting("transcription_profile","standard"),"storage":self.data,"low_memory":true}),
+                    json!({"threads":db.setting("threads","2"),"language":db.setting("language","en"),"whisper_cli":db.setting("whisper_cli",&self.default_tool("whisper_cli")),"llama_cli":db.setting("llama_cli",&self.default_tool("llama_cli")),"python":db.setting("python",&self.default_tool("python")),"models_dir":db.setting("models_dir",&self.data.join("models").to_string_lossy()),"summary_profile":summary_profile(&db),"summary_model":db.setting("summary_model",""),"summary_style":db.setting("summary_style","counselling"),"summary_prompt":db.setting("summary_prompt",""),"transcription_profile":db.setting("transcription_profile","standard"),"appearance":db.setting("appearance","system"),"storage":self.data,"low_memory":true}),
                 )
             }
             "save_settings" => {
@@ -1108,6 +1128,7 @@ impl Service {
                     "summary_style",
                     "summary_prompt",
                     "transcription_profile",
+                    "appearance",
                 ] {
                     if let Some(v) = p[k].as_str() {
                         if k == "threads" && !(1..=8).contains(&v.parse::<u32>().unwrap_or(0)) {
@@ -1118,6 +1139,9 @@ impl Service {
                         }
                         if k == "transcription_profile" && !["standard", "accurate"].contains(&v) {
                             return Err("Unknown transcription profile".into());
+                        }
+                        if k == "appearance" && !["system", "light", "dark"].contains(&v) {
+                            return Err("Unknown appearance".into());
                         }
                         if k == "summary_style"
                             && !["counselling", "service", "meeting", "custom"].contains(&v)

@@ -43,6 +43,7 @@ A private Linux desktop app (Ubuntu 24.04, x86_64) that records microphone and/o
 | `worker/engine.py` | Transcription, indexing, summaries, Q&A. Uses only the Python standard library, except LiteRT for embeddings. |
 | `worker/provision.py`, `worker/setup_runtime.py` | Model download/import with hash checks; private Python venv for LiteRT. |
 | `models/manifest.json` | Pinned model sources. Changes must keep the SHA-256 and revision pinning. |
+| `VERSION` | The app version, the only place to change it. `scripts/version.py set X.Y.Z` writes the copies npm and Cargo need; the UI reads `VERSION`, `tauri.conf.json` reads `package.json`. |
 | `scripts/` | Build, run and test tools (listed below). |
 | `tests/` | Python unit tests (`test_worker.py`, `test_notes.py`) and Playwright UI tests (`tests/ui`). |
 | `docs/` | `ARCHITECTURE.md` (how it works), `TESTING.md` (what was verified, with numbers), `IMPLEMENTATION.md` (per-version log), `PERFORMANCE.md`, `MODEL_SOURCES.md`, `WINDOWS_FUTURE.md`, `reports/` (JSON measurement reports). |
@@ -111,6 +112,8 @@ cargo clippy --manifest-path src-tauri/Cargo.toml --offline -- -D warnings
 
 `cargo clippy --all-targets` currently reports `items_after_test_module` in `service.rs`, an older layout issue. The documented check is without `--all-targets`.
 
+For visual work, `TOUR_OUT=/tmp/voxloom-tour npx playwright test tour` captures every page in light and dark with sample data (skipped otherwise).
+
 Real-engine checks are opt-in. They need models and fixtures, and they never download anything. Point `--models` at an existing models folder; `~/.local/share/voxloom/models` is fine read-only.
 
 | Check | Command |
@@ -137,7 +140,7 @@ The script checks system packages, installs private Node/Rust when needed, runs 
 
 When releasing a new version:
 
-1. Bump the version in all five places: `package.json`, `package-lock.json` (the root entries only), `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml` and the `voxloom` entry in `src-tauri/Cargo.lock`.
+1. Bump the version: `python3 scripts/version.py set X.Y.Z`. It writes `VERSION` and the copies in `package.json`, `package-lock.json` (root entries), `src-tauri/Cargo.toml` and the `voxloom` entry of `src-tauri/Cargo.lock`. `npm run check` and `build-app.sh` fail if any copy differs from `VERSION`. Never edit those copies by hand.
 2. Run the fast tests and the real checks relevant to the change.
 3. Build, then run the native smoke test on `release/VoxLoom-<version>/usr/bin/voxloom`.
 4. Add a version section to `docs/IMPLEMENTATION.md` (implemented / verified / limitations / release result / next) and to `docs/TESTING.md` (with measured numbers). Update `README.md` paths and user-visible behaviour.
@@ -184,6 +187,7 @@ Add `src-tauri/migrations/00N.sql`. Make it idempotent (`IF NOT EXISTS`) and end
 
 ## Code conventions
 
+- Colours come only from the tokens at the top of `src/theme.css`, defined for light and dark. Keep text at 4.5:1 contrast or more, form-control borders (`--control-line`) and icons at 3:1, and no text smaller than 11 px. Check both themes with the visual tour.
 - Match the surrounding code. `App.tsx` and parts of `service.rs` are deliberately dense; don't reformat files you aren't changing.
 - Comments explain why (constraints, failure modes found in testing), not what.
 - The worker stays standard-library Python apart from LiteRT. FFmpeg does audio work; pure Python handles small per-frame maths.

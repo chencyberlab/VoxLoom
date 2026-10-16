@@ -84,6 +84,9 @@ test('summary style defaults to counselling and custom instructions are saved',a
   await expect(page.getByRole('heading',{name:'Session notes.',exact:true})).toBeVisible();
   await expect(page.getByRole('heading',{name:'Main concerns',exact:true})).toBeVisible();
   await expect(page.locator('.meeting-notes')).not.toContainText('##');
+  // Progress lives in the top bar, not in a panel below the page.
+  await page.getByRole('button',{name:'Summarise',exact:true}).click();
+  await expect(page.getByRole('status')).toHaveText('Summary queued. Its progress shows at the top; click it to cancel.');
   await page.getByRole('button',{name:'Settings',exact:true}).click();
   const style=page.getByLabel('Summary style',{exact:true});
   await expect(style).toHaveValue('counselling');await expect(page.getByText('No diagnosis, labels or advice',{exact:false})).toBeVisible();
@@ -195,7 +198,7 @@ test('downloaded models can be removed to free space, keeping recordings',async(
   await page.goto('/');
   await page.getByRole('button',{name:'Settings',exact:true}).click();
   await expect(page.getByLabel('Summary model',{exact:true})).toHaveValue('e4b');
-  await expect(page.getByText('Download “Summaries · highest quality” above first.',{exact:false})).toBeVisible();
+  await expect(page.getByText('Download “Summaries · highest quality” in Local intelligence below first.',{exact:false})).toBeVisible();
   const e4b=page.locator('article.model',{hasText:'Summaries · highest quality'});
   await expect(e4b).toContainText('4.59 GB');await expect(e4b).toContainText('Incomplete download');
   await expect(page.locator('article.model',{hasText:/^Summaries\d/}).getByRole('button',{name:'Remove',exact:false})).toHaveCount(0);
@@ -228,6 +231,35 @@ test('downloaded models can be removed to free space, keeping recordings',async(
   await expect.poll(removed).toEqual([['summary_1b'],['summary_e4b'],['whisper','embedding']]);
   await expect(page.getByText('No models are stored on this device.',{exact:true})).toBeVisible();
   await expect(page.getByRole('button',{name:'Remove all models',exact:true})).toBeDisabled();
+});
+
+test('appearance follows the desktop until chosen, then persists',async({page})=>{
+  await page.addInitScript(()=>{
+    Object.assign(window,{isTauri:true,__saved:[],__TAURI_INTERNALS__:{transformCallback:()=>1,invoke:async(command:string,args:{action?:string;payload?:unknown})=>{
+      if(command.startsWith('plugin:event'))return 1;
+      // The library keeps the saved choice across a reload, like the real settings table.
+      if(args?.action==='save_settings'){(window as unknown as {__saved:unknown[]}).__saved.push(args.payload);sessionStorage.setItem('saved-appearance',(args.payload as {appearance:string}).appearance);}
+      switch(args?.action){case 'library':case 'jobs':case 'devices':return [];case 'status':return null;case 'runtime_status':return {inference:true,whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models:[{id:'whisper',present:true},{id:'embedding',present:true}]};case 'settings':return {appearance:sessionStorage.getItem('saved-appearance')||'system'};default:return null;}
+    }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
+  });
+  await page.emulateMedia({colorScheme:'dark'});
+  await page.goto('/');
+  const theme=()=>page.evaluate(()=>document.documentElement.dataset.theme??'system');
+  const background=()=>page.evaluate(()=>getComputedStyle(document.documentElement).backgroundColor);
+  expect(await theme()).toBe('system');expect(await background()).toBe('rgb(19, 20, 18)');
+  // The sidebar button cycles System → Light → Dark → System.
+  const cycle=page.getByRole('button',{name:/^Appearance: System/});
+  await cycle.click();expect(await theme()).toBe('light');expect(await background()).toBe('rgb(244, 242, 236)');
+  await page.getByRole('button',{name:/^Appearance: Light/}).click();expect(await theme()).toBe('dark');
+  const saved=()=>page.evaluate(()=>(window as unknown as {__saved:unknown[]}).__saved);
+  await expect.poll(saved).toEqual([{appearance:'light'},{appearance:'dark'}]);
+  // Saved locally too, so the next launch paints the right theme before the app loads.
+  await page.reload();expect(await theme()).toBe('dark');
+  await page.getByRole('button',{name:'Settings',exact:true}).click();
+  const group=page.getByRole('group',{name:'Appearance'});
+  await expect(group.getByRole('button',{name:'Dark'})).toHaveAttribute('aria-pressed','true');
+  await group.getByRole('button',{name:'System'}).click();expect(await theme()).toBe('system');
+  await expect(page.getByRole('button',{name:/^Appearance: System/})).toBeVisible();
 });
 
 test('honest empty library, navigation, local assets and responsive layout',async({page})=>{
