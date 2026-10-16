@@ -2,7 +2,7 @@
 
 A Linux desktop recorder, transcript library, and private audio/text search tool. All inference runs locally. Summaries are optional and generated only when requested.
 
-Current build: functional development preview on Ubuntu 24.04 x86_64. Real Whisper, native-audio EmbeddingGemma 2 740M retrieval, on-demand 1B summaries and synthetic PipeWire dual capture have been exercised. Both 1B and E2B generation have been exercised with short local fixtures. Business meeting quality, physical-device behavior and multi-hour reliability still need testing. See [testing and measurements](docs/TESTING.md).
+Current build: functional development preview on Ubuntu 24.04 x86_64. Real Whisper, native-audio EmbeddingGemma 2 740M retrieval, on-demand Gemma 4 E2B summaries and synthetic PipeWire dual capture have been exercised. E2B summaries have been checked on a real counselling recording. Business meeting quality, physical-device behavior and multi-hour reliability still need testing. See [testing and measurements](docs/TESTING.md).
 
 ## Install or run the preview
 
@@ -36,7 +36,7 @@ You need an Ubuntu 24.04 (or newer) x86_64 computer, an internet connection for 
    ```
 
    Or run it without installing: `release/VoxLoom-0.1.5/voxloom`.
-4. **First run.** Open VoxLoom from the applications menu and choose **Download & set up** to fetch the AI models (about 1.35 GB). Models are never part of the build.
+4. **First run.** Open VoxLoom from the applications menu and choose **Download & set up** to fetch the AI models (about 3.6 GB with the default summary model). Models are never part of the build.
 
 To build again after pulling changes, run `bash scripts/build-app.sh`. Later builds take a few minutes. Upgrading keeps your recordings, models and settings.
 
@@ -85,9 +85,9 @@ The final command builds a Linux `.deb` under `src-tauri/target/release/bundle/d
 
 ## Model setup and offline use
 
-Use the first-run wizard or Settings → Model setup. Choose optional summaries and select **Gemma 3 1B** (lighter/faster, 720 MB) or **Gemma 4 E2B** (larger option, 2.84 GB) before setup. The wizard explains the tradeoff and updates the total download estimate. **Download & set up** handles local runtime support, the core models and only your selected summary model automatically, with plain-language progress and cancellation. The summary selection is saved after successful setup. Technical paths and runtime diagnostics are collapsed under Advanced settings. **Use files from this device** accepts an offline setup folder (`models/` plus `wheels/` when search support is not already installed). Recording is available if setup is skipped. Download buttons are explicit network approval; app startup never downloads anything. Offline import verifies the exact model file against the pinned manifest. Gemma terms are linked before download/import. No credentials are requested; gated access must be completed through the model repository before importing a file.
+Use the first-run wizard or Settings → Model setup. Choose optional summaries and select **Gemma 4 E2B** (recommended, 2.84 GB) or **Gemma 4 E4B** (largest, 4.59 GB) before setup. The wizard explains the tradeoff and updates the total download estimate. **Download & set up** handles local runtime support, the core models and only your selected summary model automatically, with plain-language progress and cancellation. The summary selection is saved after successful setup. Technical paths and runtime diagnostics are collapsed under Advanced settings. **Use files from this device** accepts an offline setup folder (`models/` plus `wheels/` when search support is not already installed). Recording is available if setup is skipped. Download buttons are explicit network approval; app startup never downloads anything. Offline import verifies the exact model file against the pinned manifest. Gemma terms are linked before download/import. No credentials are requested; gated access must be completed through the model repository before importing a file.
 
-For developers or offline administrators, equivalent model-only CLI actions (standard weights total about 1.35 GB; core-only about 633 MB):
+For developers or offline administrators, equivalent model-only CLI actions (standard weights, including Gemma 4 E2B, total about 3.47 GB; core-only about 633 MB):
 
 ```bash
 bash scripts/provision-models.sh --download
@@ -97,15 +97,17 @@ bash scripts/provision-models.sh --offline-import /path/to/model-files --core-on
 bash scripts/provision-models.sh --offline-import /path/to/ggml-base.en.bin --model whisper
 ```
 
-Optional E2B is an independent, explicit 2.84 GB download/import:
+Optional E4B (4.59 GB) is an independent, explicit download/import; E2B alone is `--model summary_e2b`:
 
 ```bash
-bash scripts/provision-models.sh --download --model summary_e2b
+bash scripts/provision-models.sh --download --model summary_e4b
 ```
 
 **More accurate transcription (optional, 264 MB):** in Settings → Model setup, download **Transcription · more accurate** (Whisper Small English), then choose **Settings → Transcription → Accurate** and **Save settings**. It mishears fewer words, especially on noisy microphones, but uses about three times more processor time and text appears a few seconds later; on a 4-core laptop it is best for one audio source at a time. Until it is downloaded, Standard is used. Re-run **Transcribe** on a recording to redo it with the selected model. CLI: `bash scripts/provision-models.sh --download --model whisper_accurate`.
 
-Select **Gemma 3 1B** or **Gemma 4 E2B** in Settings → Summary model, then **Save settings**. Neither is loaded until Summarise or Q&A is requested. To compare, export the first summary before switching and regenerating. The default remains 1B. The larger model's business-meeting quality and full native memory footprint remain unverified.
+Select **Gemma 4 E2B** (default) or **Gemma 4 E4B** in Settings → Summary model, then **Save settings**. Neither is loaded until Summarise or Q&A is requested. To compare, export the first summary before switching and regenerating. Gemma 3 1B was removed in 0.1.8 because it listed next steps nobody had agreed; a library that had it selected now uses E2B, and an existing 1B file appears in Settings as "No longer used by VoxLoom" with **Remove**. One real E2B summary of a 2.5-minute transcript took 58 s and peaked at about 4 GB of memory with two threads. E4B is the same model family at about twice the size: expect about 6 GB of free memory and roughly twice the time. It has not been run in VoxLoom yet. Google's AI Edge Gallery offers a 3.41 GB LiteRT build of the same E4B model; VoxLoom's summary engine (llama.cpp) needs the GGUF file instead.
+
+**Free up space:** Settings → Local intelligence shows **Remove** next to every downloaded model, and **Free up space → Remove all models** deletes them all at once. Removal also deletes unfinished downloads and the search model's compiled caches (about 370 MB). Recordings, transcripts, summaries and settings stay. VoxLoom refuses while recording, while a job is queued or running, or during setup. Download again at any time from Settings → Model setup. A custom GGUF chosen in Settings is your own file and is never deleted.
 
 Files live in `${XDG_DATA_HOME:-~/.local/share}/voxloom/`, with cache in `${XDG_CACHE_HOME:-~/.cache}/voxloom/`. `VOXLOOM_DATA_DIR` and `VOXLOOM_CACHE_DIR` override these roots; Settings can select another model directory. Paths with spaces and non-ASCII characters are supported. `--directory` overrides the CLI model folder. Nothing requires network after runtime and model provisioning. Recording/playback works with no models; transcript needs Whisper; semantic search needs the real full 740M LiteRT checkpoint; summary/Q&A needs the selected GGUF.
 
@@ -116,7 +118,8 @@ Files live in `${XDG_DATA_HOME:-~/.local/share}/voxloom/`, with cache in `${XDG_
 - **Both:** separate mic and system tracks. Headphones reduce acoustic echo. Recording is always manually started, visibly indicated, and subject to participant consent.
 - Audio is saved continuously. Live transcription reads the file still being recorded and transcribes each stretch of speech once it ends in a real pause, so words usually appear a few seconds after someone stops talking (nonstop speech appears within about 30 seconds). Each line is one sentence; a sentence interrupted by a pause is completed when the speaker continues. Stop/Pause flushes the final speech. This preview does not provide word-by-word streaming. Completed tracks and transcription checkpoints survive interruptions; pause/resume excludes paused wall time.
 - Import WAV/MP3/FLAC/OGG/M4A/OPUS or local MP4/MKV/WebM/MOV. FFmpeg stores only the extracted audio as FLAC. No YouTube URL downloader is included. You can capture a video's browser playback instead.
-- Review/edit the saved transcript, then click **Summarise** if wanted. It creates readable meeting notes grouped by topic, with supported decisions and actions, without source timestamps in the notes. **Copy notes** pastes formatted headings, paragraphs and bullets into Word; **Word document** saves a `.docx` file. Stopping/importing never generates summaries automatically. Transcription and search preparation start automatically when their local tools are installed. Corrections invalidate the old search data; Prepare search updates it after review. Exact search remains available without embeddings.
+- Review/edit the saved transcript, then click **Summarise** if wanted. Settings → **Summary style** chooses what the notes focus on: **Counselling or support session** (default: main concerns, feelings and experiences, strengths and supports, agreed next steps; no diagnosis, labels or advice that was not said), **Service conversation** (reason for contact, information shared, support discussed, agreed follow-up), **Meeting** (discussion points, decisions, actions), or **Custom instructions** you write yourself (up to 2,000 characters; VoxLoom still keeps to what was said and adds no timestamps). Notes are grouped by topic, without source timestamps. **Copy notes** pastes formatted headings, paragraphs and bullets into Word; **Word document** saves a `.docx` file. If the recording is still called "Untitled recording", the same Summarise run also gives it a short title (for example "Staff Induction Workshop Planning"); a title you typed or an imported file's name is never changed. Stopping/importing never generates summaries automatically. Transcription and search preparation start automatically when their local tools are installed. Corrections invalidate the old search data; Prepare search updates it after review. Exact search remains available without embeddings.
+- **Progress:** transcription, search preparation and summaries show their progress in the top bar, which stays in place while you scroll a long transcript. Click it to see every job, its recording and **Cancel**. It shows **All done** when work finishes, and turns red with **Retry** if a job fails. While you record, it shows a steady **Transcribing live** instead of the short passes that restart every 2.5 seconds; words appear in the studio a few seconds after each pause.
 - Timestamp buttons seek the appropriate source on the recording timeline. Playback advances through that source's chunks; audio export joins its chunks into one FLAC. The normal export choices are Word documents, plain text and subtitles. Transcript timestamps remain in the Transcript tab. A synchronized microphone+system playback/export mix remains future work.
 - Delete removes the managed recording and derived data. User-created exports are independent files.
 

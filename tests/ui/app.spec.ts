@@ -7,7 +7,7 @@ test('meeting notes render normally, copy rich text and export Word',async({page
     Object.assign(window,{isTauri:true,__exports:[],__TAURI_INTERNALS__:{transformCallback:()=>1,invoke:async(command:string,args:{action?:string;payload?:unknown})=>{
       if(command.startsWith('plugin:event'))return 1;
       if(command==='plugin:dialog|save')return '/tmp/Meeting notes.docx';
-      switch(args?.action){case 'library':return [meeting];case 'jobs':case 'devices':return [];case 'status':return null;case 'runtime_status':return {inference:true,whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models:[{id:'whisper',present:true},{id:'embedding',present:true},{id:'summary',present:true}]};case 'settings':return {summary_profile:'1b'};case 'detail':return {meeting,tracks:[],segments:[{id:1,meeting_id:'notes',start_ms:3000,end_ms:6000,source:'system',text:'The workshop covers privacy.'}]};case 'export':(window as unknown as {__exports:unknown[]}).__exports.push(args.payload);return null;default:return null;}
+      switch(args?.action){case 'library':return [meeting];case 'jobs':case 'devices':return [];case 'status':return null;case 'runtime_status':return {inference:true,whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models:[{id:'whisper',present:true},{id:'embedding',present:true},{id:'summary_e2b',present:true}]};case 'settings':return {summary_profile:'1b',summary_style:'meeting'};case 'detail':return {meeting,tracks:[],segments:[{id:1,meeting_id:'notes',start_ms:3000,end_ms:6000,source:'system',text:'The workshop covers privacy.'}]};case 'export':(window as unknown as {__exports:unknown[]}).__exports.push(args.payload);return null;default:return null;}
     }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
   });
   await page.goto('/');await page.getByRole('button',{name:'Workshop planning',exact:false}).click();
@@ -19,7 +19,7 @@ test('meeting notes render normally, copy rich text and export Word',async({page
   await expect(page.locator('.meeting-notes')).not.toContainText('[00:00:03]');
   await expect(page.locator('.meeting-notes')).not.toContainText('**');
   await page.getByRole('button',{name:'Copy notes',exact:true}).click();
-  await expect(page.getByRole('status')).toContainText('Meeting notes copied');
+  await expect(page.getByRole('status')).toContainText('Notes copied');
   const copied=await page.evaluate(async()=>{
     const items=await navigator.clipboard.read();const item=items[0];
     return {plain:await(await item.getType('text/plain')).text(),html:await(await item.getType('text/html')).text()};
@@ -34,12 +34,12 @@ test('meeting notes render normally, copy rich text and export Word',async({page
   await expect(page.getByLabel('Export transcript').locator('option')).not.toContainText(['MD','JSON']);
 });
 
-for(const choice of ['1b','e2b','none'] as const){
+for(const choice of ['e2b','e4b','none'] as const){
   test(`first-run setup downloads the selected summary model: ${choice}`,async({page})=>{
     // This bridge checks UI requests only. Real provisioning and persistence
     // are covered by the Rust offline setup test with integrity-checked files.
     await page.addInitScript(()=>{
-      const models=[{id:'whisper',bytes:147964211,present:false},{id:'embedding',bytes:484622336,present:false},{id:'summary',bytes:720425600,present:false,optional:true},{id:'summary_e2b',bytes:2841481184,present:false,optional:true,manual_only:true}];
+      const models=[{id:'whisper',bytes:147964211,present:false},{id:'embedding',bytes:484622336,present:false},{id:'summary_e2b',bytes:2841481184,present:false,optional:true},{id:'summary_e4b',bytes:4590807392,present:false,optional:true,manual_only:true}];
       Object.assign(window,{isTauri:true,__setupCalls:[],__TAURI_INTERNALS__:{transformCallback:()=>1,invoke:async(command:string,args:{action?:string;payload?:unknown})=>{
         if(command.startsWith('plugin:event'))return 1;
         switch(args?.action){case 'library':case 'jobs':case 'devices':return [];case 'status':return null;case 'runtime_status':return {inference:true,whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models};case 'settings':return {summary_profile:'1b'};case 'setup':(window as unknown as {__setupCalls:unknown[]}).__setupCalls.push(args.payload);return null;default:return null;}
@@ -48,30 +48,57 @@ for(const choice of ['1b','e2b','none'] as const){
     await page.goto('/');
     const dialog=page.getByRole('dialog');
     const model=dialog.getByLabel('Summary model',{exact:true});
-    await expect(model).toHaveValue('1b');
-    await expect(dialog.getByText('Recommended for a lighter setup',{exact:false})).toBeVisible();
+    await expect(model).toHaveValue('e2b');
+    await expect(model.locator('option')).toHaveText([/Gemma 4 E2B/,/Gemma 4 E4B/]);
+    await expect(dialog.getByText('Careful notes that keep to what was said',{exact:false})).toBeVisible();
     if(choice==='none'){
       await dialog.getByLabel('Add optional summaries',{exact:false}).uncheck();
       await expect(model).toBeHidden();
       await expect(dialog.getByText('About 0.8 GB in total',{exact:false})).toBeVisible();
     }else{
       await model.selectOption(choice);
-      await expect(dialog.getByText(`About ${choice==='e2b'?'3.6':'1.5'} GB in total`,{exact:false})).toBeVisible();
-      if(choice==='e2b')await expect(dialog.getByText('Uses more memory and may take longer',{exact:false})).toBeVisible();
+      await expect(dialog.getByText(`About ${{e2b:'3.6',e4b:'5.4'}[choice]} GB in total`,{exact:false})).toBeVisible();
+      if(choice==='e4b')await expect(dialog.getByText('Needs about 6 GB of free memory',{exact:false})).toBeVisible();
     }
     await page.setViewportSize({width:900,height:720});
     await expect(dialog.getByRole('button',{name:'Download & set up',exact:true})).toBeInViewport({ratio:1});
     await dialog.getByRole('button',{name:'Download & set up',exact:true}).click();
-    await expect.poll(()=>page.evaluate(()=>(window as unknown as {__setupCalls:unknown[]}).__setupCalls)).toEqual([{mode:'recommended',core_only:choice==='none',summary_profile:choice==='none'?'1b':choice,path:null}]);
+    await expect.poll(()=>page.evaluate(()=>(window as unknown as {__setupCalls:unknown[]}).__setupCalls)).toEqual([{mode:'recommended',core_only:choice==='none',summary_profile:choice==='none'?'e2b':choice,path:null}]);
     if(choice!=='none')await expect(model).toBeDisabled();
     expect(await dialog.evaluate(element=>element.scrollWidth<=element.clientWidth)).toBeTruthy();
     if(choice==='e2b')await page.screenshot({path:'test-results/setup-summary-model.png',fullPage:true});
   });
 }
 
+test('summary style defaults to counselling and custom instructions are saved',async({page})=>{
+  await page.addInitScript(()=>{
+    const meeting={id:'s',title:'Untitled recording',created_at:1,duration_ms:60000,status:'ready',notes:'',summary:'## Main concerns\n• Feeling isolated at school.'};
+    Object.assign(window,{isTauri:true,__calls:[],__TAURI_INTERNALS__:{transformCallback:()=>1,invoke:async(command:string,args:{action?:string;payload?:unknown})=>{
+      if(command.startsWith('plugin:event'))return 1;
+      if(args?.action==='save_settings')(window as unknown as {__calls:unknown[]}).__calls.push(args.payload);
+      switch(args?.action){case 'library':return [meeting];case 'jobs':case 'devices':return [];case 'status':return null;case 'runtime_status':return {inference:true,whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models:[{id:'whisper',present:true},{id:'embedding',present:true},{id:'summary_e2b',present:true}]};case 'settings':return {summary_profile:'1b'};case 'detail':return {meeting,tracks:[],segments:[{id:1,meeting_id:'s',start_ms:0,end_ms:3000,source:'mic',text:'I feel isolated at school.'}]};default:return null;}
+    }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
+  });
+  await page.goto('/');await page.getByRole('button',{name:'Untitled recording',exact:false}).click();
+  await page.getByRole('button',{name:'Summary',exact:true}).click();
+  await expect(page.getByRole('heading',{name:'Session notes.',exact:true})).toBeVisible();
+  await expect(page.getByRole('heading',{name:'Main concerns',exact:true})).toBeVisible();
+  await expect(page.locator('.meeting-notes')).not.toContainText('##');
+  await page.getByRole('button',{name:'Settings',exact:true}).click();
+  const style=page.getByLabel('Summary style',{exact:true});
+  await expect(style).toHaveValue('counselling');await expect(page.getByText('No diagnosis, labels or advice',{exact:false})).toBeVisible();
+  await style.selectOption('custom');
+  const box=page.getByLabel('Custom summary instructions',{exact:true});
+  await expect(page.getByText('Until you write instructions, the Counselling style is used.',{exact:false})).toBeVisible();
+  await box.fill('List the goals the client named.');await expect(page.getByText('32 / 2,000',{exact:false})).toBeVisible();
+  await page.setViewportSize({width:900,height:720});await page.screenshot({path:'test-results/summary-style.png',fullPage:true});
+  await page.getByRole('button',{name:'Save settings',exact:true}).click();
+  await expect.poll(()=>page.evaluate(()=>(window as unknown as {__calls:Record<string,unknown>[]}).__calls.at(-1))).toMatchObject({summary_style:'custom',summary_prompt:'List the goals the client named.'});
+});
+
 test('accurate transcription is an explicit download and setting',async({page})=>{
   await page.addInitScript(()=>{
-    const models=[{id:'whisper',bytes:147964211,present:true},{id:'whisper_accurate',bytes:264477561,present:false,optional:true,manual_only:true},{id:'embedding',bytes:484622336,present:true},{id:'summary',bytes:720425600,present:true,optional:true}];
+    const models=[{id:'whisper',bytes:147964211,present:true},{id:'whisper_accurate',bytes:264477561,present:false,optional:true,manual_only:true},{id:'embedding',bytes:484622336,present:true},{id:'summary_e2b',bytes:2841481184,present:true,optional:true}];
     Object.assign(window,{isTauri:true,__calls:[],__TAURI_INTERNALS__:{transformCallback:()=>1,invoke:async(command:string,args:{action?:string;payload?:unknown})=>{
       if(command.startsWith('plugin:event'))return 1;
       if(args?.action==='save_settings'||args?.action==='setup')(window as unknown as {__calls:unknown[]}).__calls.push({action:args.action,payload:args.payload});
@@ -93,13 +120,123 @@ test('accurate transcription is an explicit download and setting',async({page})=
   await expect.poll(async()=>(await calls()).find(c=>c.action==='setup')?.payload).toMatchObject({mode:'download',model:'whisper_accurate'});
 });
 
+test('progress stays visible at the top while scrolling a long transcript',async({page})=>{
+  await page.addInitScript(()=>{
+    const meeting={id:'long',title:'Long conversation',created_at:1,duration_ms:3600000,status:'ready',notes:'',summary:''};
+    const segments=Array.from({length:120},(_,i)=>({id:i,meeting_id:'long',start_ms:i*30000,end_ms:i*30000+5000,source:'mic',text:`Sentence number ${i} of a long conversation.`}));
+    Object.assign(window,{isTauri:true,__calls:[],__jobs:[{id:'sum',meeting_id:'long',kind:'summarize',status:'running',progress:0.4,error:null},{id:'idx',meeting_id:'long',kind:'index',status:'pending',progress:0,error:null}],__TAURI_INTERNALS__:{transformCallback:()=>1,invoke:async(command:string,args:{action?:string;payload?:unknown})=>{
+      if(command.startsWith('plugin:event'))return 1;
+      const w=window as unknown as {__calls:unknown[];__jobs:unknown[]};
+      switch(args?.action){case 'library':return [meeting];case 'jobs':return w.__jobs;case 'devices':return [];case 'status':return null;case 'runtime_status':return {inference:true,whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models:[{id:'whisper',present:true},{id:'embedding',present:true},{id:'summary_e2b',present:true}]};case 'settings':return {summary_profile:'1b'};case 'detail':return {meeting,tracks:[],segments};
+        case 'cancel':case 'enqueue':w.__calls.push({action:args.action,payload:args.payload});return null;default:return null;}
+    }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
+  });
+  await page.setViewportSize({width:900,height:720});
+  await page.goto('/');await page.getByRole('button',{name:'Long conversation',exact:false}).click();
+  const chip=page.locator('.activity-chip');
+  await expect(chip).toContainText('Creating summary · 40%');await expect(chip).toContainText('+1 more');
+  await page.evaluate(()=>window.scrollTo(0,document.body.scrollHeight));
+  await expect(page.getByText('Sentence number 119 of a long conversation.')).toBeInViewport();
+  await expect(chip).toBeInViewport({ratio:1});
+  await chip.click();
+  const panel=page.getByRole('region',{name:'Local processing'});
+  await expect(panel).toBeInViewport();await expect(panel).toContainText('Long conversation · Waiting');
+  await page.screenshot({path:'test-results/activity.png'});
+  const calls=()=>page.evaluate(()=>(window as unknown as {__calls:unknown[]}).__calls);
+  await panel.locator('.job-row',{hasText:'Preparing search'}).getByRole('button',{name:'Cancel',exact:true}).click();
+  await expect.poll(calls).toEqual([{action:'cancel',payload:{id:'idx'}}]);
+  await page.keyboard.press('Escape');await expect(panel).toBeHidden();
+  await page.evaluate(()=>{(window as unknown as {__jobs:unknown[]}).__jobs=[{id:'sum',meeting_id:'long',kind:'summarize',status:'completed',progress:1,error:null}];});
+  await expect(chip).toContainText('All done');
+  await expect(chip).toBeHidden({timeout:8000});
+  await page.evaluate(()=>{(window as unknown as {__jobs:unknown[]}).__jobs=[{id:'bad',meeting_id:'long',kind:'transcribe',status:'failed',progress:0,error:'Local model not installed.'}];});
+  await expect(chip).toContainText('Transcribing failed');await expect(chip).toHaveClass(/is-failed/);
+  await chip.click();await expect(panel).toContainText('Long conversation: Local model not installed.');
+  await panel.getByRole('button',{name:'Retry',exact:true}).click();
+  await expect.poll(calls).toEqual([{action:'cancel',payload:{id:'idx'}},{action:'enqueue',payload:{id:'long',kind:'transcribe'}},{action:'cancel',payload:{id:'bad'}}]);
+});
+
+test('recording shows a steady live transcription indicator',async({page})=>{
+  await page.addInitScript(()=>{
+    const meetings=[{id:'rec',title:'Team call',created_at:2,duration_ms:0,status:'recording',notes:'',summary:''},{id:'old',title:'Older meeting',created_at:1,duration_ms:60000,status:'ready',notes:'',summary:''}];
+    Object.assign(window,{isTauri:true,__capture:{meeting_id:'rec',elapsed_ms:60000,paused:false,failed:false,levels:[0,0]},__whisper:sessionStorage.getItem('no-whisper')!=='1',__TAURI_INTERNALS__:{transformCallback:()=>1,invoke:async(command:string,args:{action?:string})=>{
+      if(command.startsWith('plugin:event'))return 1;
+      const w=window as unknown as {__capture:unknown;__whisper:boolean};
+      switch(args?.action){case 'library':return meetings;case 'jobs':return [{id:'live',meeting_id:'rec',kind:'transcribe_live',status:'running',progress:0.4,error:null},{id:'sum',meeting_id:'old',kind:'summarize',status:'pending',progress:0,error:null}];case 'devices':return [];case 'status':return w.__capture;case 'runtime_status':return {inference:true,whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models:[{id:'whisper',present:w.__whisper},{id:'embedding',present:true}]};case 'settings':return {};default:return null;}
+    }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
+  });
+  await page.goto('/');
+  const chip=page.locator('.activity-chip');
+  await expect(chip).toHaveText('Transcribing live+1 more');await expect(chip.locator('.activity-pulse')).toBeVisible();
+  await chip.click();const panel=page.getByRole('region',{name:'Local processing'});
+  await expect(panel).toContainText('Team call · Words appear a few seconds after each pause');
+  await expect(panel).toContainText('Older meeting · Waiting');await expect(panel).toContainText('Indexing and summaries wait until recording stops.');
+  await page.screenshot({path:'test-results/live-activity.png'});
+  await page.keyboard.press('Escape');
+  await page.evaluate(()=>{(window as unknown as {__capture:{paused:boolean}}).__capture.paused=true;});
+  await expect(chip).toContainText('Transcribing live · 40%');
+  // Without a transcription model the host runs no live passes, so the indicator must not claim one.
+  await page.evaluate(()=>sessionStorage.setItem('no-whisper','1'));await page.reload();
+  await expect(chip).toHaveText('Creating summary · Waiting');
+});
+
+test('downloaded models can be removed to free space, keeping recordings',async({page})=>{
+  // Mocked bridge: real file removal and its safety checks are covered by the
+  // Rust removing_models test.
+  await page.addInitScript(()=>{
+    let models=[{id:'whisper',name:'Whisper',bytes:147964211,disk_bytes:147964211,present:true},{id:'embedding',name:'Embedding',bytes:484622336,disk_bytes:484622336,present:true},{id:'summary_e2b',name:'E2B',bytes:2841481184,disk_bytes:0,present:false,optional:true},{id:'summary_e4b',name:'E4B',bytes:4590807392,disk_bytes:1000000000,present:false,optional:true,manual_only:true},{id:'summary_1b',name:'Gemma 3 · 1B · QAT Q4_0',filename:'gemma-3-1b-it-qat-Q4_0.gguf',bytes:720425600,disk_bytes:720425600,present:false,retired:true}];
+    Object.assign(window,{isTauri:true,__removed:[],__TAURI_INTERNALS__:{transformCallback:()=>1,invoke:async(command:string,args:{action?:string;payload?:{ids:string[]}})=>{
+      if(command.startsWith('plugin:event'))return 1;
+      switch(args?.action){case 'library':case 'jobs':case 'devices':return [];case 'status':return null;case 'runtime_status':return {inference:true,whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models};case 'settings':return {summary_profile:'e4b'};
+        case 'remove_models':{const ids=args.payload!.ids;(window as unknown as {__removed:string[][]}).__removed.push(ids);const freed=models.filter(m=>ids.includes(m.id)).reduce((sum,m)=>sum+m.disk_bytes,0);models=models.filter(m=>!(m.retired&&ids.includes(m.id))).map(m=>ids.includes(m.id)?{...m,disk_bytes:0,present:false}:m);return {freed_bytes:freed};}
+        default:return null;}
+    }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
+  });
+  await page.goto('/');
+  await page.getByRole('button',{name:'Settings',exact:true}).click();
+  await expect(page.getByLabel('Summary model',{exact:true})).toHaveValue('e4b');
+  await expect(page.getByText('Download “Summaries · highest quality” above first.',{exact:false})).toBeVisible();
+  const e4b=page.locator('article.model',{hasText:'Summaries · highest quality'});
+  await expect(e4b).toContainText('4.59 GB');await expect(e4b).toContainText('Incomplete download');
+  await expect(page.locator('article.model',{hasText:/^Summaries\d/}).getByRole('button',{name:'Remove',exact:false})).toHaveCount(0);
+  await expect(page.getByText('Downloaded models use 2.35 GB.',{exact:false})).toBeVisible();
+  const removed=()=>page.evaluate(()=>(window as unknown as {__removed:string[][]}).__removed);
+  // A model earlier versions installed: it can only be removed, never downloaded.
+  const old=page.locator('article.model',{hasText:'Gemma 3 · 1B'});
+  await expect(old).toContainText('No longer used by VoxLoom');await expect(old.getByRole('button',{name:'Download',exact:true})).toHaveCount(0);
+  await old.getByRole('button',{name:'Remove Gemma 3 · 1B · QAT Q4_0',exact:true}).click();
+  await expect(page.getByRole('dialog')).toContainText('VoxLoom no longer uses this model.');
+  await page.getByRole('dialog').getByRole('button',{name:'Remove model',exact:true}).click();
+  await expect.poll(removed).toEqual([['summary_1b']]);await expect(old).toHaveCount(0);
+  await expect(page.getByText('Downloaded models use 1.63 GB.',{exact:false})).toBeVisible();
+  await e4b.getByRole('button',{name:'Remove Summaries · highest quality',exact:true}).click();
+  const dialog=page.getByRole('dialog');
+  await expect(dialog.getByRole('heading')).toHaveText('Remove “Summaries · highest quality”?');
+  await expect(dialog).toContainText('This frees 1.00 GB on this device. Your recordings, transcripts and summaries stay.');
+  await dialog.getByRole('button',{name:'Keep',exact:true}).click();
+  await expect(dialog).toBeHidden();expect(await removed()).toEqual([['summary_1b']]);
+  await e4b.getByRole('button',{name:'Remove Summaries · highest quality',exact:true}).click();
+  await dialog.getByRole('button',{name:'Remove model',exact:true}).click();
+  await expect.poll(removed).toEqual([['summary_1b'],['summary_e4b']]);
+  await expect(page.getByRole('status')).toContainText('1.00 GB freed');
+  await expect(e4b).toContainText('Not downloaded');
+  await page.getByRole('button',{name:'Remove all models',exact:true}).click();
+  await expect(dialog.getByRole('heading')).toHaveText('Remove all models?');
+  await expect(dialog).toContainText('Transcription, search and summaries stop until you download the models again');
+  await page.setViewportSize({width:900,height:720});await page.screenshot({path:'test-results/remove-models.png',fullPage:true});
+  await dialog.getByRole('button',{name:'Remove models',exact:true}).click();
+  await expect.poll(removed).toEqual([['summary_1b'],['summary_e4b'],['whisper','embedding']]);
+  await expect(page.getByText('No models are stored on this device.',{exact:true})).toBeVisible();
+  await expect(page.getByRole('button',{name:'Remove all models',exact:true})).toBeDisabled();
+});
+
 test('honest empty library, navigation, local assets and responsive layout',async({page})=>{
   const outbound:string[]=[];page.on('request',r=>{if(!r.url().startsWith('http://127.0.0.1:1420')&&!r.url().startsWith('data:'))outbound.push(r.url());});
   await page.goto('/');await expect(page.getByRole('heading',{name:'Good conversations. Nothing forgotten.'})).toBeVisible();
   await expect(page.getByText('A space for your next conversation.')).toBeVisible();await expect(page.getByText('Browser preview')).toBeVisible();
   await page.getByRole('button',{name:'New recording',exact:true}).first().click();await expect(page.getByRole('heading',{name:'Recording studio.'})).toBeVisible();
   await expect(page.getByRole('button',{name:'Start recording',exact:true})).toBeDisabled();await expect(page.getByText('Summaries are always on demand.',{exact:false})).toBeVisible();
-  await page.getByRole('button',{name:'Settings',exact:true}).click();await page.getByLabel('Summary model',{exact:true}).selectOption('e2b');await expect(page.getByText('E2B uses more memory',{exact:false})).toBeVisible();
+  await page.getByRole('button',{name:'Settings',exact:true}).click();await page.getByLabel('Summary model',{exact:true}).selectOption('e4b');await expect(page.getByText('E4B is the largest option',{exact:false})).toBeVisible();
   await page.getByRole('button',{name:'Model setup',exact:true}).click();await expect(page.getByRole('dialog')).toBeVisible();await expect(page.getByRole('button',{name:'Download & set up',exact:true})).toBeVisible();await expect(page.getByRole('button',{name:'Install search runtime',exact:true})).toBeHidden();await expect(page.getByLabel('Add optional summaries',{exact:false})).toBeChecked();
   await page.getByRole('button',{name:'Close model setup'}).click();await page.getByRole('button',{name:'Search',exact:true}).first().click();await expect(page.getByRole('heading',{name:'Find the moment.'})).toBeVisible();
   await page.setViewportSize({width:900,height:720});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBeTruthy();expect(outbound).toEqual([]);

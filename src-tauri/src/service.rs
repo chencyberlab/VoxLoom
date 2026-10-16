@@ -34,6 +34,8 @@ pub struct Service {
 }
 /// How often a recording's newest audio is offered to live transcription.
 const LIVE_POLL: Duration = Duration::from_millis(2500);
+/// Name of a recording started without a title; Summarise may replace it.
+const DEFAULT_TITLE: &str = "Untitled recording";
 
 #[cfg(test)]
 mod tests {
@@ -66,6 +68,142 @@ mod tests {
             .dispatch("save_settings", json!({"transcription_profile":"standard"}))
             .unwrap();
         assert!(chosen(&service).as_str().unwrap().ends_with("ggml-base.en.bin"));
+        service.shutdown();
+    }
+
+    #[test]
+    fn summary_title_replaces_only_the_default_name() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = Service::open(
+            temp.path().join("data"),
+            temp.path().join("cache"),
+            temp.path().into(),
+            Arc::new(|_| {}),
+        )
+        .unwrap();
+        {
+            let db = service.db.lock().unwrap();
+            db.create("untitled", DEFAULT_TITLE, 1000, "ready").unwrap();
+            db.create("named", "Board meeting", 1000, "ready").unwrap();
+        }
+        let summary = json!({"type":"summary","text":"Overview\nNotes.","title":"Privacy workshop planning"});
+        service.ingest("untitled", &summary).unwrap();
+        service.ingest("named", &summary).unwrap();
+        service.ingest("named", &json!({"type":"summary","text":"Overview\nNotes.","title":""})).unwrap();
+        let title = |id: &str| -> String {
+            service.db.lock().unwrap().conn.query_row("SELECT title FROM meetings WHERE id=?", [id], |r| r.get(0)).unwrap()
+        };
+        assert_eq!(title("untitled"), "Privacy workshop planning");
+        assert_eq!(title("named"), "Board meeting");
+        service.shutdown();
+    }
+
+    #[test]
+    fn summary_profiles_pick_their_pinned_model() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = Service::open(
+            temp.path().join("data"),
+            temp.path().join("cache"),
+            temp.path().into(),
+            Arc::new(|_| {}),
+        )
+        .unwrap();
+        let chosen = |s: &Service| s.request("summarize", None).unwrap()["models"]["summary"].clone();
+        assert!(chosen(&service).as_str().unwrap().ends_with("gemma-4-E2B-it-Q4_0.gguf"));
+        // Gemma 3 1B was removed: a library that still names it uses E2B.
+        service.db.lock().unwrap().set_setting("summary_profile", "1b").unwrap();
+        assert!(chosen(&service).as_str().unwrap().ends_with("gemma-4-E2B-it-Q4_0.gguf"));
+        assert_eq!(service.dispatch("settings", json!({})).unwrap()["summary_profile"], "e2b");
+        assert!(service.dispatch("save_settings", json!({"summary_profile":"1b"})).is_err());
+        for (profile, filename) in [
+            ("e2b", "gemma-4-E2B-it-Q4_0.gguf"),
+            ("e4b", "gemma-4-E4B-it-Q4_0.gguf"),
+        ] {
+            service
+                .dispatch("save_settings", json!({"summary_profile":profile}))
+                .unwrap();
+            assert!(chosen(&service).as_str().unwrap().ends_with(filename), "{profile}");
+        }
+        assert!(service
+            .dispatch("save_settings", json!({"summary_profile":"e8b"}))
+            .is_err());
+        let summary = |s: &Arc<Service>| s.request("summarize", None).unwrap();
+        assert_eq!(summary(&service)["summary_style"], "counselling");
+        assert!(service.request("transcribe", None).unwrap()["summary_prompt"].is_null());
+        service
+            .dispatch("save_settings", json!({"summary_style":"custom","summary_prompt":"List the client's goals."}))
+            .unwrap();
+        assert_eq!(summary(&service)["summary_style"], "custom");
+        assert_eq!(summary(&service)["summary_prompt"], "List the client's goals.");
+        assert!(service.dispatch("save_settings", json!({"summary_style":"poetry"})).is_err());
+        assert!(service.dispatch("save_settings", json!({"summary_prompt":"x".repeat(2001)})).is_err());
+        service.shutdown();
+    }
+
+    #[test]
+    fn removing_models_frees_only_pinned_files_when_idle() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache = temp.path().join("cache");
+        let service = Service::open(
+            temp.path().join("data"),
+            cache.clone(),
+            temp.path().into(),
+            Arc::new(|_| {}),
+        )
+        .unwrap();
+        let models = temp.path().join("data/models");
+        fs::create_dir_all(&models).unwrap();
+        fs::create_dir_all(&cache).unwrap();
+        fs::write(models.join("ggml-base.en.bin"), b"base").unwrap();
+        fs::write(models.join("gemma-4-E4B-it-Q4_0.gguf.part"), b"half").unwrap();
+        fs::write(models.join("embeddinggemma-2-740m.litertlm"), b"embed").unwrap();
+        fs::write(models.join("my-own.gguf"), b"custom").unwrap();
+        fs::write(models.join("gemma-3-1b-it-qat-Q4_0.gguf"), b"old 1b").unwrap();
+        let compiled = cache.join("embeddinggemma-2-740m.litertlm_1_5.text_encoder.xnnpack_cache");
+        fs::write(&compiled, b"compiled").unwrap();
+        fs::write(cache.join("last-inference-metrics.json"), b"{}").unwrap();
+        let on_disk = |s: &Arc<Service>, id: &str| {
+            s.dispatch("models", json!({})).unwrap()["models"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|m| m["id"] == id)
+                .unwrap()["disk_bytes"]
+                .as_u64()
+                .unwrap()
+        };
+        assert_eq!(on_disk(&service, "summary_e4b"), 4);
+        // A retired model is listed only while its file is on disk.
+        assert_eq!(on_disk(&service, "summary_1b"), 6);
+        let remove = |s: &Arc<Service>, ids: Value| s.dispatch("remove_models", json!({"ids":ids}));
+        assert!(remove(&service, json!([])).is_err());
+        assert!(remove(&service, json!(["whisper", "my-own"])).is_err());
+        assert!(models.join("ggml-base.en.bin").exists());
+        {
+            let _busy = service.inference.lock().unwrap();
+            assert!(remove(&service, json!(["whisper"])).is_err());
+        }
+        // Running, not pending, so the scheduler thread leaves it alone.
+        service.db.lock().unwrap().conn.execute("INSERT INTO jobs(id,meeting_id,kind,status,created_at) VALUES('job',NULL,'summarize','running',0)", []).unwrap();
+        assert!(remove(&service, json!(["whisper"])).is_err());
+        service
+            .db
+            .lock()
+            .unwrap()
+            .conn
+            .execute("UPDATE jobs SET status='cancelled'", [])
+            .unwrap();
+        let freed = remove(&service, json!(["whisper", "summary_e4b", "embedding", "summary_1b"])).unwrap();
+        assert_eq!(freed["freed_bytes"], 4 + 4 + 5 + 8 + 6);
+        assert!(!models.join("gemma-3-1b-it-qat-Q4_0.gguf").exists());
+        assert!(!service.dispatch("models", json!({})).unwrap()["models"].as_array().unwrap().iter().any(|m| m["id"] == "summary_1b"));
+        assert!(!models.join("ggml-base.en.bin").exists());
+        assert!(!models.join("gemma-4-E4B-it-Q4_0.gguf.part").exists());
+        assert!(!models.join("embeddinggemma-2-740m.litertlm").exists());
+        assert!(!compiled.exists());
+        assert!(models.join("my-own.gguf").exists());
+        assert!(cache.join("last-inference-metrics.json").exists());
+        assert_eq!(on_disk(&service, "summary_e4b"), 0);
         service.shutdown();
     }
 
@@ -143,6 +281,20 @@ fn text<'a>(v: &'a Value, key: &str) -> Result<&'a str> {
 fn private_dir(p: &Path) -> Result<()> {
     fs::create_dir_all(p).map_err(err)?;
     fs::set_permissions(p, fs::Permissions::from_mode(0o700)).map_err(err)
+}
+/// The chosen summary model. Gemma 3 1B was removed in 0.1.8; libraries
+/// that still name it use E2B, the new default.
+fn summary_profile(db: &Db) -> String {
+    match db.setting("summary_profile", "e2b").as_str() {
+        p @ ("e4b" | "custom") => p.to_string(),
+        _ => "e2b".to_string(),
+    }
+}
+/// Where provision.py keeps a download until its SHA-256 is verified.
+fn part_path(model: &Path) -> PathBuf {
+    let mut name = model.as_os_str().to_owned();
+    name.push(".part");
+    PathBuf::from(name)
 }
 fn free_disk_bytes(path: &Path) -> u64 {
     use std::os::unix::ffi::OsStrExt;
@@ -344,16 +496,19 @@ impl Service {
         let db = self.db.lock().unwrap();
         let models =
             PathBuf::from(db.setting("models_dir", &self.data.join("models").to_string_lossy()));
-        let mut v = json!({"kind":kind,"cache_dir":self.cache,"models":{"whisper":self.whisper_model(&db),"embedding":models.join("embeddinggemma-2-740m.litertlm"),"summary":db.setting("summary_model",&models.join("gemma-3-1b-it-qat-Q4_0.gguf").to_string_lossy())},"threads":db.setting("threads","2").parse::<u32>().unwrap_or(2).clamp(1,8),"language":db.setting("language","en"),"whisper_cli":db.setting("whisper_cli",&self.default_tool("whisper_cli")),"llama_cli":db.setting("llama_cli",&self.default_tool("llama_cli"))});
-        let profile = db.setting("summary_profile", "1b");
-        v["models"]["summary"] = json!(match profile.as_str() {
-            "e2b" => models
-                .join("gemma-4-E2B-it-Q4_0.gguf")
+        let mut v = json!({"kind":kind,"cache_dir":self.cache,"models":{"whisper":self.whisper_model(&db),"embedding":models.join("embeddinggemma-2-740m.litertlm"),"summary":""},"threads":db.setting("threads","2").parse::<u32>().unwrap_or(2).clamp(1,8),"language":db.setting("language","en"),"whisper_cli":db.setting("whisper_cli",&self.default_tool("whisper_cli")),"llama_cli":db.setting("llama_cli",&self.default_tool("llama_cli"))});
+        if kind == "summarize" {
+            v["summary_style"] = json!(db.setting("summary_style", "counselling"));
+            v["summary_prompt"] = json!(db.setting("summary_prompt", ""));
+        }
+        v["models"]["summary"] = json!(match summary_profile(&db).as_str() {
+            "e4b" => models
+                .join("gemma-4-E4B-it-Q4_0.gguf")
                 .to_string_lossy()
                 .to_string(),
             "custom" => db.setting("summary_model", ""),
             _ => models
-                .join("gemma-3-1b-it-qat-Q4_0.gguf")
+                .join("gemma-4-E2B-it-Q4_0.gguf")
                 .to_string_lossy()
                 .to_string(),
         });
@@ -755,6 +910,20 @@ impl Service {
                         params![v["text"].as_str(), meeting],
                     )
                     .map_err(err)?;
+                // The suggested title only replaces the default name, never
+                // a name the user typed or an imported file's name.
+                if let Some(title) = v["title"]
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|t| !t.is_empty() && t.chars().count() <= 300)
+                {
+                    db.conn
+                        .execute(
+                            "UPDATE meetings SET title=? WHERE id=? AND title=?",
+                            params![title, meeting, DEFAULT_TITLE],
+                        )
+                        .map_err(err)?;
+                }
             }
             _ => {}
         }
@@ -847,6 +1016,7 @@ impl Service {
                 Ok(json!(self.run_worker("interactive", &req, None)?))
             }
             "models" => self.models(),
+            "remove_models" => self.remove_models(&p),
             "runtime_status" => {
                 let db = self.db.lock().unwrap();
                 let available = |tool: &str| {
@@ -921,7 +1091,7 @@ impl Service {
             "settings" => {
                 let db = self.db.lock().unwrap();
                 Ok(
-                    json!({"threads":db.setting("threads","2"),"language":db.setting("language","en"),"whisper_cli":db.setting("whisper_cli",&self.default_tool("whisper_cli")),"llama_cli":db.setting("llama_cli",&self.default_tool("llama_cli")),"python":db.setting("python",&self.default_tool("python")),"models_dir":db.setting("models_dir",&self.data.join("models").to_string_lossy()),"summary_profile":db.setting("summary_profile","1b"),"summary_model":db.setting("summary_model",""),"transcription_profile":db.setting("transcription_profile","standard"),"storage":self.data,"low_memory":true}),
+                    json!({"threads":db.setting("threads","2"),"language":db.setting("language","en"),"whisper_cli":db.setting("whisper_cli",&self.default_tool("whisper_cli")),"llama_cli":db.setting("llama_cli",&self.default_tool("llama_cli")),"python":db.setting("python",&self.default_tool("python")),"models_dir":db.setting("models_dir",&self.data.join("models").to_string_lossy()),"summary_profile":summary_profile(&db),"summary_model":db.setting("summary_model",""),"summary_style":db.setting("summary_style","counselling"),"summary_prompt":db.setting("summary_prompt",""),"transcription_profile":db.setting("transcription_profile","standard"),"storage":self.data,"low_memory":true}),
                 )
             }
             "save_settings" => {
@@ -935,17 +1105,27 @@ impl Service {
                     "models_dir",
                     "summary_model",
                     "summary_profile",
+                    "summary_style",
+                    "summary_prompt",
                     "transcription_profile",
                 ] {
                     if let Some(v) = p[k].as_str() {
                         if k == "threads" && !(1..=8).contains(&v.parse::<u32>().unwrap_or(0)) {
                             return Err("CPU threads must be 1–8".into());
                         }
-                        if k == "summary_profile" && !["1b", "e2b", "custom"].contains(&v) {
+                        if k == "summary_profile" && !["e2b", "e4b", "custom"].contains(&v) {
                             return Err("Unknown summary profile".into());
                         }
                         if k == "transcription_profile" && !["standard", "accurate"].contains(&v) {
                             return Err("Unknown transcription profile".into());
+                        }
+                        if k == "summary_style"
+                            && !["counselling", "service", "meeting", "custom"].contains(&v)
+                        {
+                            return Err("Unknown summary style".into());
+                        }
+                        if k == "summary_prompt" && v.chars().count() > 2000 {
+                            return Err("Custom summary instructions must be 2,000 characters or fewer".into());
                         }
                         if [
                             "whisper_cli",
@@ -1082,26 +1262,115 @@ impl Service {
         let db = self.db.lock().unwrap();
         let directory =
             PathBuf::from(db.setting("models_dir", &self.data.join("models").to_string_lossy()));
+        let size = |p: &Path| p.metadata().map(|m| m.len()).unwrap_or(0);
         for model in manifest["models"].as_array_mut().unwrap() {
             let path = directory.join(model["filename"].as_str().unwrap());
             model["present"] = json!(path
                 .metadata()
                 .map(|m| m.len() == model["bytes"].as_u64().unwrap())
                 .unwrap_or(false));
+            // Unfinished downloads count too: they are what users look for
+            // when a cancelled multi-GB download has filled the disk.
+            model["disk_bytes"] = json!(size(&path) + size(&part_path(&path)));
             model["path"] = json!(path);
         }
+        // Models earlier versions offered are listed only while their files
+        // are still on disk, so Settings can remove them.
+        for mut model in manifest["retired"].as_array().cloned().unwrap_or_default() {
+            let path = directory.join(model["filename"].as_str().unwrap());
+            let bytes = size(&path) + size(&part_path(&path));
+            if bytes > 0 {
+                model["retired"] = json!(true);
+                model["present"] = json!(false);
+                model["disk_bytes"] = json!(bytes);
+                model["path"] = json!(path);
+                manifest["models"].as_array_mut().unwrap().push(model);
+            }
+        }
         Ok(manifest)
+    }
+    /// Frees disk space by deleting pinned model files, unfinished downloads
+    /// and the compiled caches LiteRT keeps for them. A custom GGUF is the
+    /// user's own file and is never touched. Recordings, transcripts and
+    /// settings stay, and setup can download the models again.
+    fn remove_models(&self, p: &Value) -> Result<Value> {
+        let ids: Vec<&str> = p["ids"]
+            .as_array()
+            .map(|ids| ids.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+        let manifest = self.models()?;
+        let chosen: Vec<&Value> = manifest["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|m| ids.contains(&m["id"].as_str().unwrap_or("")))
+            .collect();
+        if ids.is_empty() || chosen.len() != ids.len() {
+            return Err("Unknown model".into());
+        }
+        let _guard = self
+            .inference
+            .try_lock()
+            .map_err(|_| "Wait for the current job or setup to finish, then try again.")?;
+        if self.setup_active.load(Ordering::SeqCst) {
+            return Err("Wait for setup to finish, then try again.".into());
+        }
+        // Held until the files are gone, so a recording cannot start while
+        // the model that transcribes it is being removed.
+        let capture = self.capture.lock().unwrap();
+        if capture.is_some() {
+            return Err("Stop recording before removing models.".into());
+        }
+        let queued: i64 = self
+            .db
+            .lock()
+            .unwrap()
+            .conn
+            .query_row(
+                "SELECT count(*) FROM jobs WHERE status IN ('pending','running')",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(err)?;
+        if queued > 0 {
+            return Err("Wait for queued work to finish, or cancel it, before removing models.".into());
+        }
+        let remove = |path: &Path| -> Result<u64> {
+            match fs::symlink_metadata(path) {
+                Ok(m) if !m.is_dir() => {
+                    fs::remove_file(path).map_err(err)?;
+                    Ok(m.len())
+                }
+                _ => Ok(0),
+            }
+        };
+        let caches: Vec<PathBuf> = fs::read_dir(&self.cache)
+            .map(|entries| entries.flatten().map(|e| e.path()).collect())
+            .unwrap_or_default();
+        let mut freed = 0;
+        for model in chosen {
+            let path = PathBuf::from(model["path"].as_str().unwrap());
+            freed += remove(&path)? + remove(&part_path(&path))?;
+            let prefix = format!("{}_", model["filename"].as_str().unwrap());
+            for cache in &caches {
+                let name = cache.file_name().unwrap_or_default().to_string_lossy();
+                if name.starts_with(&prefix) && name.ends_with(".xnnpack_cache") {
+                    freed += remove(cache)?;
+                }
+            }
+        }
+        Ok(json!({"freed_bytes":freed}))
     }
     fn provision(&self, mode: &str, p: &Value) -> Result<()> {
         if self.quit.load(Ordering::SeqCst) || self.setup_cancel.load(Ordering::SeqCst) {
             return Err("Setup cancelled. You can continue later.".into());
         }
         if mode == "recommended" || mode == "offline_bundle" {
-            let summary_profile = p["summary_profile"].as_str().unwrap_or("1b");
+            let summary_profile = p["summary_profile"].as_str().unwrap_or("e2b");
             let summary_model = match summary_profile {
-                "1b" => "summary",
                 "e2b" => "summary_e2b",
-                _ => return Err("Choose a supported summary model: 1B or E2B.".into()),
+                "e4b" => "summary_e4b",
+                _ => return Err("Choose a supported summary model: E2B or E4B.".into()),
             };
             let python = self.python();
             let ready = audio::command(&python)
@@ -1139,7 +1408,7 @@ impl Service {
                 "import"
             };
             // Install core tools independently, then only the explicitly chosen
-            // summary model. E2B must never pull in the default 1B as well.
+            // summary model. E4B must never pull in the default E2B as well.
             models.as_object_mut().unwrap().remove("model");
             models["core_only"] = json!(true);
             self.provision(model_mode, &models)?;
@@ -1189,7 +1458,7 @@ impl Service {
             cmd.arg("--core-only");
         }
         if let Some(model) = p["model"].as_str() {
-            if !["whisper", "whisper_accurate", "embedding", "summary", "summary_e2b"].contains(&model) {
+            if !["whisper", "whisper_accurate", "embedding", "summary_e2b", "summary_e4b"].contains(&model) {
                 return Err("Unknown model".into());
             }
             cmd.arg("--model").arg(model);
@@ -1306,7 +1575,7 @@ impl Service {
             p["title"]
                 .as_str()
                 .filter(|x| !x.trim().is_empty())
-                .unwrap_or("Untitled recording"),
+                .unwrap_or(DEFAULT_TITLE),
             0,
             "recording",
         )?;

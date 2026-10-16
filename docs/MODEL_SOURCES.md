@@ -1,14 +1,15 @@
 # Pinned inference sources
 
-Verified on 2026-10-15 from Hugging Face's repository API including LFS SHA-256 metadata. Exact revisions, filenames, byte counts, licenses and SHA-256 values are in [`models/manifest.json`](../models/manifest.json). Provisioning uses immutable revision URLs; it never resolves `main` at runtime.
+Verified on 2026-10-15 (E4B on 2026-10-16) from Hugging Face's repository API including LFS SHA-256 metadata. Exact revisions, filenames, byte counts, licenses and SHA-256 values are in [`models/manifest.json`](../models/manifest.json). Provisioning uses immutable revision URLs; it never resolves `main` at runtime.
 
 | Purpose | Repository | License / notices |
 | --- | --- | --- |
 | Whisper Base English | [ggerganov/whisper.cpp](https://huggingface.co/ggerganov/whisper.cpp) | MIT; retain upstream model/runtime notices |
 | Whisper Small English Q8_0 (optional "Accurate" transcription, manual download) | [ggerganov/whisper.cpp](https://huggingface.co/ggerganov/whisper.cpp) | MIT; retain upstream model/runtime notices |
 | EmbeddingGemma 2 740M multimodal | [litert-community/embeddinggemma-2-740m-litert-lm](https://huggingface.co/litert-community/embeddinggemma-2-740m-litert-lm) | Repository declares Apache-2.0; see pinned card and full model provenance |
-| Gemma 3 1B IT QAT Q4_0 | [ggml-org/gemma-3-1b-it-qat-GGUF](https://huggingface.co/ggml-org/gemma-3-1b-it-qat-GGUF) | [Gemma terms](https://ai.google.dev/gemma/terms); verified public redistributor, preserving Google provenance |
-| Optional Gemma 4 E2B IT Q4_0 | [ggml-org/gemma-4-E2B-it-GGUF](https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF) | Gemma terms; independent manual upgrade, 2,841,481,184 bytes. Initially unprovisioned; user-installed weights were later reused read-only for the 0.1.2 short generation regression. |
+| Gemma 3 1B IT QAT Q4_0 (removed in 0.1.8) | [ggml-org/gemma-3-1b-it-qat-GGUF](https://huggingface.co/ggml-org/gemma-3-1b-it-qat-GGUF) | No longer downloaded. Listed under `retired` in the manifest only so Settings can delete an existing copy (720,425,600 bytes). |
+| Gemma 4 E2B IT Q4_0 (default summary model since 0.1.8) | [ggml-org/gemma-4-E2B-it-GGUF](https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF) | [Gemma terms](https://ai.google.dev/gemma/terms); 2,841,481,184 bytes, part of the standard download. |
+| Optional Gemma 4 E4B IT Q4_0 | [ggml-org/gemma-4-E4B-it-GGUF](https://huggingface.co/ggml-org/gemma-4-E4B-it-GGUF) | Gemma terms; independent manual download, 4,590,807,392 bytes. Revision, size and SHA-256 pinned from repository metadata and the resolve headers of the pinned revision; the weights were not downloaded or run during development. Google's AI Edge Gallery uses the LiteRT build of the same model ([litert-community/gemma-4-E4B-it-litert-lm](https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm), `gemma-4-E4B-it.litertlm`, 3,659,530,240 bytes), which the llama.cpp summary engine cannot load. |
 
 LiteRT prefixes and Python `EmbeddingEngine` / `Content.AudioFile` API were checked against [Google's embedding documentation](https://developers.google.com/edge/litert-lm/embedding_models) and exercised using the installed 0.18.0 Python package. No PyTorch, Transformers, Sentence Transformers or generic substitute embedding model is installed.
 

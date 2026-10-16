@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "verified_at": "2026-10-15",
+  "verified_at": "2026-10-16",
   "models": [
     {
       "id": "whisper",
@@ -41,18 +41,6 @@
       "optional": false
     },
     {
-      "id": "summary",
-      "name": "Gemma 3 \u00b7 1B \u00b7 QAT Q4_0",
-      "repo": "ggml-org/gemma-3-1b-it-qat-GGUF",
-      "revision": "c2531de7eec944fecd05bb2c23804c50d5a915c4",
-      "filename": "gemma-3-1b-it-qat-Q4_0.gguf",
-      "bytes": 720425600,
-      "sha256": "ef60e4e91a738c99ae9976b050657dfe68a4007a0ccca121b55ec0c413dccd58",
-      "license": "Gemma terms",
-      "license_url": "https://ai.google.dev/gemma/terms",
-      "optional": true
-    },
-    {
       "id": "summary_e2b",
       "name": "Gemma 4 \u00b7 E2B \u00b7 Q4_0",
       "repo": "ggml-org/gemma-4-E2B-it-GGUF",
@@ -63,7 +51,29 @@
       "license": "Gemma terms",
       "license_url": "https://ai.google.dev/gemma/terms",
       "optional": true,
+      "manual_only": false
+    },
+    {
+      "id": "summary_e4b",
+      "name": "Gemma 4 \u00b7 E4B \u00b7 Q4_0",
+      "repo": "ggml-org/gemma-4-E4B-it-GGUF",
+      "revision": "b8093469224f83f5c38f691eb906c380e9e63114",
+      "filename": "gemma-4-E4B-it-Q4_0.gguf",
+      "bytes": 4590807392,
+      "sha256": "a555b900214b477d8880e7832e0b8925e139b0159640036b09fe472b6f2097f2",
+      "license": "Gemma terms",
+      "license_url": "https://ai.google.dev/gemma/terms",
+      "optional": true,
       "manual_only": true
+    }
+  ],
+  "retired": [
+    {
+      "id": "summary_1b",
+      "name": "Gemma 3 \u00b7 1B \u00b7 QAT Q4_0",
+      "filename": "gemma-3-1b-it-qat-Q4_0.gguf",
+      "bytes": 720425600,
+      "retired_in": "0.1.8"
     }
   ]
 }

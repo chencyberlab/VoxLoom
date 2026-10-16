@@ -14,8 +14,9 @@ import engine
 
 parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--models',type=Path,required=True)
-parser.add_argument('--model',choices=['1b','e2b'])
+parser.add_argument('--model',choices=['e2b','e4b'])
 parser.add_argument('--artifacts',type=Path)
+parser.add_argument('--llama-cli',type=Path,default=next((p for p in [ROOT/'.local-data/runtimes/llama/bin/llama-completion',ROOT/'.runtimes/llama-build/bin/llama-completion'] if p.is_file()),ROOT/'.runtimes/llama-build/bin/llama-completion'))
 args=parser.parse_args()
 texts=[
     'We are planning a staff induction workshop about customer privacy and accessible communication.',
@@ -23,8 +24,8 @@ texts=[
     'Sarah will draft the facilitator guide by Friday. David will book the meeting room. No deadline was agreed for the room booking.',
     'The team still needs to confirm accessible video captions before publishing the workshop materials.',
 ]
-for filename in ['gemma-3-1b-it-qat-Q4_0.gguf','gemma-4-E2B-it-Q4_0.gguf']:
-    if args.model and (args.model=='e2b') != ('E2B' in filename):continue
+for profile,filename in [('e2b','gemma-4-E2B-it-Q4_0.gguf'),('e4b','gemma-4-E4B-it-Q4_0.gguf')]:
+    if args.model and args.model!=profile:continue
     path=args.models/filename
     if not path.is_file():
         print(json.dumps({'model':filename,'result':'SKIPPED: model files not provisioned'}),flush=True)
@@ -40,11 +41,11 @@ for filename in ['gemma-3-1b-it-qat-Q4_0.gguf','gemma-4-E2B-it-Q4_0.gguf']:
             engine.run=traced
         rows=[]
         started=time.monotonic()
-        engine.summarize({'models':{'summary':str(path)},'llama_cli':str(ROOT/'.runtimes/llama-build/bin/llama-completion'),'threads':2,'segments':[{'start_ms':i*30000,'text':text} for i,text in enumerate(texts)]},lambda **row:rows.append(row),Path(directory))
+        engine.summarize({'models':{'summary':str(path)},'llama_cli':str(args.llama_cli),'threads':2,'segments':[{'start_ms':i*30000,'text':text} for i,text in enumerate(texts)]},lambda **row:rows.append(row),Path(directory))
         result=rows[-1]['text']
         assert rows[-1]['type']=='summary'
         assert not re.search(r'\[\d{2}:\d{2}:\d{2}\]|<\|channel>|Thinking Process:',result)
         for word in ['workshop','privacy','Sarah','Friday','David']:
             assert word.lower() in result.lower(),(word,result)
-        print(json.dumps({'model':filename,'result':'PASS','seconds':time.monotonic()-started,'synthetic_meeting_notes':result},indent=2),flush=True)
+        print(json.dumps({'model':filename,'result':'PASS','seconds':time.monotonic()-started,'title':rows[-1].get('title',''),'synthetic_meeting_notes':result},indent=2),flush=True)
         engine.run=original_run

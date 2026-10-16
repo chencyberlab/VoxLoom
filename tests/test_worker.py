@@ -122,7 +122,7 @@ def speech_audio(spans, total):
 class LiveTranscription(unittest.TestCase):
     """Real chunk planner and sentence assembly with fixture audio and Whisper."""
 
-    def run_live(self, spans, total, step=2500, skip_tail_once=False, endings=None, room=-120.0):
+    def run_live(self, spans, total, step=2500, skip_tail_once=False, endings=None, room=-120.0, decode=None):
         audio = speech_audio(spans, total)
         progress, rows, chunks, calls = {}, [], [], []
         endings = endings or {}
@@ -157,7 +157,7 @@ class LiveTranscription(unittest.TestCase):
                 patch.object(engine, 'ensure_model', return_value='fixture'), \
                 patch.object(engine, 'stream_samples', side_effect=lambda stream, a, b: audio[a * 16:b * 16]), \
                 patch.object(engine, 'voice_levels', side_effect=levels), \
-                patch.object(engine, 'whisper_pieces', side_effect=whisper):
+                patch.object(engine, 'whisper_pieces', side_effect=decode or whisper):
             clock = 0
             while clock < total:
                 clock = min(total, clock + step)
@@ -194,6 +194,42 @@ class LiveTranscription(unittest.TestCase):
         rows, _, calls = self.run_live([(1000, 4000), (6000, 9000)], 12000, step=12000, skip_tail_once=True)
         self.assertEqual([r['text'] for r in rows], ['Speech at 1s.', 'Speech at 6s.'])
         self.assertGreater(len(calls), 1)
+
+    def music_bed(self, repeat_at_join=False):
+        """Narration, a music bed, then speech: no pause anywhere, so cuts are forced."""
+        script = [(1000, 5000, 'This video shows a session'), (5000, 9000, 'about attending skills.'),
+                  (24000, 27000, 'Yeah, I guess I have to.'), (28000, 31000, 'Then more words.'), (40000, 44000, 'And the rest.')]
+        windows = []
+
+        def whisper(request, model, samples, scratch):
+            a = (samples[0] - 1) * 100
+            b = a + len(samples) // 16
+            windows.append(a)
+            pieces = [(s, e, t) for s, e, t in script if a <= s and e <= b]
+            narration = [p for p in pieces if p[0] < 24000]
+            if narration and b - 24000 < 6000:
+                # Whisper's failure: the narration is stretched over the music and
+                # the speech after it, whose words are never written.
+                pieces = [*narration[:-1], (narration[-1][0], b, narration[-1][2])]
+            elif repeat_at_join and 5000 < a < 9000:
+                pieces = [(a, a + 800, 'attending skills.'), *pieces]  # The re-read starts early on purpose.
+            return [{'text': t, 'start_ms': s - a, 'end_ms': e - a} for s, e, t in pieces]
+
+        rows, chunks, _ = self.run_live([(0, 60000)], 60000, decode=whisper)
+        return [r['text'] for r in rows], chunks, windows
+
+    def test_speech_after_a_music_bed_is_reread_not_lost(self):
+        texts, chunks, windows = self.music_bed()
+        self.assertEqual(texts, ['This video shows a session about attending skills.', 'Yeah, I guess I have to.', 'Then more words.', 'And the rest.'])
+        # The stretched segment is kept; decoding resumes where its words end.
+        self.assertTrue(any(5000 < a < 9000 for a in windows), windows)
+        for (_, end), (start, _) in zip(chunks, chunks[1:]):
+            self.assertEqual(end, start)
+        self.assertEqual(chunks[-1][1], 60000)
+
+    def test_words_heard_twice_at_a_reread_join_are_dropped(self):
+        texts, _, _ = self.music_bed(repeat_at_join=True)
+        self.assertEqual(texts, ['This video shows a session about attending skills.', 'Yeah, I guess I have to.', 'Then more words.', 'And the rest.'])
 
     def test_unfinished_sentence_waits_for_its_ending_then_flushes_at_stop(self):
         rows, _, _ = self.run_live([(1000, 12000), (13500, 16000)], 18000, endings={1: ' and then', 13: ''})
@@ -296,12 +332,22 @@ class Provisioning(unittest.TestCase):
             provision.install(self.model, target, source)
         self.assertFalse((target / "model.bin").exists())
 
-    def test_pinned_manifest_has_only_full_embedding_and_manual_e2b(self):
+    def test_pinned_manifest_has_only_full_embedding_and_manual_gemma4(self):
         models = json.loads(provision.MANIFEST.read_text())["models"]
         embedding = next(m for m in models if m["id"] == "embedding")
         self.assertEqual(embedding["dimensions"], 768)
         self.assertIn("740m", embedding["filename"])
-        self.assertTrue(next(m for m in models if m["id"] == "summary_e2b")["manual_only"])
+        # E2B is the standard summary model; E4B is an explicit, opt-in download.
+        for model_id, filename, manual in [("summary_e2b", "gemma-4-E2B-it-Q4_0.gguf", False), ("summary_e4b", "gemma-4-E4B-it-Q4_0.gguf", True)]:
+            model = next(m for m in models if m["id"] == model_id)
+            self.assertTrue(model["optional"])
+            self.assertEqual(model.get("manual_only", False), manual)
+            self.assertEqual(model["filename"], filename)
+            self.assertEqual(len(model["revision"]), 40)
+        # Gemma 3 1B was removed in 0.1.8: never downloaded, only listed for removal.
+        self.assertFalse(any("gemma-3" in m["filename"] for m in models))
+        retired = json.loads(provision.MANIFEST.read_text())["retired"]
+        self.assertEqual([r["filename"] for r in retired], ["gemma-3-1b-it-qat-Q4_0.gguf"])
         # The accurate transcription model is an explicit, opt-in download.
         accurate = next(m for m in models if m["id"] == "whisper_accurate")
         self.assertTrue(accurate["manual_only"] and accurate["optional"])

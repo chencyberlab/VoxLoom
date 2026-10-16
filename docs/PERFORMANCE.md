@@ -11,9 +11,11 @@ Measurements are from the actual Ubuntu 24.04 x86_64 development machine, not mo
 | Rust debug build artifacts | About 1.5 GiB (may grow with lint/tests) |
 | Rust release build artifacts/cache | About 1.2 GiB; separate from final package |
 | Python CPU inference environment | About 159 MiB installed; no Torch/Transformers |
-| Standard model weights | 1,353,012,147 bytes, excluding generated caches |
+| Standard model weights | 3,474,067,731 bytes including Gemma 4 E2B (1,353,012,147 bytes with Gemma 3 1B before 0.1.8), excluding generated caches |
 | Core model weights | 632,586,547 bytes |
-| Optional E2B model | 2,841,481,184 bytes; not installed or RAM-benchmarked |
+| Optional E2B model | 2,841,481,184 bytes. One real summary in the installed app (2.5-minute transcript, two threads): 58.4 s, llama peak RSS 3,970,744 KiB, process-tree peak 4,494,220 KiB |
+| Optional E4B model | 4,590,807,392 bytes; not installed or run. Estimated from E2B: about 6 GB peak memory and roughly twice the time |
+| LiteRT compiled caches for the search model | About 370 MiB in the cache folder; rebuilt on next use; removed with the search model |
 | Final Linux `.deb`, including CPU engines, excluding model weights | 14,977,428 bytes (14.28 MiB), version 0.1.3 |
 
 The original host-only `.deb` was about 3.6 MiB. Final packaging includes CPU ASR/summary executables and generic fallbacks for one-click nontechnical setup. Models remain excluded. Static C++ runtime binaries use standard Linux C/C++/OpenMP libraries; the package declares those dependencies. LiteRT support is an explicitly approved onboarding download into a private venv. Package caches and model caches must be counted separately from weights and are never committed. The development models and setup data were removed after validation so manual testing starts with onboarding.

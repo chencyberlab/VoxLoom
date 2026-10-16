@@ -85,7 +85,7 @@ with (nullcontext(str(args.artifacts)) if args.artifacts else tempfile.Temporary
     assert all(s["start_ms"] <= s["end_ms"] for s in segments)
     print(json.dumps({"continuous_live_asr": "PASS", "seconds": time.monotonic() - started, "audio_ms": sum(lengths.values()), "covered_ms": checkpoints["system:s0000"]["covered_ms"], "synthetic_transcript": transcript}, indent=2), flush=True)
     if args.summaries:
-        for name in ["gemma-3-1b-it-qat-Q4_0.gguf", "gemma-4-E2B-it-Q4_0.gguf"]:
+        for name in ["gemma-4-E2B-it-Q4_0.gguf"]:
             model = args.models / name
             if not model.is_file():
                 print(json.dumps({"summary_model": name, "result": "SKIPPED: model files not provisioned"}), flush=True)

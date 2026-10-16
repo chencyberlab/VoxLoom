@@ -30,7 +30,7 @@ def main():
         scratch = Path(directory)
         request = {"models": {"whisper": str((args.models / "ggml-base.en.bin").resolve()),
                               "embedding": str((args.models / "embeddinggemma-2-740m.litertlm").resolve()),
-                              "summary": str((args.models / "gemma-3-1b-it-qat-Q4_0.gguf").resolve())},
+                              "summary": str((args.models / "gemma-4-E2B-it-Q4_0.gguf").resolve())},
                    "cache_dir": directory, "threads": 2, "whisper_cli": args.whisper_cli, "llama_cli": args.llama_cli,
                    "tracks": [{"id": "fixture", "path": str(args.speech.resolve()), "source": "imported", "offset_ms": 0}]}
         if Path(request["models"]["whisper"]).is_file():

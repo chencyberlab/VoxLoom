@@ -100,7 +100,7 @@ def main():
     action.add_argument("--download", action="store_true", help="explicit approval to download pinned weights")
     action.add_argument("--offline-import", type=Path)
     parser.add_argument("--core-only", action="store_true")
-    parser.add_argument("--model", choices=["whisper", "whisper_accurate", "embedding", "summary", "summary_e2b"])
+    parser.add_argument("--model", choices=["whisper", "whisper_accurate", "embedding", "summary_e2b", "summary_e4b"])
     parser.add_argument("--directory", type=Path, default=data_dir() / "models")
     args = parser.parse_args()
     models = json.loads(MANIFEST.read_text())["models"]

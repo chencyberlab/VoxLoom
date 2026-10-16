@@ -34,6 +34,66 @@ The llama.cpp completion frontend accepted but failed to forward its reasoning s
 
 Validation for this update: 16 Python checks, six Rust unit checks plus the offline setup integration check, six browser checks (including hiding an old unfinished summary), desktop clippy with warnings denied, the real ASR/index/search/summary/restart/export/delete/shutdown workflow (22.18 s), and synthetic dual capture with live text, pause/resume, final-tail processing and shutdown (55.86 s). Cursor advancement and transcript rows commit atomically; a deliberately invalid batch rolls back both, retries do not duplicate rows, edited text survives, progress resumes after reopening SQLite, and meeting deletion cascades through the new checkpoint table. The database migrates to schema version 2. Tests use temporary libraries and never reset the installed user's data. The final extracted 0.1.2 package also passed native launch, compact/expand and Quit (exit 0; four observed processes released; sampled idle tree 434,888 KiB). Packaged workers, manifest, source notices and both patched completion binaries matched the source/staging hashes; no model weights are bundled.
 
+## Version 0.1.8: Gemma 4 E2B as the default summary model
+
+Gemma 3 1B removed after it invented three "agreed next steps" on the counselling recording (see Version 0.1.7). Validation: 38 Python checks (manifest: E2B standard, E4B manual-only, no Gemma 3 download, a `retired` entry for the 1B file); 12 Rust checks including a saved `1b` choice resolving to E2B, `1b` rejected when saving, and a retired file listed while on disk and removable; offline setup integration including a rejected `1b` setup request and E2B as the saved default; 12 browser checks including E2B/E4B in first-run setup (3.6 / 5.4 GB) and removing a retired 1B file. TypeScript/privacy and desktop clippy pass.
+
+## Gemma 4 as a transcription model (evaluated after 0.1.7, not adopted)
+
+Question: could Gemma 4 replace Whisper, as in Google AI Edge Foresight (Gemma 4 + EmbeddingGemma 2, no separate speech model)? Google documents Gemma 4 E2B/E4B speech recognition with at most 30 s of audio per request (25 tokens a second). Tested with LiteRT-LM 0.18.0 (already VoxLoom's search runtime) and the pinned `litert-community` files: E2B `gemma-4-E2B-it.litertlm` (revision b3ca0d2f, 2,588,147,712 bytes, SHA-256 18193810…9a63c) and E4B `gemma-4-E4B-it.litertlm` (revision 2eee7ac3, 3,659,530,240 bytes, SHA-256 0b2a8980…d45e2). Google's ASR prompt, greedy decoding, two threads, the counselling recording replayed live exactly as captured (Whisper's stretched-segment re-read disabled, since Gemma returns one untimed block per chunk):
+
+| Model | WER | Missing words | Time / audio | Peak memory |
+|---|---|---|---|---|
+| Whisper Standard (0.1.7) | 6.2% | 6 | 0.19 | about 0.3 GB |
+| Whisper Accurate (0.1.7) | 5.1% | 6 | 0.46 | about 0.55 GB |
+| Gemma 4 E2B | 8.7% (7.6% in fixed 28 s clips) | 4 (3) | 0.36 | 1.6 GB |
+| Gemma 4 E4B | 7.6% (7.3%) | 5 (6) | 0.77 | 3.3 GB |
+| Foresight on the user's 64 GB Mac (same video) | 5.3% from where its transcript begins | 2 | — | — |
+
+Gemma kept stammers and fillers ("I I guess", "who who", "um") and heard the "Yeah" after the music, but misheard more ("kids" → "gets", "counseling" → "listening"; E4B once "sounds like you" → "sam… saikyu"). With the instructions placed after the audio (Google's example order), E2B appended "and to transcribe the following speech in English into English text." to a chunk ending mid-sentence; instructions before the audio or as a system message fixed that. On the noisy microphone recording E2B ran at 0.51 of real time and differed from Whisper Accurate in 98 spans, mostly fillers and repeats, with misheard phrases on both sides. llama.cpp v0.6.0 does support Gemma 4 audio (`llama-mtmd-cli` with `mmproj-gemma-4-E2B-it-Q8_0.gguf`, 557,368,064 bytes), but it cannot turn thinking off: 75-87 s per 28 s clip and 4.75 GB. Decision: keep Whisper. Summaries through LiteRT-LM E2B took 19.7 s against 33 s through llama.cpp on the same transcript, with comparable notes: a possible later speed-up, not adopted.
+
+## Version 0.1.7: counselling summaries, titles, speech after music
+
+**Speech after a music bed.** Recording 76e99b52 (the counselling role-play captured from system audio, 2 min 33 s) replayed live exactly as captured (`scripts/replay-live-asr.py`, two threads), scored against the video's own transcript (first 277 words). Both models lost "Yeah, I guess I have to" at about 24 s. Trace: no pause in the music, so the chunk was cut at a fixed point (29.0 s), and Whisper's last segment ("skills of attending behavior, paraphrasing and summarizing.", 60 characters) spanned 17.6 s of music and speech (3.4 characters a second).
+
+| Run | Standard WER / missing | Accurate WER / missing |
+|---|---|---|
+| Before (0.1.6) | 5.8% / 8 | 5.8% / 9 |
+| A: drop the stretched segment, re-read from its start (rejected) | 9.5% / 16 | 4.0% / 5 |
+| B: keep it, re-read from where its words end (shipped) | 6.2% / 6 | 5.1% / 6 |
+| whisper.cpp on the whole file at once, no VoxLoom chunking | 5.5% / 5 | 6.2% / 14 |
+
+With B both models recover "I guess I have to figure out things for myself"; the first word after the music ("Yeah") is still missed. Remaining errors are the model's: "one year already" → "when you're ready" (Standard), "came" → "come", "friends" → "friend", and stammers or fillers ("I'm, I'm", "Hmm") that Whisper leaves out by design. Live chunking is as accurate as whisper.cpp's own whole-file decoding on this recording.
+
+Regression: recordings 84cc8615 (4 min 24 s noisy microphone), ef1e2714 (4 min 31 s system audio) and 7735714c (2 min 2 s system audio) replayed with Standard before and after: word-for-word identical transcripts, same Whisper time. The real continuity check (`scripts/test-transcript-continuity.py`) passes. Recordings were copied to a temporary folder and deleted afterwards.
+
+**Summary styles and titles**, real engines on the counselling recording (copied, then deleted), two threads:
+
+| Model | Title | Counselling notes |
+|---|---|---|
+| Gemma 3 1B (16 s) | Initial Assessment & Support | All five sections; three "agreed next steps" that were not said |
+| Gemma 4 E2B (33 s) | Student Challenges and Responsibilities | Main concerns, feelings, strengths; correctly no next steps (empty section now removed) |
+
+Titles on a second real recording: "Initial Counselling Sessions – A Memory" (1B), "Reflections on First Counselling Sessions" (E2B). On the synthetic workshop fixture: "Staff Induction - Customer Privacy & Accessible Communication" (1B), "Staff Induction Workshop Planning" (E2B). Asking for a title first made 1B close its answer with a misspelt tag (`</voiceloom_result>`); the stricter prompt and tolerant parsing fixed it.
+
+Validation: 38 Python checks (music-bed re-read and seam de-duplication, which fail with the re-read disabled; title extraction; style prompts, the Counselling default and fallbacks; `## ` titles, inline titles and empty sections). 12 Rust checks, including title replacement only over "Untitled recording" and style/prompt settings validation. 13 browser checks, including the Counselling default, the Session notes heading and saving custom instructions. TypeScript/privacy and desktop clippy pass.
+
+## Version 0.1.6: E4B option, model removal, progress indicator
+
+E4B pinning was checked against Hugging Face repository metadata and the `resolve` headers of the pinned revision (`x-linked-size` 4,590,807,392, `x-linked-etag` equal to the manifest SHA-256). The weights were not downloaded or run.
+
+Validation: 31 Python checks (the manifest pins E2B and E4B as optional, manual-only Q4_0 GGUFs at 40-character revisions). 10 Rust unit checks, including:
+- every summary profile picking its pinned file, with unknown profiles rejected;
+- model removal with real files: it refuses an empty or unknown id, a busy inference lock and a running job; it deletes the model, a `.part` download and the matching `*.xnnpack_cache`; it keeps a custom GGUF and other cache files; the reported freed bytes and `disk_bytes` are correct.
+
+The offline setup integration check now includes installing only E4B and saving the `e4b` choice. 12 browser checks add:
+- E4B in first-run setup (5.4 GB total estimate, memory warning);
+- per-model and remove-all confirmation dialogs with the exact request payloads, a "Keep" that sends nothing, and a refreshed "No models are stored" state;
+- the progress indicator staying fully in view after scrolling to the end of a 120-row transcript, with its drop-down, Cancel, "All done" timeout, a failed job's error and Retry (re-queue, then dismiss the failure);
+- a steady "Transcribing live" item while recording (no percentage, waiting jobs listed), the real pass with its percentage once paused, and no live claim when no transcription model is installed.
+
+TypeScript/privacy and desktop clippy pass. The 0.1.6 package passed the native smoke test (see IMPLEMENTATION.md).
+
 ## Version 0.1.5: optional accurate transcription
 
 The user captured a public counselling role-play from YouTube (system audio, 2 min 31 s, music bed under the opening narration) and supplied the video's own transcript as ground truth. Live replays with two threads, scored with word alignment against the first 277 words:
