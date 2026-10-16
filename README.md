@@ -2,6 +2,32 @@
 
 A Linux desktop recorder, transcript library, and private audio/text search tool. All inference runs locally. Summaries are optional and generated only when requested.
 
+## For everyday use
+
+VoxLoom records a conversation on your own computer and keeps the words so you can find them later. The recording, the transcript and any notes stay on this machine. Nothing is uploaded, and there is no account.
+
+The pictures below use sample titles so you can see the layout. Your own library starts empty.
+
+![Home, light theme](docs/images/home-light.png)
+
+![Home, dark theme](docs/images/home-dark.png)
+
+![A transcript you can read and correct](docs/images/transcript.png)
+
+**Open it.** After VoxLoom is installed, it appears in the applications menu.
+
+**First time.** Choose **Download & set up** if you want live text, search and notes. That download happens once, and only when you ask. You can skip it and still record; the text can be prepared later.
+
+**Record.** Choose **New recording**, then **Microphone** (people in the room), **System audio** (a call or a video playing on this computer), or **Both**. People should know you are recording. Press **Stop** when you are done. Words appear a few seconds after someone pauses.
+
+**Read it back.** Open the recording. Click a time to hear that moment, and correct a line if a word is wrong.
+
+**Notes, only if you ask.** **Summarise** writes notes from the transcript. You can copy them or save a Word document. Starting or importing a recording never writes notes by itself.
+
+**Find something later.** **Search** looks through what was said, on this computer.
+
+**Light or dark.** The icon beside **Quit** in the sidebar switches the theme. **Settings** has the same choice, including **System**, which follows the desktop.
+
 Current build: functional development preview on Ubuntu 24.04 x86_64. Real Whisper, native-audio EmbeddingGemma 2 740M retrieval, on-demand Gemma 4 E2B summaries and synthetic PipeWire dual capture have been exercised. E2B summaries have been checked on a real counselling recording. Business meeting quality, physical-device behavior and multi-hour reliability still need testing. See [testing and measurements](docs/TESTING.md).
 
 ## Install or run the preview
