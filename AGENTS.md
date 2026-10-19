@@ -64,7 +64,7 @@ A private Linux desktop app (Ubuntu 24.04, x86_64) that records microphone and/o
 | `release/` | Hand-off artifacts: `voxloom_<version>_amd64.deb` plus `VoxLoom-<version>/` (the extracted package with `voxloom` symlink and `START HERE.txt`). Keep the previous version until the user says otherwise. | Ignored |
 | `/tmp/voxloom-*.wav` | Synthetic speech fixtures from `scripts/make-fixtures.sh`. | No |
 
-Audio, models and databases match `.gitignore` patterns (`*.flac`, `*.wav`, `*.bin`, `*.gguf`, `*.litertlm`, `*.db*`). Never force-add them.
+Audio, video, Word/SRT exports, models and databases match `.gitignore` patterns (`*.flac`, `*.wav`, `*.m4a`, `*.mp4`, `*.docx`, `*.srt`, `*.bin`, `*.gguf`, `*.litertlm`, `*.db*`, and the other formats import accepts). Never force-add them.
 
 ## Set up a development machine
 

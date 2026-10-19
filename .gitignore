@@ -12,6 +12,15 @@ __pycache__/
 *.wav
 *.flac
 *.mp3
+*.m4a
+*.ogg
+*.opus
+*.mp4
+*.mkv
+*.webm
+*.mov
+*.docx
+*.srt
 *.gguf
 *.bin
 *.litertlm
@@ -20,3 +29,5 @@ playwright-report/
 *.log
 src-tauri/engines/
 release/
+.env
+.env.*
