@@ -29,6 +29,8 @@ playwright-report/
 *.log
 src-tauri/engines/
 src-tauri/python/
+src-tauri/licenses/
+src-tauri/VERSIONS.txt
 release/
 .env
 .env.*

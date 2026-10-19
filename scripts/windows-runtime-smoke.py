@@ -4,7 +4,8 @@
 Every bundled program starts; FFmpeg writes and reads the 30-second-style FLAC
 segments capture produces, from raw PCM on stdin, in a folder with spaces and
 non-ASCII letters; the bundled Python loads LiteRT and the worker modules.
-Run python scripts/windows-runtime-smoke.py <folder with engines/ and python/>.
+Run python scripts/windows-runtime-smoke.py <folder with engines/ and python/>
+(src-tauri in a checkout, or a Windows preview folder).
 """
 import json
 import math
@@ -16,7 +17,8 @@ import sys
 import tempfile
 
 root = Path(sys.argv[1]).resolve()
-worker = Path(__file__).resolve().parent.parent / "worker"
+# A packaged folder carries its own worker; a checkout stages only the runtime.
+worker = root / "worker" if (root / "worker" / "engine.py").is_file() else Path(__file__).resolve().parent.parent / "worker"
 engines, python = root / "engines", root / "python" / "python.exe"
 env = dict(os.environ, PYTHONUTF8="1")
 results = {}

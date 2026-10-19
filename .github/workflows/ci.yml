@@ -1,11 +1,16 @@
-# Checks on Windows and Linux for every push. The Windows runtime (engines,
-# FFmpeg, Python with LiteRT) is cross-built on Linux from pinned sources and
-# cached; the real-engine job downloads the pinned models once and caches them.
+# Checks on Windows and Linux when anything but documentation changes; a push
+# that touches only Markdown or docs/ runs nothing. The Windows runtime comes
+# from windows-runtime.yml (cached); the real-engine job downloads the pinned
+# models once and caches them. Apps are built by apps.yml, not here.
 name: CI
 
 on:
   push:
+    paths-ignore: ["**.md", "docs/**", "LICENSE"]
+  # This repository's own branches are checked by their pushes; a pull request
+  # runs the checks only when it comes from a fork.
   pull_request:
+    paths-ignore: ["**.md", "docs/**", "LICENSE"]
   workflow_dispatch:
 
 permissions:
@@ -23,41 +28,10 @@ env:
 jobs:
   windows-runtime:
     name: Windows runtime
-    runs-on: ubuntu-24.04
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/cache/restore@v5
-        id: runtime
-        with:
-          path: windows-runtime
-          key: windows-runtime-${{ hashFiles('scripts/build-windows-runtime.sh', 'scripts/setup-runtimes.sh', 'scripts/patch-llama-completion.py', 'worker/requirements.windows.lock.txt') }}
-      - name: Build tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends mingw-w64 cmake nasm python3-venv espeak-ng ffmpeg
-      - name: Cross-build the runtime
-        if: steps.runtime.outputs.cache-hit != 'true'
-        run: |
-          bash scripts/build-windows-runtime.sh windows-runtime
-          rm -rf windows-runtime/build
-      - uses: actions/cache/save@v5
-        if: steps.runtime.outputs.cache-hit != 'true'
-        with:
-          path: windows-runtime
-          key: ${{ steps.runtime.outputs.cache-primary-key }}
-      - name: Speech fixtures
-        run: bash scripts/make-fixtures.sh fixtures
-      - uses: actions/upload-artifact@v7
-        with:
-          name: windows-runtime
-          path: windows-runtime
-          retention-days: 7
-      - uses: actions/upload-artifact@v7
-        with:
-          name: fixtures
-          path: fixtures
-          retention-days: 7
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
+    uses: ./.github/workflows/windows-runtime.yml
+    with:
+      fixtures: true
 
   windows:
     name: Windows
@@ -191,6 +165,7 @@ jobs:
 
   linux:
     name: Linux
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:

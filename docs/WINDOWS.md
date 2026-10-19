@@ -47,7 +47,7 @@ In the package, the runtime sits next to the app (`resources/engines`, `resource
 ## Known limits today
 
 - No recording on Windows (Phase 3).
-- No installer yet (Phase 4); CI builds a debug app that runs from a checkout.
+- No installer yet (Phase 4). The Apps workflow makes a preview zip instead: unzip it and open `voxloom.exe`. It carries the licences of everything it bundles (`licenses/`).
 - Speeds and accuracy are measured only on GitHub's Windows Server machines so far; a real Windows 11 laptop comes in Phase 5.
 
 ## Gotchas to keep in mind

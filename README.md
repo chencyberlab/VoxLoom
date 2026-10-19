@@ -32,6 +32,8 @@ Current build: functional development preview on Ubuntu 24.04 x86_64. Real Whisp
 
 ## Install or run the preview
 
+Released versions come with ready-made builds on this repository's GitHub Releases page: the Linux `.deb` and a Windows 11 preview zip (no recording yet; unzip it and open `voxloom.exe`).
+
 Install `release/voxloom_0.1.11_amd64.deb` to add VoxLoom to the applications menu. On this prepared Ubuntu computer, you can also open `release/VoxLoom-0.1.11/voxloom` directly; keep its `usr/` folder beside it. Both run the compiled native app without a development server.
 
 The downloaded development models and setup data have been removed for a fresh first-run test. Choose **Download & set up** when the app opens. Models are separate from the package and download only when requested. This preview has passed native launch, compact/expand and Quit checks; physical devices and business recordings still need manual testing.
