@@ -54,6 +54,54 @@ fn disk_too_full(free: Option<u64>) -> bool {
 mod tests {
     use super::*;
 
+    /// Each Windows preview runs from its own folder. Paths an older copy saved,
+    /// whether that copy is still on disk or deleted, must not be used.
+    #[test]
+    fn saved_tool_paths_follow_the_running_copy() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("VoxLoom-new");
+        fs::create_dir_all(app.join("engines")).unwrap();
+        for name in ["whisper-cli", "whisper-cli-generic"] {
+            fs::write(app.join("engines").join(platform::exe(name)), b"").unwrap();
+        }
+        let service = Service::open(
+            temp.path().join("data"),
+            temp.path().join("cache"),
+            app.clone(),
+            Arc::new(|_| {}),
+        )
+        .unwrap();
+        let current = service.default_tool("whisper_cli");
+        assert!(current.starts_with(&*app.to_string_lossy()), "{current}");
+        let shown = |s: &Arc<Service>| {
+            s.dispatch("settings", json!({})).unwrap()["whisper_cli"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        let old = temp.path().join("VoxLoom-old");
+        fs::create_dir_all(old.join("engines")).unwrap();
+        fs::write(old.join(platform::exe("voxloom")), b"").unwrap();
+        let old_engine = old.join("engines").join(platform::exe("whisper-cli"));
+        fs::write(&old_engine, b"").unwrap();
+        let deleted = temp.path().join("VoxLoom-deleted/engines").join(platform::exe("whisper-cli"));
+        for stale in [old_engine, deleted] {
+            let stale = stale.to_string_lossy();
+            service.db.lock().unwrap().set_setting("whisper_cli", &stale).unwrap();
+            assert_eq!(shown(&service), current, "{stale}");
+        }
+        // A path the user chose stays.
+        let custom = temp.path().join("my engines").join(platform::exe("whisper-cli"));
+        fs::create_dir_all(custom.parent().unwrap()).unwrap();
+        fs::write(&custom, b"").unwrap();
+        service.dispatch("save_settings", json!({"whisper_cli": custom})).unwrap();
+        assert_eq!(shown(&service), custom.to_string_lossy());
+        // Settings sends the default back on every save: nothing is stored.
+        service.dispatch("save_settings", json!({"whisper_cli": current})).unwrap();
+        assert_eq!(service.db.lock().unwrap().setting("whisper_cli", "unset"), "");
+        assert_eq!(shown(&service), current);
+    }
+
     #[test]
     fn accurate_transcription_falls_back_until_downloaded() {
         let temp = tempfile::tempdir().unwrap();
@@ -668,10 +716,7 @@ impl Service {
         }
     }
     fn python(&self) -> String {
-        self.db
-            .lock()
-            .unwrap()
-            .setting("python", &self.default_tool("python"))
+        self.tool(&self.db.lock().unwrap(), "python")
     }
     /// The interpreter for setup and Word export, which need only the standard
     /// library. Linux uses the system python3, which also creates the LiteRT
@@ -679,9 +724,30 @@ impl Service {
     /// Takes the locked library: callers already hold it.
     fn helper_python(&self, db: &Db) -> String {
         if cfg!(windows) {
-            db.setting("python", &self.default_tool("python"))
+            self.tool(db, "python")
         } else {
             "python3".into()
+        }
+    }
+    /// The engine or interpreter to run: the one saved in Settings, unless it
+    /// is gone or belongs to another copy of VoxLoom (a folder with its own
+    /// app beside `python/` or `engines/`). The Windows preview runs from
+    /// wherever it was unzipped, and saving any setting used to store that
+    /// copy's paths; after a newer copy replaced it, setup failed with "The
+    /// system cannot find the path specified".
+    fn tool(&self, db: &Db, tool: &str) -> String {
+        let saved = db.setting(tool, "");
+        let path = Path::new(&saved);
+        // A bare command name is looked up on PATH when it runs.
+        let bare = path.components().count() == 1;
+        let bundled = path
+            .ancestors()
+            .nth(2)
+            .is_some_and(|copy| copy.join(platform::exe("voxloom")).is_file());
+        if saved.is_empty() || bundled || (!bare && !path.is_file()) {
+            self.default_tool(tool)
+        } else {
+            saved
         }
     }
     fn default_tool(&self, tool: &str) -> String {
@@ -752,7 +818,7 @@ impl Service {
         drop(capture);
         let models =
             PathBuf::from(db.setting("models_dir", &self.data.join("models").to_string_lossy()));
-        let mut v = json!({"kind":kind,"cache_dir":self.cache,"models":{"whisper":self.whisper_model(&db),"embedding":models.join("embeddinggemma-2-740m.litertlm"),"summary":""},"threads":db.setting("threads","2").parse::<u32>().unwrap_or(2).clamp(1,8),"language":db.setting("language","en"),"whisper_cli":db.setting("whisper_cli",&self.default_tool("whisper_cli")),"llama_cli":db.setting("llama_cli",&self.default_tool("llama_cli"))});
+        let mut v = json!({"kind":kind,"cache_dir":self.cache,"models":{"whisper":self.whisper_model(&db),"embedding":models.join("embeddinggemma-2-740m.litertlm"),"summary":""},"threads":db.setting("threads","2").parse::<u32>().unwrap_or(2).clamp(1,8),"language":db.setting("language","en"),"whisper_cli":self.tool(&db,"whisper_cli"),"llama_cli":self.tool(&db,"llama_cli")});
         if kind == "summarize" {
             v["summary_style"] = json!(db.setting("summary_style", "counselling"));
             v["summary_prompt"] = json!(db.setting("summary_prompt", ""));
@@ -1302,10 +1368,10 @@ impl Service {
             "runtime_status" => {
                 let db = self.db.lock().unwrap();
                 let available = |tool: &str| {
-                    let path = db.setting(tool, &self.default_tool(tool));
+                    let path = self.tool(&db, tool);
                     Path::new(&path).is_file() || platform::on_path(path)
                 };
-                let python = db.setting("python", &self.default_tool("python"));
+                let python = self.tool(&db, "python");
                 let inference = process::python(&python)
                     .args([
                         "-I",
@@ -1365,7 +1431,7 @@ impl Service {
             "settings" => {
                 let db = self.db.lock().unwrap();
                 Ok(
-                    json!({"threads":db.setting("threads","2"),"language":db.setting("language","en"),"whisper_cli":db.setting("whisper_cli",&self.default_tool("whisper_cli")),"llama_cli":db.setting("llama_cli",&self.default_tool("llama_cli")),"python":db.setting("python",&self.default_tool("python")),"models_dir":db.setting("models_dir",&self.data.join("models").to_string_lossy()),"summary_profile":summary_profile(&db),"summary_model":db.setting("summary_model",""),"summary_style":db.setting("summary_style","counselling"),"summary_prompt":db.setting("summary_prompt",""),"transcription_profile":db.setting("transcription_profile","standard"),"appearance":db.setting("appearance","system"),"storage":self.data,"low_memory":true}),
+                    json!({"threads":db.setting("threads","2"),"language":db.setting("language","en"),"whisper_cli":self.tool(&db,"whisper_cli"),"llama_cli":self.tool(&db,"llama_cli"),"python":self.tool(&db,"python"),"models_dir":db.setting("models_dir",&self.data.join("models").to_string_lossy()),"summary_profile":summary_profile(&db),"summary_model":db.setting("summary_model",""),"summary_style":db.setting("summary_style","counselling"),"summary_prompt":db.setting("summary_prompt",""),"transcription_profile":db.setting("transcription_profile","standard"),"appearance":db.setting("appearance","system"),"storage":self.data,"low_memory":true}),
                 )
             }
             "save_settings" => {
@@ -1419,6 +1485,15 @@ impl Service {
                         {
                             return Err("Use only local executable and model paths".into());
                         }
+                        // Settings sends back every path it showed. Keep only
+                        // one the user chose, so the default follows the app.
+                        let v = if ["whisper_cli", "llama_cli", "python"].contains(&k)
+                            && v == self.default_tool(k)
+                        {
+                            ""
+                        } else {
+                            v
+                        };
                         db.set_setting(k, v)?;
                     }
                 }

@@ -237,4 +237,5 @@ Whisper, llama.cpp and the model files are not installed. `scripts/desktop.sh bu
 - Whisper output varies with exact chunk boundaries: the same audio cut a few milliseconds differently can gain or lose words. Compare runs, not single results.
 - whisper.cpp always encodes a full 30 s window, so short chunks cost almost as much as long ones.
 - Playwright uses `/opt/google/chrome/chrome` if present. Set `PLAYWRIGHT_CHROME`, or install Playwright's Chromium, on other machines.
+- Never store a path inside the app's resources in Settings or the library: the Windows preview runs from wherever it was unzipped. Read the Python, Whisper and llama paths through `Service::tool`, which ignores a saved path that is gone or belongs to another copy of VoxLoom.
 - `desktop.sh build` needs the engines in `.runtimes/…` or `$VOXLOOM_DATA_DIR/runtimes/…`. A cleanup that removes them breaks packaging until `build-app.sh` (or `setup-runtimes.sh --engines-only`) rebuilds them.

@@ -18,6 +18,19 @@ Meaningful unit checks cover pause-aligned chunk planning, skipped-speech retrie
 
 Version 0.1.1 added a first-run 1B/E2B summary selector. Six browser tests pass, including the request payload, displayed estimate and locked selection during setup for 1B, E2B and no summaries. These use an explicitly mocked bridge, without downloading models. A separate Rust regression executes the real offline provisioning script with tiny SHA-256-checked fixture files and a stubbed runtime readiness probe. It verifies core plus only the chosen summary model, saved E2B selection after success, core-only setup, missing-summary failure without changing the saved selection, and rejection of an unknown profile. Native checks on the final 0.1.1 package also passed launch, compact/expand and Quit, with all three observed processes released. The setup action remains fully visible at 900×720 in the browser checks. No user library or installed app data is reset during updates.
 
+## Version 0.1.17: Windows setup works after moving to a newer preview
+
+Tested on a 4-core cloud VM (Ubuntu 24.04, FFmpeg 6.1.1, no audio devices) and on GitHub's Windows Server 2025 machines.
+
+Validation:
+- Regression test `saved_tool_paths_follow_the_running_copy`:
+  - A saved engine path from an older copy that is still on disk is not used: Settings shows the running copy's engine.
+  - Nor is a path from a copy that was deleted.
+  - A custom path the user chose is kept.
+  - Saving the default stores nothing.
+  - With the fix disabled, the test fails at the first stale path.
+- Fast set: 45 Python checks, 29 Rust unit checks plus the offline setup integration check, 14 browser checks, TypeScript/privacy/version, and clippy for desktop and the Windows target.
+
 ## Version 0.1.16: recording on Windows (Windows phase 3)
 
 Tested on a 4-core cloud VM (Ubuntu 24.04, FFmpeg 6.1.1, no audio devices) and on GitHub's Windows Server 2025 machines (bundled FFmpeg 7.1.5, no audio devices).

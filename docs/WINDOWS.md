@@ -58,6 +58,7 @@ In the package, the runtime sits next to the app (`resources/engines`, `resource
 - `python3` on Windows opens the Microsoft Store; always use the bundled interpreter. `preexec_fn` and `resource` don't exist there, and `HOME` is usually unset.
 - The embeddable Python takes `sys.path` only from its `._pth` file, which leaves out the script's own folder. A worker script that imports a neighbour (`notes.py`) adds its own folder first; `tests/test_worker.py` runs the scripts with `-P` to catch a new one that doesn't.
 - Windows won't delete or rename files another process has open, such as a recording being played.
+- Each preview runs from the folder it was unzipped to, so never store a path inside the app's own files. Settings used to save the bundled Python's path; after a newer preview replaced the folder, setup failed with "The system cannot find the path specified". `Service::tool` now ignores a saved path that is gone or belongs to another copy.
 - WASAPI loopback delivers no packets while nothing is playing. The timeline writes silence so segment offsets match wall-clock time; never write captured audio straight to FFmpeg.
 - Headsets switching devices mid-meeting must never leave capture silently recording a dead device. Capture follows the default, replaces a lost device, and shows a notice until it has one.
 - The `windows` crate version must stay the one Tauri already uses (0.62 today), so the app carries one copy.

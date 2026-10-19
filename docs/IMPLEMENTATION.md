@@ -187,3 +187,11 @@ Verified: see TESTING.md, "Version 0.1.16".
 Release result: built by the Apps workflow when this version reaches main: voxloom_0.1.16_amd64.deb and VoxLoom-0.1.16-windows-x64-preview.zip on the draft release v0.1.16, with their SHA-256 in its notes and SHA256SUMS.txt.
 Known limitations: recording on Windows has run only on machines without audio devices. Real microphones, loopback, headset switching and the privacy switch need a Windows 11 laptop. The preview is unsigned and has no installer (phase 4).
 Next: user records on a Windows 11 laptop with the 0.1.16 preview.
+
+
+Version 0.1.17: Windows setup works after moving to a newer preview
+Implemented: on Windows 0.1.16, model setup failed with "The system cannot find the path specified" and the downloaded models looked unreadable. Cause: Settings' Save button sends back every setting it shows, including the full paths of the bundled Python and engines, and those were stored. They pointed into the folder the preview was unzipped to. Once a newer preview ran from another folder and the old one was deleted, setup, the model check and transcription started a Python that no longer existed. Recording was unaffected because it uses only FFmpeg. Now `Service::tool` uses a saved Python, Whisper or llama path only while it exists and does not belong to another copy of VoxLoom (a folder with its own `voxloom.exe` beside `python/` or `engines/`); otherwise it uses the running copy's own. Saving a path equal to the default stores nothing, so the default keeps following the app. A custom path chosen under Advanced settings is kept. Libraries that already hold stale paths recover without the user doing anything. Linux paths never move, so Linux behaves as before.
+Verified: see TESTING.md, "Version 0.1.17".
+Release result: built by the Apps workflow when this version reaches main: voxloom_0.1.17_amd64.deb and VoxLoom-0.1.17-windows-x64-preview.zip on the draft release v0.1.17, with their SHA-256 in its notes and SHA256SUMS.txt.
+Known limitations: the fix was checked with a regression test and on GitHub's Windows machines, not yet on the user's laptop.
+Next: user reruns model setup on Windows with 0.1.17, then tests transcription of recordings.
