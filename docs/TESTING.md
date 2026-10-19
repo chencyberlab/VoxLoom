@@ -23,11 +23,12 @@ Version 0.1.1 added a first-run 1B/E2B summary selector. Six browser tests pass,
 Tested on a 4-core cloud VM (Ubuntu 24.04, FFmpeg 6.1.1, no audio devices) and on GitHub's Windows Server 2025 machines.
 
 Validation:
-- `scripts/installer-smoke-windows.py`, run by the Apps workflow on the setup it has just built. For each install mode (`/CurrentUser` into `%LOCALAPPDATA%\VoxLoom`, `/AllUsers` into `C:\Program Files\VoxLoom`) it installs twice, silently:
+- `scripts/installer-smoke-windows.py`, run by the Apps workflow on the setup it has just built. For each install mode (`/CurrentUser` into `%LOCALAPPDATA%\Programs\VoxLoom`, `/AllUsers` into `C:\Program Files\VoxLoom`) it installs twice, silently:
   - It checks the program, uninstaller, engines, FFmpeg, Python, worker, model manifest and licences are in place, with a Start menu shortcut and an Apps entry.
   - It launches the installed app and closes it (`native-smoke-windows.py`), and runs every bundled program from the install folder (`windows-runtime-smoke.py`), which also leaves Python caches there.
   - It puts a library, a recording, a model, a cache file, browser data and Windows' microphone record in place, then uninstalls: once keeping recordings, once with `/DELETEDATA`.
   - It fails if the program folder, a shortcut, the Apps entry, the remembered install location, the installer language, the microphone record, the models, the cache, the browser data or anything in `%APPDATA%\org.voxloom.desktop` is left. Kept: only `library.db` and `recordings`; with `/DELETEDATA`, nothing.
+- `scripts/native-smoke.py` (Linux launch check) waited fixed times between key presses and clicks; on a cold GitHub machine the first Apps build of 0.1.19 clicked before the page had loaded and failed. It now waits for each window change and tries a lost click again. Three local runs passed, and so did a run with the first float and Quit clicks deliberately left out.
 - The uninstall hooks compiled with warnings as errors in a stub uninstaller (`makensis -WX`) before the first Windows build.
 - `package-windows-preview.py` now takes the bundled files from the Windows Tauri settings, as the installer does; with stand-in files it assembles the same folder as before.
 - Fast set: 45 Python checks, 29 Rust unit checks plus the offline setup integration check, 14 browser checks, TypeScript/privacy/version, and clippy for desktop and the Windows target (with tests).

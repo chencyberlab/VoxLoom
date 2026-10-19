@@ -42,6 +42,15 @@ def windows():
     return subprocess.check_output(["xwininfo", "-root", "-tree"], text=True)
 
 
+def shows(*texts, seconds=10):
+    deadline = time.time() + seconds
+    while not all(text in windows() for text in texts):
+        if time.time() > deadline:
+            return False
+        time.sleep(.2)
+    return True
+
+
 def descendants(root):
     processes = {}
     for entry in Path('/proc').iterdir():
@@ -72,21 +81,35 @@ with tempfile.TemporaryDirectory(prefix="voxloom-native-") as directory:
         assert '"VoxLoom"' in windows(), windows()
         subprocess.run(["import", "-window", "root", "/tmp/voxloom-native-setup.png"], check=True)
         # First run opens model setup. Dismiss without downloading anything.
+        # On a cold machine the page can still be loading, and the key or the
+        # click is lost: try again, but only once the window has had time to
+        # float, since a second click could land on the floating recorder.
         key = x11.XKeysymToKeycode(display, 0xff1b)
-        xtst.XTestFakeKeyEvent(display, key, 1, 0)
-        xtst.XTestFakeKeyEvent(display, key, 0, 0)
-        x11.XFlush(display)
-        time.sleep(.7)
-        subprocess.run(["import", "-window", "root", "/tmp/voxloom-native-home.png"], check=True)
-        click(1185, 34)
+        for attempt in range(3):
+            xtst.XTestFakeKeyEvent(display, key, 1, 0)
+            xtst.XTestFakeKeyEvent(display, key, 0, 0)
+            x11.XFlush(display)
+            time.sleep(.7)
+            if attempt == 0:
+                subprocess.run(["import", "-window", "root", "/tmp/voxloom-native-home.png"], check=True)
+            click(1185, 34)
+            if shows('VoxLoom · Recorder', '390x92'):
+                break
         assert 'VoxLoom · Recorder' in windows(), windows()
         assert '390x92' in windows(), windows()
         subprocess.run(["import", "-window", "root", "/tmp/voxloom-native-mini.png"], check=True)
         click(335, 46)
+        assert shows('"VoxLoom"', '1240x820'), windows()
         peak = max(peak, measure.sample(app.pid)[0])
         # Main restored; explicit Quit in the sidebar.
-        click(179, 791)
-        app.wait(timeout=10)
+        for attempt in range(2):
+            click(179, 791)
+            try:
+                app.wait(timeout=10)
+                break
+            except subprocess.TimeoutExpired:
+                pass
+        assert app.poll() is not None, "Quit did not close the app"
         for _ in range(40):
             alive = []
             for pid in observed:

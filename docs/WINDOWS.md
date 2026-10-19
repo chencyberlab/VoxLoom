@@ -6,7 +6,7 @@ Windows 11 x64 is a second platform of the same codebase. Linux stays fully supp
 
 One installer with everything the app needs: VoxLoom, its own Python with LiteRT, FFmpeg, and the speech and summary engines. Nothing else to install: no Python, no FFmpeg, no Visual C++ runtime prompts, and WebView2 is part of Windows 11. Only the models are downloaded, through the existing first-run setup (or imported offline), because they are several GB and never ship in the package.
 
-Library and cache: `%LOCALAPPDATA%\org.voxloom.desktop` and its `cache` folder. Local, not Roaming (Roaming can sync to a server on company networks), and not `%LOCALAPPDATA%\VoxLoom`, which is where the per-user installer puts the program. The WebView2 profile (`EBWebView`) and the downloaded models live in the same folder. Uninstalling is described below.
+Library and cache: `%LOCALAPPDATA%\org.voxloom.desktop` and its `cache` folder. Local, not Roaming (Roaming can sync to a server on company networks), and apart from `%LOCALAPPDATA%\Programs\VoxLoom`, which is where the per-user installer puts the program. The WebView2 profile (`EBWebView`) and the downloaded models live in the same folder. Uninstalling is described below.
 
 ## Status
 
@@ -50,7 +50,7 @@ In the package, the runtime sits next to the app (`resources/engines`, `resource
 
 ## Installing and uninstalling
 
-`VoxLoom-<version>-windows-x64-setup.exe` asks whether to install for the current user only (`%LOCALAPPDATA%\VoxLoom`, no administrator rights) or for everyone on the computer (`C:\Program Files\VoxLoom`, needs an administrator). It adds a Start menu shortcut and an entry in Settings → Apps. The package holds the program, its Python with LiteRT, FFmpeg, the engines and the licences of everything bundled (`licenses/`); models are downloaded by first-run setup. Installing a newer version over an older one keeps everything the user made.
+`VoxLoom-<version>-windows-x64-setup.exe` asks whether to install for the current user only (`%LOCALAPPDATA%\Programs\VoxLoom`, Windows' folder for per-user programs; no administrator rights) or for everyone on the computer (`C:\Program Files\VoxLoom`, needs an administrator). It adds a Start menu shortcut and an entry in Settings → Apps. The package holds the program, its Python with LiteRT, FFmpeg, the engines and the licences of everything bundled (`licenses/`); models are downloaded by first-run setup. Installing a newer version over an older one keeps everything the user made.
 
 Uninstalling (Settings → Apps → VoxLoom → Uninstall, or `uninstall.exe` in the program folder) removes:
 

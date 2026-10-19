@@ -33,7 +33,7 @@ UNINSTALL = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\VoxLoom"
 REMEMBERED = r"Software\VoxLoom\VoxLoom"
 MICROPHONE = r"Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone\NonPackaged"
 MODES = [
-    ("/CurrentUser", local / "VoxLoom", winreg.HKEY_CURRENT_USER, roaming / r"Microsoft\Windows\Start Menu\Programs"),
+    ("/CurrentUser", local / "Programs" / "VoxLoom", winreg.HKEY_CURRENT_USER, roaming / r"Microsoft\Windows\Start Menu\Programs"),
     ("/AllUsers", Path(os.environ["ProgramW6432"]) / "VoxLoom", winreg.HKEY_LOCAL_MACHINE,
      Path(os.environ["ProgramData"]) / r"Microsoft\Windows\Start Menu\Programs"),
 ]
@@ -69,15 +69,18 @@ for mode, folder, root, start_menu in MODES:
     for delete_data in (False, True):
         case = f"{mode} {'/DELETEDATA' if delete_data else 'keeping recordings'}"
         run(setup, "/S", mode)
+        assert key_exists(root, UNINSTALL), f"{case}: no uninstall entry"
+        with winreg.OpenKey(root, UNINSTALL) as key:
+            location = winreg.QueryValueEx(key, "InstallLocation")[0].strip('"')
+        assert Path(location) == folder, f"{case}: installed into {location}, not {folder}"
         missing = [part for part in INSTALLED if not (folder / part).is_file()]
         assert not missing, f"{case}: missing after install: {missing}"
         assert (start_menu / "VoxLoom.lnk").is_file(), f"{case}: no Start menu shortcut"
-        assert key_exists(root, UNINSTALL), f"{case}: no uninstall entry"
         if programs and not programs.exists():
             files = sorted(p for p in folder.rglob("*") if p.suffix.lower() in {".exe", ".dll", ".pyd"})
             programs.write_text(
                 f"Every program file {setup.name} installs, relative to the VoxLoom folder\n"
-                "(C:\\Program Files\\VoxLoom or %LOCALAPPDATA%\\VoxLoom), with its SHA-256.\n\n"
+                "(C:\\Program Files\\VoxLoom or %LOCALAPPDATA%\\Programs\\VoxLoom), with its SHA-256.\n\n"
                 + "".join(f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.relative_to(folder)}\n" for p in files),
                 encoding="utf-8", newline="\r\n")
         app = folder / "voxloom.exe"
