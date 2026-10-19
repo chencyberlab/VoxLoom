@@ -374,7 +374,8 @@ class Provisioning(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory(prefix="voxloom test café ")
         self.root = Path(self.tmp.name)
         self.body = b"local fixture model"
-        self.model = {"id":"fixture", "name":"Fixture", "filename":"model.bin", "bytes":len(self.body), "sha256":hashlib.sha256(self.body).hexdigest()}
+        self.model = {"id":"fixture", "name":"Fixture", "filename":"model.bin", "bytes":len(self.body), "sha256":hashlib.sha256(self.body).hexdigest(),
+                      "repo":"example/fixture", "revision":"0"*40}
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -399,6 +400,49 @@ class Provisioning(unittest.TestCase):
         with self.assertRaises(ValueError):
             provision.install(self.model, target, source)
         self.assertFalse((target / "model.bin").exists())
+
+    def test_damaged_partial_download_is_removed_so_retry_can_work(self):
+        import urllib.error
+        import urllib.request
+        models = self.root / "models"
+        models.mkdir()
+        part = models / "model.bin.part"
+        refused = urllib.error.HTTPError("https://example.invalid", 416, "Range Not Satisfiable", {}, None)
+        # Full length but wrong bytes: the server refuses the resume offset for
+        # ever, so a retry can only succeed after the file is gone.
+        part.write_bytes(b"xxxxx fixture model")
+        with patch.object(urllib.request, "urlopen", side_effect=refused):
+            with self.assertRaisesRegex(ValueError, "removed"):
+                provision.install(self.model, models)
+        self.assertFalse(part.exists())
+        self.assertFalse((models / "model.bin").exists())
+        # A complete, correct partial file is promoted without another byte.
+        part.write_bytes(self.body)
+        with patch.object(urllib.request, "urlopen", side_effect=refused):
+            provision.install(self.model, models)
+        self.assertTrue(provision.valid(models / "model.bin", self.model))
+
+    def test_mismatched_download_is_removed_instead_of_left_for_the_user(self):
+        import urllib.request
+        models = self.root / "models"
+        models.mkdir()
+        class Response:
+            status = 200
+            headers = {}
+            def __init__(self, data): self.data = data
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+            def read(self, size):
+                data, self.data = self.data, b""
+                return data
+        with patch.object(urllib.request, "urlopen", return_value=Response(b"local fixture mode!")):
+            with self.assertRaisesRegex(ValueError, "removed"):
+                provision.install(self.model, models)
+        self.assertFalse((models / "model.bin.part").exists())
+        self.assertFalse((models / "model.bin").exists())
+        with patch.object(urllib.request, "urlopen", return_value=Response(self.body)):
+            provision.install(self.model, models)
+        self.assertTrue(provision.valid(models / "model.bin", self.model))
 
     def test_pinned_manifest_has_only_full_embedding_and_manual_gemma4(self):
         models = json.loads(provision.MANIFEST.read_text())["models"]

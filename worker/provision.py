@@ -71,9 +71,15 @@ def install(model, destination, import_path=None):
         except urllib.error.HTTPError as error:
             if error.code in (401, 403):
                 raise ValueError(f"Access requires license acceptance. Visit {model['license_url']}, download through your browser, then use --offline-import. Credentials are never collected.") from None
-            if error.code == 416 and valid(part, model):
-                part.replace(target)
-                return
+            if error.code == 416:
+                if valid(part, model):
+                    part.replace(target)
+                    return
+                # The server refuses the resume offset: the partial file is
+                # already full length (or longer) but wrong. Every retry would
+                # hit the same answer, so start over.
+                part.unlink(missing_ok=True)
+                raise ValueError(f"{model['name']}: the partial download was damaged and has been removed; retry") from None
             raise ValueError(f"Download returned HTTP {error.code}; retry or import from disk") from None
         with response:
             if response.status != 206:
@@ -91,7 +97,10 @@ def install(model, destination, import_path=None):
                 output.flush()
                 os.fsync(output.fileno())
     if not valid(part, model):
-        raise ValueError(f"{model['name']}: SHA-256 mismatch; remove the .part file and retry")
+        # Nothing in the app lets the user delete this file by hand, and a
+        # retry would resume from the damaged bytes.
+        part.unlink(missing_ok=True)
+        raise ValueError(f"{model['name']}: SHA-256 mismatch; the damaged download has been removed, retry")
     os.chmod(part, 0o600)
     part.replace(target)
     emit(model=model["id"], status="verified", received=model["bytes"], total=model["bytes"])
