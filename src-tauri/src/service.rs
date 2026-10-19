@@ -330,6 +330,155 @@ mod tests {
         }
         reopened.shutdown();
     }
+
+    fn live_jobs(service: &Service, meeting: &str, status: Option<&str>) -> i64 {
+        service.db.lock().unwrap().conn.query_row(
+            "SELECT count(*) FROM jobs WHERE meeting_id=? AND kind='transcribe_live' AND (?2 IS NULL OR status=?2)",
+            params![meeting, status],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn live_request_registers_segments_closed_since_the_last_tick() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = Service::open(
+            temp.path().join("data"),
+            temp.path().join("cache"),
+            temp.path().into(),
+            Arc::new(|_| {}),
+        )
+        .unwrap();
+        // Stop the scheduler so only request() can register the segment.
+        service.quit.store(true, Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(400));
+        let folder = temp.path().join("data/recordings/meeting");
+        fs::create_dir_all(&folder).unwrap();
+        for name in ["s0000-mic-000000.flac", "s0000-mic-000001.flac"] {
+            fs::write(folder.join(name), b"").unwrap();
+        }
+        service.db.lock().unwrap().create("meeting", DEFAULT_TITLE, 0, "recording").unwrap();
+        *service.capture.lock().unwrap() =
+            Some(Capture::new("meeting".into(), folder.clone(), Some("mic".into()), None));
+        let request = service.request("transcribe_live", Some("meeting")).unwrap();
+        assert_eq!(request["finalize"], false);
+        let paths = |key: &str| {
+            request[key]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|t| t["path"].as_str().unwrap().to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(paths("context_tracks").len(), 1);
+        assert!(paths("context_tracks")[0].ends_with("s0000-mic-000000.flac"));
+        assert_eq!(paths("tracks"), paths("context_tracks"));
+        assert_eq!(request["context_tracks"][0]["offset_ms"], 0);
+        // A second request finds the segment registered, not registered twice.
+        service.request("transcribe_live", Some("meeting")).unwrap();
+        assert_eq!(service.db.lock().unwrap().tracks("meeting").unwrap().len(), 1);
+        *service.capture.lock().unwrap() = None;
+    }
+
+    #[test]
+    fn pause_and_stop_both_queue_the_final_live_pass() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = Service::open(
+            temp.path().join("data"),
+            temp.path().join("cache"),
+            temp.path().into(),
+            Arc::new(|_| {}),
+        )
+        .unwrap();
+        // Holding the inference lock keeps the scheduler from running the job.
+        let _busy = service.inference.lock().unwrap();
+        fs::write(temp.path().join("data/models/ggml-base.en.bin"), b"base").unwrap();
+        let folder = temp.path().join("data/recordings/meeting");
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join("s0000-system-000000.flac"), b"").unwrap();
+        service.db.lock().unwrap().create("meeting", DEFAULT_TITLE, 0, "recording").unwrap();
+        *service.capture.lock().unwrap() =
+            Some(Capture::new("meeting".into(), folder, None, Some("monitor".into())));
+        service.finish_capture(false).unwrap();
+        assert!(service.capture.lock().unwrap().as_ref().unwrap().paused);
+        assert_eq!(service.db.lock().unwrap().tracks("meeting").unwrap().len(), 1);
+        assert_eq!(live_jobs(&service, "meeting", Some("pending")), 1);
+        // The pass after Pause finalises: nothing is read as a growing file.
+        let request = service.request("transcribe_live", Some("meeting")).unwrap();
+        assert_eq!(request["finalize"], true);
+        assert!(request["growing"].as_array().unwrap().is_empty());
+        service.finish_capture(true).unwrap();
+        assert!(service.capture.lock().unwrap().is_none());
+        assert_eq!(live_jobs(&service, "meeting", None), 1);
+        drop(_busy);
+        service.shutdown();
+    }
+
+    #[test]
+    fn interrupted_recordings_resume_transcription_and_regain_their_length() {
+        let temp = tempfile::tempdir().unwrap();
+        let open = || {
+            Service::open(
+                temp.path().join("data"),
+                temp.path().join("cache"),
+                temp.path().into(),
+                Arc::new(|_| {}),
+            )
+            .unwrap()
+        };
+        let service = open();
+        fs::write(temp.path().join("data/models/ggml-base.en.bin"), b"base").unwrap();
+        let folder = temp.path().join("data/recordings/lost");
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join("session-0000.json"), br#"{"offset_ms":0}"#).unwrap();
+        for name in ["s0000-mic-000000.flac", "s0000-mic-000001.flac"] {
+            fs::write(folder.join(name), b"").unwrap();
+        }
+        {
+            let db = service.db.lock().unwrap();
+            // The host died mid-recording: the row still says "recording".
+            db.create("lost", DEFAULT_TITLE, 0, "recording").unwrap();
+            db.create("done", DEFAULT_TITLE, 5000, "ready").unwrap();
+            db.add_track("done", &temp.path().join("s0000-mic-000000.flac"), "mic", 0).unwrap();
+            for id in ["half", "clean"] {
+                fs::create_dir_all(temp.path().join("data/recordings").join(id)).unwrap();
+            }
+            // Every file was read, but the last pass carried an unfinished sentence.
+            db.create("half", DEFAULT_TITLE, 0, "interrupted").unwrap();
+            db.add_track("half", &temp.path().join("half.flac"), "mic", 0).unwrap();
+            db.conn.execute("UPDATE audio_tracks SET transcribed=1 WHERE meeting_id='half'", []).unwrap();
+            db.conn.execute(r#"INSERT INTO asr_progress(meeting_id,stream,covered_ms,overlap_text) VALUES('half','mic:s0000',28000,'{"floor_db":-50.0,"pending":{"start_ms":27000,"end_ms":28000,"text":"and so we"}}')"#, []).unwrap();
+            // Fully transcribed and flushed: nothing is owed.
+            db.create("clean", DEFAULT_TITLE, 0, "interrupted").unwrap();
+            db.add_track("clean", &temp.path().join("clean.flac"), "mic", 0).unwrap();
+            db.conn.execute("UPDATE audio_tracks SET transcribed=1 WHERE meeting_id='clean'", []).unwrap();
+            db.conn.execute(r#"INSERT INTO asr_progress(meeting_id,stream,covered_ms,overlap_text) VALUES('clean','mic:s0000',28000,'{"floor_db":-50.0}')"#, []).unwrap();
+        }
+        service.shutdown();
+        drop(service);
+        let service = open();
+        let tracks = service.db.lock().unwrap().tracks("lost").unwrap();
+        assert_eq!(tracks.len(), 2);
+        assert_eq!(tracks[1].offset_ms, 30000);
+        // Queued at start-up; the scheduler may already have tried it, so any
+        // status counts. A new library with nothing to recover queues nothing.
+        assert_eq!(live_jobs(&service, "lost", None), 1);
+        assert_eq!(live_jobs(&service, "half", None), 1);
+        assert_eq!(live_jobs(&service, "clean", None), 0);
+        assert_eq!(live_jobs(&service, "done", None), 0);
+        let duration = |id: &str| -> i64 {
+            service.db.lock().unwrap().conn.query_row("SELECT duration_ms FROM meetings WHERE id=?", [id], |r| r.get(0)).unwrap()
+        };
+        assert_eq!(duration("lost"), 0);
+        service.ingest("lost", &json!({"type":"track_duration","track_id":tracks[1].id,"duration_ms":12000})).unwrap();
+        service.ingest("lost", &json!({"type":"track_duration","track_id":tracks[0].id,"duration_ms":30000})).unwrap();
+        assert_eq!(duration("lost"), 42000);
+        let done = service.db.lock().unwrap().tracks("done").unwrap();
+        service.ingest("done", &json!({"type":"track_duration","track_id":done[0].id,"duration_ms":90000})).unwrap();
+        assert_eq!(duration("done"), 5000);
+        service.shutdown();
+    }
 }
 fn text<'a>(v: &'a Value, key: &str) -> Result<&'a str> {
     v[key].as_str().ok_or_else(|| format!("Missing {key}"))
@@ -414,6 +563,9 @@ impl Service {
         });
         Ok(s)
     }
+    /// Registers the segment files of recordings that ended in a crash or
+    /// power loss and queues the transcription they were still owed. Their
+    /// audio is complete on disk; only the host stopped.
     fn recover_tracks(&self) -> Result<()> {
         let db = self.db.lock().unwrap();
         for meeting in db.meetings()?.iter().filter(|m| m.status == "interrupted") {
@@ -462,6 +614,21 @@ impl Service {
                         offset + index * 30000
                     },
                 )?;
+            }
+            // Audio that no live pass has read yet (including the file that
+            // was still being written), or a sentence left unfinished by the
+            // last pass, still needs a final pass or its words never reach
+            // the transcript.
+            let owed: i64 = db
+                .conn
+                .query_row(
+                    "SELECT (SELECT count(*) FROM audio_tracks WHERE meeting_id=?1 AND transcribed=0)+(SELECT count(*) FROM asr_progress WHERE meeting_id=?1 AND overlap_text LIKE '%\"pending\"%')",
+                    [&meeting.id],
+                    |r| r.get(0),
+                )
+                .map_err(err)?;
+            if owed > 0 && self.whisper_model(&db).is_file() {
+                let _ = db.enqueue(&meeting.id, "transcribe_live");
             }
         }
         Ok(())
@@ -939,6 +1106,10 @@ impl Service {
         match v["type"].as_str().unwrap_or("") {
             "track_duration" => {
                 db.conn.execute("INSERT OR REPLACE INTO audio_durations(track_id,duration_ms) SELECT id,? FROM audio_tracks WHERE id=? AND meeting_id=?", params![v["duration_ms"].as_i64(),v["track_id"].as_str(),meeting]).map_err(err)?;
+                // A recording cut short by a crash never reached Stop, so its
+                // length is whatever the last Pause wrote, or 0. The decoded
+                // segments say how long it really was.
+                db.conn.execute("UPDATE meetings SET duration_ms=MAX(duration_ms,COALESCE((SELECT offset_ms+? FROM audio_tracks WHERE id=? AND meeting_id=?),0)) WHERE id=? AND status='interrupted'", params![v["duration_ms"].as_i64(),v["track_id"].as_str(),meeting,meeting]).map_err(err)?;
             }
             "asr_batch" => {
                 let tx = db.conn.transaction().map_err(err)?;
