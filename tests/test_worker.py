@@ -2,6 +2,7 @@ from array import array
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import socket
 import sys
@@ -103,6 +104,54 @@ class InferenceUnits(unittest.TestCase):
     def test_missing_model_is_real_error(self):
         with self.assertRaisesRegex(ValueError, "not installed"):
             engine.ensure_model("/tmp/nonexistent-voxloom-test-model.bin")
+
+    def test_pinned_models_are_hashed_once_until_they_change(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            body = b"fixture whisper weights"
+            manifest = root / "manifest.json"
+            manifest.write_text(json.dumps({"models": [{"id": "whisper", "filename": "ggml-base.en.bin", "bytes": len(body), "sha256": hashlib.sha256(body).hexdigest()}]}), encoding="utf-8")
+            model = root / "ggml-base.en.bin"
+            model.write_bytes(body)
+            cache = root / "cache" / "verified-models.json"
+            hashed = []
+            real_digest = provision.digest
+            def counting_digest(path):
+                hashed.append(path)
+                return real_digest(path)
+            with patch.object(provision, "MANIFEST", manifest), patch.object(provision, "digest", side_effect=counting_digest), \
+                    patch.object(engine, "VERIFIED_MODELS", str(cache)):
+                engine.ensure_model(model)
+                engine.ensure_model(model)
+                self.assertEqual(len(hashed), 1)
+                self.assertEqual(json.loads(cache.read_text(encoding="utf-8"))[str(model.resolve())][0], len(body))
+                # Same size, new content: the changed mtime forces a fresh hash, which fails.
+                model.write_bytes(b"fixture whisper weighty")
+                os.utime(model, ns=(model.stat().st_atime_ns, model.stat().st_mtime_ns + 1_000_000))
+                with self.assertRaisesRegex(ValueError, "SHA-256"):
+                    engine.ensure_model(model)
+                self.assertEqual(len(hashed), 2)
+                # Rewritten correctly: hashed once more, then trusted again.
+                model.write_bytes(body)
+                os.utime(model, ns=(model.stat().st_atime_ns, model.stat().st_mtime_ns + 2_000_000))
+                engine.ensure_model(model)
+                engine.ensure_model(model)
+                self.assertEqual(len(hashed), 3)
+                # A damaged cache file is ignored, not fatal.
+                cache.write_text("not json", encoding="utf-8")
+                engine.ensure_model(model)
+                self.assertEqual(len(hashed), 4)
+            # Without a cache location (tests, scripts) every call verifies.
+            with patch.object(provision, "MANIFEST", manifest), patch.object(provision, "digest", side_effect=counting_digest), \
+                    patch.object(engine, "VERIFIED_MODELS", None):
+                engine.ensure_model(model)
+                engine.ensure_model(model)
+                self.assertEqual(len(hashed), 6)
+            # Files the manifest does not name (custom GGUFs) are never hashed.
+            custom = root / "my-own.gguf"
+            custom.write_bytes(b"x")
+            with patch.object(provision, "MANIFEST", manifest), patch.object(provision, "digest", side_effect=AssertionError("hashed")):
+                engine.ensure_model(custom)
 
     def test_empty_evidence_does_not_load_model(self):
         rows = []

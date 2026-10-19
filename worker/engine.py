@@ -129,6 +129,9 @@ def clip(source, target, start, end, minimum_ms=0):
     run([*argv, "-c:a", "pcm_s16le", str(target)])
 
 
+VERIFIED_MODELS = None  # <cache_dir>/verified-models.json once main() has read the request.
+
+
 def ensure_model(path):
     path = Path(path)
     if not path.is_file():
@@ -137,9 +140,43 @@ def ensure_model(path):
     # copies. Custom GGUFs are explicitly user-selected and remain unverified.
     import provision
     for model in json.loads(provision.MANIFEST.read_text(encoding="utf-8"))["models"]:
-        if path.name == model["filename"] and not provision.valid(path, model):
-            raise ValueError("Local model failed its pinned SHA-256 check. Re-import or retry model setup.")
+        if path.name == model["filename"]:
+            verify_pinned(path, model, provision)
     return str(path.resolve())
+
+
+def verify_pinned(path, model, provision):
+    """Hashing the 2.8 GB summary model takes seconds of disk and CPU on a
+    laptop, and every worker is a fresh process, so it used to happen before
+    each summary batch and each live pass. A file whose size and modification
+    time have not changed since it last passed is trusted; any change, a
+    different pinned hash, or a missing cache hashes it again."""
+    resolved = str(path.resolve())
+    stat = path.stat()
+    seen = [stat.st_size, stat.st_mtime_ns, model["sha256"]]
+    cache = Path(VERIFIED_MODELS) if VERIFIED_MODELS else None
+    known = {}
+    if cache is not None and cache.is_file():
+        try:
+            known = json.loads(cache.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            known = {}
+        if not isinstance(known, dict):
+            known = {}
+    if known.get(resolved) == seen:
+        return
+    if not provision.valid(path, model):
+        raise ValueError("Local model failed its pinned SHA-256 check. Re-import or retry model setup.")
+    if cache is None:
+        return
+    known[resolved] = seen
+    try:
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        draft = cache.with_name(cache.name + ".tmp")
+        draft.write_text(json.dumps(known), encoding="utf-8")
+        draft.replace(cache)
+    except OSError:
+        pass  # Only a speed-up: the next worker hashes the file again.
 
 
 SEGMENTED = re.compile(r"(s\d+)-(?:mic|system)-\d+\.flac$")
@@ -874,6 +911,9 @@ def main():
     args = parser.parse_args()
     request = json.loads(args.request.read_text(encoding="utf-8"))
     os.umask(0o077)
+    global VERIFIED_MODELS
+    if request.get("cache_dir"):
+        VERIFIED_MODELS = Path(request["cache_dir"]) / "verified-models.json"
     with args.response.open("w", encoding="utf-8") as output:
         def emit(**payload):
             output.write(json.dumps(payload) + "\n")
