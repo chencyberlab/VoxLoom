@@ -17,6 +17,8 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
 
+# Every check after npm ci runs even if an earlier one failed, so one run
+# reports all failures; the job still fails.
 jobs:
   windows:
     name: Windows
@@ -46,23 +48,30 @@ jobs:
           restore-keys: windows-cargo-
       - run: npm ci
       - name: TypeScript, privacy rules and version
+        if: ${{ !cancelled() }}
         run: npm run check
       - name: Python unit tests
+        if: ${{ !cancelled() }}
         run: npm test
       - name: UI tests (Edge, the engine WebView2 uses)
+        if: ${{ !cancelled() }}
         run: npx playwright test
         env:
           PLAYWRIGHT_CHROME: C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe
       - name: Rust unit tests
+        if: ${{ !cancelled() }}
         run: cargo test --manifest-path src-tauri/Cargo.toml --no-default-features
       - name: Clippy
+        if: ${{ !cancelled() }}
         shell: bash
         run: |
           mkdir -p src-tauri/engines
           cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
       - name: Build the desktop app
+        if: ${{ !cancelled() }}
         run: npx tauri build --debug --no-bundle
       - name: Launch, close and leave nothing running
+        if: ${{ !cancelled() }}
         run: python scripts/native-smoke-windows.py src-tauri/target/debug/voxloom.exe
         env:
           PYTHONUTF8: "1"
@@ -97,14 +106,19 @@ jobs:
           restore-keys: linux-cargo-
       - run: npm ci
       - name: TypeScript, privacy rules and version
+        if: ${{ !cancelled() }}
         run: npm run check
       - name: Python unit tests
+        if: ${{ !cancelled() }}
         run: npm test
       - name: UI tests
+        if: ${{ !cancelled() }}
         run: npx playwright test
       - name: Rust unit tests
+        if: ${{ !cancelled() }}
         run: cargo test --manifest-path src-tauri/Cargo.toml --no-default-features
       - name: Clippy
+        if: ${{ !cancelled() }}
         run: |
           mkdir -p src-tauri/engines
           cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings

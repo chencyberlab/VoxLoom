@@ -319,7 +319,8 @@ class Provisioning(unittest.TestCase):
             provision.install(self.model, self.root / "models", source)
             self.assertTrue(provision.valid(self.root / "models/model.bin", self.model))
         target = self.root / "models/model.bin"
-        self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+        if sys.platform != 'win32':  # Windows has no Unix modes; AppData ACLs keep files private
+            self.assertEqual(target.stat().st_mode & 0o777, 0o600)
         target.write_bytes(b"corrupt")
         self.assertFalse(provision.valid(target, self.model))
 
