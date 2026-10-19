@@ -287,18 +287,71 @@ mod tests {
         time::{Duration, Instant},
     };
     use windows_sys::Win32::{
-        Foundation::{CloseHandle, INVALID_HANDLE_VALUE},
+        Foundation::{CloseHandle, FILETIME, HANDLE, INVALID_HANDLE_VALUE, WAIT_TIMEOUT},
         System::{
             Diagnostics::ToolHelp::{
                 CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
                 TH32CS_SNAPPROCESS,
             },
-            Threading::{GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION},
+            Threading::{
+                GetProcessTimes, OpenProcess, WaitForSingleObject,
+                PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+            },
         },
     };
 
-    fn descendants(root: u32) -> Vec<u32> {
-        let mut parents = vec![];
+    /// A process a test watches. Holding its handle stops Windows from giving
+    /// its PID to a new process while the test waits for it to end.
+    struct Watched {
+        pid: u32,
+        name: String,
+        handle: HANDLE,
+        created: u64,
+    }
+    impl Watched {
+        fn open(pid: u32, name: &str) -> Option<Watched> {
+            unsafe {
+                let handle = OpenProcess(
+                    PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+                    0,
+                    pid,
+                );
+                if handle.is_null() {
+                    return None;
+                }
+                let (mut created, mut exited, mut kernel, mut user) = (
+                    FILETIME::default(),
+                    FILETIME::default(),
+                    FILETIME::default(),
+                    FILETIME::default(),
+                );
+                GetProcessTimes(handle, &mut created, &mut exited, &mut kernel, &mut user);
+                Some(Watched {
+                    pid,
+                    name: name.to_string(),
+                    handle,
+                    created: (created.dwHighDateTime as u64) << 32 | created.dwLowDateTime as u64,
+                })
+            }
+        }
+        fn running(&self) -> bool {
+            unsafe { WaitForSingleObject(self.handle, 0) == WAIT_TIMEOUT }
+        }
+        fn is(&self, name: &str) -> bool {
+            self.name.eq_ignore_ascii_case(name)
+        }
+    }
+    impl Drop for Watched {
+        fn drop(&mut self) {
+            unsafe { CloseHandle(self.handle) };
+        }
+    }
+
+    /// Everything `root` started, directly or not. A recorded parent PID can
+    /// belong to a process that died long ago and whose PID `root` now has,
+    /// so a child must also be younger than its parent.
+    fn descendants(root: &Watched) -> Vec<Watched> {
+        let mut entries = vec![];
         unsafe {
             let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
             assert_ne!(snapshot, INVALID_HANDLE_VALUE);
@@ -308,33 +361,40 @@ mod tests {
             };
             let mut more = Process32FirstW(snapshot, &mut entry) != 0;
             while more {
-                parents.push((entry.th32ProcessID, entry.th32ParentProcessID));
+                let name = &entry.szExeFile;
+                let length = name.iter().position(|&c| c == 0).unwrap_or(name.len());
+                entries.push((
+                    entry.th32ProcessID,
+                    entry.th32ParentProcessID,
+                    String::from_utf16_lossy(&name[..length]),
+                ));
                 more = Process32NextW(snapshot, &mut entry) != 0;
             }
             CloseHandle(snapshot);
         }
-        let mut found = vec![root];
-        for _ in 0..4 {
-            for (pid, parent) in &parents {
-                if found.contains(parent) && !found.contains(pid) {
-                    found.push(*pid);
+        let mut found: Vec<Watched> = vec![];
+        loop {
+            let before = found.len();
+            for (pid, parent, name) in &entries {
+                if *pid == root.pid || found.iter().any(|p| p.pid == *pid) {
+                    continue;
+                }
+                let Some(born_after) = std::iter::once(root)
+                    .chain(found.iter())
+                    .find(|p| p.pid == *parent)
+                    .map(|p| p.created)
+                else {
+                    continue;
+                };
+                if let Some(child) = Watched::open(*pid, name) {
+                    if child.created >= born_after {
+                        found.push(child);
+                    }
                 }
             }
-        }
-        found.retain(|pid| *pid != root);
-        found
-    }
-
-    fn alive(pid: u32) -> bool {
-        unsafe {
-            let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-            if process.is_null() {
-                return false;
+            if found.len() == before {
+                return found;
             }
-            let mut code = 0;
-            GetExitCodeProcess(process, &mut code);
-            CloseHandle(process);
-            code == 259 // STILL_ACTIVE
         }
     }
 
@@ -342,6 +402,25 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(15);
         while !done() {
             assert!(Instant::now() < deadline, "timed out: {what}");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    fn until_ended(what: &str, processes: &[Watched]) {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let running: Vec<String> = processes
+                .iter()
+                .filter(|p| p.running())
+                .map(|p| format!("{} {}", p.name, p.pid))
+                .collect();
+            if running.is_empty() {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out: {what}; still running: {running:?}"
+            );
             std::thread::sleep(Duration::from_millis(100));
         }
     }
@@ -363,35 +442,33 @@ mod tests {
     #[test]
     fn kill_tree_ends_a_child_and_what_it_started() {
         let mut child = spawn(&mut shell_with_grandchild(false)).unwrap();
+        let shell = Watched::open(child.id(), "cmd.exe").unwrap();
         let mut started = vec![];
         until("ping to start", || {
-            started = descendants(child.id());
-            !started.is_empty()
+            started = descendants(&shell);
+            started.iter().any(|p| p.is("ping.exe"))
         });
         kill_tree(child.id());
         child.wait().unwrap();
-        until("every process to end", || {
-            !started.iter().any(|pid| alive(*pid))
-        });
+        until_ended("every process to end", &started);
     }
 
     #[test]
     fn finished_ends_what_an_exited_child_left_running() {
         let mut child = spawn(&mut shell_with_grandchild(true)).unwrap();
+        let shell = Watched::open(child.id(), "cmd.exe").unwrap();
         let mut started = vec![];
         until("ping to start", || {
-            started = descendants(child.id());
-            !started.is_empty()
+            started = descendants(&shell);
+            started.iter().any(|p| p.is("ping.exe"))
         });
         child.wait().unwrap();
         assert!(
-            started.iter().any(|pid| alive(*pid)),
+            started.iter().any(|p| p.is("ping.exe") && p.running()),
             "ping should outlive its shell"
         );
         finished(child.id());
-        until("the orphan to end", || {
-            !started.iter().any(|pid| alive(*pid))
-        });
+        until_ended("the orphan to end", &started);
     }
 
     /// Run by `a_force_killed_app_leaves_nothing_running` as a stand-in app.
@@ -436,31 +513,21 @@ mod tests {
         until("the stand-in app to start its children", || {
             report.is_file()
         });
-        let shells: Vec<u32> = std::fs::read_to_string(&report)
+        // Both shells run ping for a minute, so their PIDs are still theirs.
+        let mut shells: Vec<Watched> = std::fs::read_to_string(&report)
             .unwrap()
             .split(' ')
-            .map(|p| p.parse().unwrap())
+            .map(|pid| Watched::open(pid.parse().unwrap(), "cmd.exe").unwrap())
             .collect();
-        let mut started = shells.clone();
+        let mut started = vec![];
         until("both pings to start", || {
-            started = shells
-                .iter()
-                .chain(
-                    shells
-                        .iter()
-                        .flat_map(|s| descendants(*s))
-                        .collect::<Vec<_>>()
-                        .iter(),
-                )
-                .copied()
-                .collect();
-            started.len() >= 4
+            started = shells.iter().flat_map(descendants).collect();
+            started.iter().filter(|p| p.is("ping.exe")).count() == 2
         });
         // TerminateProcess: no shutdown code runs, as when the app crashes.
         app.kill().unwrap();
         app.wait().unwrap();
-        until("everything the app started to end", || {
-            !started.iter().any(|pid| alive(*pid))
-        });
+        started.append(&mut shells);
+        until_ended("everything the app started to end", &started);
     }
 }
