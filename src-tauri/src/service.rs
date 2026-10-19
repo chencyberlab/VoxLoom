@@ -44,6 +44,12 @@ const MIN_RECORD_FREE_BYTES: u64 = 256 * 1024 * 1024;
 /// slow machines half-way.
 const WORKER_TIMEOUT: Duration = Duration::from_secs(7200);
 
+/// Whether a recording must not start. A full volume reports `Some(0)`; a
+/// volume that could not be queried reports `None` and never blocks the user.
+fn disk_too_full(free: Option<u64>) -> bool {
+    free.is_some_and(|bytes| bytes < MIN_RECORD_FREE_BYTES)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -419,6 +425,16 @@ mod tests {
         assert_eq!(live_jobs(&service, "meeting", None), 1);
         drop(_busy);
         service.shutdown();
+    }
+
+    #[test]
+    fn a_full_disk_refuses_recording_but_an_unknown_one_does_not() {
+        assert!(disk_too_full(Some(0)));
+        assert!(disk_too_full(Some(MIN_RECORD_FREE_BYTES - 1)));
+        assert!(!disk_too_full(Some(MIN_RECORD_FREE_BYTES)));
+        assert!(!disk_too_full(None));
+        // The data folder of a running test is on a real, non-full volume.
+        assert!(!disk_too_full(platform::free_disk_bytes(&std::env::temp_dir())));
     }
 
     #[test]
@@ -1822,10 +1838,8 @@ impl Service {
             }
         }
         // FLAC segments and the WAL grow for as long as the user records.
-        // Refuse to begin on a nearly full disk instead of failing minutes
-        // in; 0 means the free space could not be read, not that it is 0.
-        let free = platform::free_disk_bytes(&self.data);
-        if free > 0 && free < MIN_RECORD_FREE_BYTES {
+        // Refuse to begin on a nearly full disk instead of failing minutes in.
+        if disk_too_full(platform::free_disk_bytes(&self.data)) {
             return Err("Not enough free disk space to record (less than 256 MB left)".into());
         }
         let id = db::id();

@@ -67,21 +67,21 @@ pub fn private_file(p: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Bytes available to the user on the volume holding `path`; 0 if unknown.
-pub fn free_disk_bytes(path: &Path) -> u64 {
+/// Bytes available to the user on the volume holding `path`, or `None` when
+/// the volume could not be queried. A full disk is `Some(0)`, so callers can
+/// tell "no room" from "unknown" and refuse to record on the former.
+pub fn free_disk_bytes(path: &Path) -> Option<u64> {
     #[cfg(unix)]
     {
         use std::os::unix::ffi::OsStrExt;
-        let Ok(path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
-            return 0;
-        };
+        let path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
         let mut info = std::mem::MaybeUninit::<libc::statvfs>::uninit();
         if unsafe { libc::statvfs(path.as_ptr(), info.as_mut_ptr()) } != 0 {
-            return 0;
+            return None;
         }
         let info = unsafe { info.assume_init() };
         #[allow(clippy::unnecessary_cast)]
-        (info.f_bavail as u64).saturating_mul(info.f_frsize as u64)
+        Some((info.f_bavail as u64).saturating_mul(info.f_frsize as u64))
     }
     #[cfg(windows)]
     {
@@ -105,11 +105,7 @@ pub fn free_disk_bytes(path: &Path) -> u64 {
                 std::ptr::null_mut(),
             )
         };
-        if ok == 0 {
-            0
-        } else {
-            available
-        }
+        (ok != 0).then_some(available)
     }
 }
 
@@ -192,4 +188,18 @@ pub fn on_path(program: impl Into<OsString>) -> bool {
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn free_space_is_unknown_for_a_missing_volume_and_measured_for_a_real_one() {
+        assert_eq!(
+            free_disk_bytes(Path::new("/definitely/not/a/voxloom/volume")),
+            None
+        );
+        assert!(free_disk_bytes(&std::env::temp_dir()).is_some());
+    }
 }
