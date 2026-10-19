@@ -168,7 +168,10 @@ impl Db {
                 |r| r.get(0),
             )
             .map_err(err)?;
-        if count >= 8 {
+        // The cap keeps the user from piling up summaries and re-indexes. A
+        // live pass is how a recording's words reach the transcript, so it
+        // is never turned away: at most one is pending per recording anyway.
+        if count >= 8 && kind != "transcribe_live" {
             return Err("Inference queue is full (8 jobs). Wait or cancel a job.".into());
         }
         let dup:i64=self.conn.query_row("SELECT count(*) FROM jobs WHERE meeting_id=? AND kind=? AND status IN ('pending','running')",params![meeting,kind],|r|r.get(0)).map_err(err)?;
@@ -252,5 +255,24 @@ mod tests {
         assert_eq!(db.jobs().unwrap(), json!([]));
         drop(db);
         assert!(Db::open(&path).unwrap().meetings().unwrap().is_empty());
+    }
+
+    #[test]
+    fn full_queue_never_turns_away_a_live_pass() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("library.db")).unwrap();
+        for i in 0..9 {
+            let id = format!("m{i}");
+            db.create(&id, "Meeting", 10000, "ready").unwrap();
+            db.add_track(&id, &dir.path().join(format!("{id}.flac")), "mic", 0).unwrap();
+        }
+        for i in 0..8 {
+            db.enqueue(&format!("m{i}"), "summarize").unwrap();
+        }
+        assert!(db.enqueue("m8", "summarize").is_err());
+        assert!(db.enqueue("m8", "index").is_err());
+        db.enqueue("m8", "transcribe_live").unwrap();
+        // Still one per recording: the second is the duplicate, not the cap.
+        assert!(db.enqueue("m8", "transcribe_live").unwrap_err().contains("already queued"));
     }
 }

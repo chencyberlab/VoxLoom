@@ -545,13 +545,22 @@ impl Service {
         fallback.into()
     }
     fn request(&self, kind: &str, meeting: Option<&str>) -> Result<Value> {
-        let (finalize, growing) = match self.capture.lock().unwrap().as_ref() {
+        // The capture and the library are read under the same locks. A
+        // segment that closed since `tick` registered the last one would
+        // otherwise be neither a registered track nor the growing file, and
+        // the live pass would see a gap in the stream and lose its words.
+        let mut capture = self.capture.lock().unwrap();
+        let db = self.db.lock().unwrap();
+        let (finalize, growing) = match capture.as_mut() {
             Some(c) if Some(c.meeting.as_str()) == meeting && !c.paused => {
+                for (path, source, offset) in c.closed_tracks().unwrap_or_default() {
+                    let _ = db.add_track(&c.meeting, &path, &source, offset);
+                }
                 (false, c.open_tracks().unwrap_or_default())
             }
             _ => (true, vec![]),
         };
-        let db = self.db.lock().unwrap();
+        drop(capture);
         let models =
             PathBuf::from(db.setting("models_dir", &self.data.join("models").to_string_lossy()));
         let mut v = json!({"kind":kind,"cache_dir":self.cache,"models":{"whisper":self.whisper_model(&db),"embedding":models.join("embeddinggemma-2-740m.litertlm"),"summary":""},"threads":db.setting("threads","2").parse::<u32>().unwrap_or(2).clamp(1,8),"language":db.setting("language","en"),"whisper_cli":db.setting("whisper_cli",&self.default_tool("whisper_cli")),"llama_cli":db.setting("llama_cli",&self.default_tool("llama_cli"))});
@@ -1653,10 +1662,14 @@ impl Service {
                 ],
             )
             .map_err(err)?;
+        // Pause closes the segment files like Stop does, and an unfinished
+        // sentence is only flushed by a final pass. Without this a pause
+        // taken while no pass was running left the last words unseen until
+        // the recording resumed.
+        if self.whisper_model(&db).is_file() {
+            let _ = db.enqueue(&c.meeting, "transcribe_live");
+        }
         if stop {
-            if self.whisper_model(&db).is_file() {
-                let _ = db.enqueue(&c.meeting, "transcribe_live");
-            }
             *guard = None;
         }
         (self.notify)(json!({"type":"capture"}));
