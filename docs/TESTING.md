@@ -34,6 +34,29 @@ The llama.cpp completion frontend accepted but failed to forward its reasoning s
 
 Validation for this update: 16 Python checks, six Rust unit checks plus the offline setup integration check, six browser checks (including hiding an old unfinished summary), desktop clippy with warnings denied, the real ASR/index/search/summary/restart/export/delete/shutdown workflow (22.18 s), and synthetic dual capture with live text, pause/resume, final-tail processing and shutdown (55.86 s). Cursor advancement and transcript rows commit atomically; a deliberately invalid batch rolls back both, retries do not duplicate rows, edited text survives, progress resumes after reopening SQLite, and meeting deletion cascades through the new checkpoint table. The database migrates to schema version 2. Tests use temporary libraries and never reset the installed user's data. The final extracted 0.1.2 package also passed native launch, compact/expand and Quit (exit 0; four observed processes released; sampled idle tree 434,888 KiB). Packaged workers, manifest, source notices and both patched completion binaries matched the source/staging hashes; no model weights are bundled.
 
+## Microphone gain and noise suppression (measured after 0.1.11)
+
+Setup:
+- The development laptop's internal microphone (Realtek ALC274) was at the maximum ALSA gain: Capture +30 dB and Internal Mic Boost +30 dB.
+- The parent-relationship role-play (the source of 9337ef83 and d34b2474) was played from a phone about 1 m away and recorded mic-only with Accurate live transcription, once with the boost lowered to +10 dB and once through a PipeWire WebRTC source (`libpipewire-module-echo-cancel`: high-pass filter, noise suppression, echo cancellation, gain control off).
+- d34b2474 was recorded on 15 October at maximum gain; its playback setup was not noted.
+- Scoring: each transcript was aligned against the part of the video's transcript it covers (reference words 8-530 for the new takes), ignoring case, punctuation and fillers. d34b2474's replay figures come from the Moonshine evaluation above, which used the same text rules.
+- Contrast is the 90th minus the 10th percentile of the 100 ms speech-band (300-3400 Hz) levels.
+
+| Take | Mic | Overall / below 250 Hz / 300-3400 Hz | Full-scale samples | Contrast | Accurate live | Accurate replay | Standard replay |
+|---|---|---|---|---|---|---|---|
+| d34b2474 | boost +30 dB | −5.2 / −8.4 / −10.3 dBFS | 330,869 | 19.5 dB | 32.6% | 32.4% | 44.1% |
+| 86eb3f3e | boost +10 dB | −23.0 / −24.1 / −30.4 dBFS | 4,572 | 29.6 dB | 7.3% | 7.7% | 10.5% |
+| 78822941 | boost +10 dB, WebRTC processing | −31.3 / −41.6 / −32.4 dBFS | 2 | 43.6 dB | 9.7% | 7.1% | 9.3% |
+
+Findings:
+- **Gain:** lowering the boost by 20 dB removed the clipping and cut Accurate's WER from 32.6% to 7.3%, close to the clean system-audio capture of the same video (4.6%, 9337ef83).
+- **Noise suppression:** it removed 17 dB of rumble and made pauses 14 dB quieter, but did not change WER reliably. It was better in both replays and worse live. The live difference is mostly one short reply ("Yeah. I guess so.") that Whisper dropped at a chunk start and kept in the replay of the same audio. Rows continue across that point, so no audio was skipped as idle; it is the chunk-boundary variance noted under Known gotchas.
+- **Echo cancellation:** it removes whatever the laptop itself plays, so voices on the laptop speakers disappear from a Microphone-only recording.
+- **Sound tags:** Whisper's tags ("soft music", "keyboard clicking") count as extra words in these scores.
+
+Every replay covered all captured audio. Recordings and transcripts were copied to a temporary folder and deleted afterwards.
+
 ## Version 0.1.11: floating recorder drags and has rounded corners
 
 Validation:
