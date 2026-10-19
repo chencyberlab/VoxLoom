@@ -165,7 +165,7 @@ jobs:
 
           **Windows 11 (x64) preview:** \`$zip\`
 
-          Unzip it and open voxloom.exe. It imports, transcribes, searches and summarises; recording and an installer come later. It is not signed yet, so Windows may warn about an unknown publisher: choose More info, then Run anyway.
+          Unzip it and open voxloom.exe. It records the microphone and the computer's sound, imports files, transcribes, searches and summarises; an installer comes later. Windows lets it use the microphone only while Settings → Privacy & security → Microphone → "Let desktop apps access your microphone" is on. It is not signed yet, so Windows may warn about an unknown publisher: choose More info, then Run anyway.
 
           SHA-256:
 

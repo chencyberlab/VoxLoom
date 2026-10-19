@@ -43,9 +43,14 @@ The first time, VoxLoom asks to download its speech and search models (a few GB)
 Your recordings and models are kept in %LOCALAPPDATA%\\org.voxloom.desktop,
 not in this folder.
 
-Not in this preview yet: recording (import audio or video files instead) and an
-installer. Windows may say the app is from an unknown publisher because it is
-not signed yet: choose More info, then Run anyway.
+VoxLoom records your microphone and, for calls and videos, the sound your
+computer plays. Windows lets desktop apps use the microphone only while
+Settings > Privacy & security > Microphone > "Let desktop apps access your
+microphone" is on.
+
+Not in this preview yet: an installer. Windows may say the app is from an
+unknown publisher because it is not signed yet: choose More info, then Run
+anyway.
 
 Licences for the software included are in the licenses folder.
 """, encoding="utf-8", newline="\r\n")
