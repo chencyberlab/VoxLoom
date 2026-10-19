@@ -37,6 +37,12 @@ pub struct Service {
 const LIVE_POLL: Duration = Duration::from_millis(2500);
 /// Name of a recording started without a title; Summarise may replace it.
 const DEFAULT_TITLE: &str = "Untitled recording";
+/// Recording refuses to start below this much free space on the data volume.
+const MIN_RECORD_FREE_BYTES: u64 = 256 * 1024 * 1024;
+/// A worker never runs longer than this, or twice the recording's length
+/// when that is more: a two-hour cap ended summaries of long recordings on
+/// slow machines half-way.
+const WORKER_TIMEOUT: Duration = Duration::from_secs(7200);
 
 #[cfg(test)]
 mod tests {
@@ -983,6 +989,22 @@ impl Service {
         *self.running.lock().unwrap() = Some((job.into(), pid));
         drop(capture_guard);
         let start = Instant::now();
+        let timeout = ingest
+            .and_then(|(meeting, _)| {
+                self.db
+                    .lock()
+                    .unwrap()
+                    .conn
+                    .query_row(
+                        "SELECT duration_ms FROM meetings WHERE id=?",
+                        [meeting],
+                        |r| r.get::<_, i64>(0),
+                    )
+                    .ok()
+            })
+            .map(|ms| Duration::from_millis(ms.max(0) as u64 * 2))
+            .unwrap_or(Duration::ZERO)
+            .max(WORKER_TIMEOUT);
         let mut reader: Option<BufReader<File>> = None;
         let mut pending = String::new();
         let mut answers = vec![];
@@ -1076,7 +1098,7 @@ impl Service {
                     exited = true;
                     continue;
                 }
-                if self.quit.load(Ordering::SeqCst) || start.elapsed() > Duration::from_secs(7200) {
+                if self.quit.load(Ordering::SeqCst) || start.elapsed() > timeout {
                     process::kill_tree(pid);
                     let _ = child.wait();
                     failure = Some("Inference stopped or timed out".into());
@@ -1186,7 +1208,7 @@ impl Service {
                 let db = self.db.lock().unwrap();
                 let id = text(&p, "id")?;
                 if let Some(t) = p["title"].as_str() {
-                    if t.trim().is_empty() || t.len() > 300 {
+                    if t.trim().is_empty() || t.chars().count() > 300 {
                         return Err("Title must contain 1–300 characters".into());
                     }
                     db.conn
@@ -1206,7 +1228,11 @@ impl Service {
             "edit_segment" => {
                 let db = self.db.lock().unwrap();
                 let m = text(&p, "meeting_id")?;
-                db.conn.execute("UPDATE transcript_segments SET text=?,edited=1 WHERE id=? AND meeting_id=?",params![text(&p,"text")?,p["id"].as_i64(),m]).map_err(err)?;
+                let correction = text(&p, "text")?.trim();
+                if correction.is_empty() {
+                    return Err("A correction cannot be empty".into());
+                }
+                db.conn.execute("UPDATE transcript_segments SET text=?,edited=1 WHERE id=? AND meeting_id=?",params![correction,p["id"].as_i64(),m]).map_err(err)?;
                 db.conn
                     .execute("DELETE FROM embedding_items WHERE meeting_id=?", [m])
                     .map_err(err)?;
@@ -1795,6 +1821,13 @@ impl Service {
                 }
             }
         }
+        // FLAC segments and the WAL grow for as long as the user records.
+        // Refuse to begin on a nearly full disk instead of failing minutes
+        // in; 0 means the free space could not be read, not that it is 0.
+        let free = platform::free_disk_bytes(&self.data);
+        if free > 0 && free < MIN_RECORD_FREE_BYTES {
+            return Err("Not enough free disk space to record (less than 256 MB left)".into());
+        }
         let id = db::id();
         let folder = self.data.join("recordings").join(&id);
         private_dir(&folder)?;
@@ -1810,8 +1843,14 @@ impl Service {
             "recording",
         )?;
         *capture = Some(c);
-        if let Some((_, pid)) = self.running.lock().unwrap().as_ref() {
-            process::kill_tree(*pid);
+        // Recording outranks indexing, summaries and questions, so a worker
+        // in progress is stopped; its job is re-queued or fails cleanly.
+        // Setup is left alone: killing pip or a model download half-way can
+        // leave a broken venv, and live passes simply wait for it to finish.
+        if let Some((job, pid)) = self.running.lock().unwrap().as_ref() {
+            if job != "setup" {
+                process::kill_tree(*pid);
+            }
         }
         Ok(json!({"id":id}))
     }
