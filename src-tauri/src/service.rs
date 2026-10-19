@@ -369,6 +369,11 @@ impl Service {
         ] {
             private_dir(p)?;
         }
+        for entry in fs::read_dir(data.join("recordings")).map_err(err)?.flatten() {
+            if entry.file_name().to_string_lossy().starts_with(".deleted-") {
+                let _ = fs::remove_dir_all(entry.path());
+            }
+        }
         // Interrupted jobs can leave private request/chunk scratch files. They
         // are disposable and never serve as a second recording archive.
         for entry in fs::read_dir(&cache).map_err(err)? {
@@ -526,7 +531,13 @@ impl Service {
                 return generic.to_string_lossy().to_string();
             }
         }
-        for path in [bundled, self.resources.join(dev), self.data.join(installed)] {
+        // A Windows checkout stages the bundled runtime under src-tauri/ for debug builds.
+        let staged = if cfg!(windows) {
+            Some(self.resources.join("src-tauri").join(bundled.strip_prefix(&self.resources).unwrap_or(&bundled)))
+        } else {
+            None
+        };
+        for path in [Some(bundled), staged, Some(self.resources.join(dev)), Some(self.data.join(installed))].into_iter().flatten() {
             if path.is_file() {
                 return path.to_string_lossy().to_string();
             }
@@ -775,19 +786,20 @@ impl Service {
         if capture_guard.is_some() && request["kind"] != "transcribe_live" {
             return Err("Inference deferred while recording".into());
         }
-        let mut child = process::python(self.python())
-            .arg(self.resources.join("worker/engine.py"))
-            .arg("--request")
-            .arg(&input)
-            .arg("--response")
-            .arg(&output)
-            .env("HF_HUB_OFFLINE", "1")
-            .env("HF_HUB_DISABLE_TELEMETRY", "1")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|_| {
+        let mut child = process::spawn(
+            process::python(self.python())
+                .arg(self.resources.join("worker/engine.py"))
+                .arg("--request")
+                .arg(&input)
+                .arg("--response")
+                .arg(&output)
+                .env("HF_HUB_OFFLINE", "1")
+                .env("HF_HUB_DISABLE_TELEMETRY", "1")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null()),
+        )
+        .map_err(|_| {
                 "Cannot launch Python worker. Configure its local executable in Settings."
                     .to_string()
             })?;
@@ -1426,6 +1438,9 @@ impl Service {
                 .map(|s| s.success())
                 .unwrap_or(false);
             if !ready {
+                if cfg!(windows) {
+                    return Err("VoxLoom's search engine is missing or damaged. Reinstall VoxLoom, then run setup again.".into());
+                }
                 let mut runtime = json!({});
                 if mode == "offline_bundle" {
                     let wheels = Path::new(text(p, "path")?).join("wheels");
@@ -1504,11 +1519,7 @@ impl Service {
             }
             cmd.arg("--model").arg(model);
         }
-        let mut child = cmd
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(err)?;
+        let mut child = process::spawn(cmd.stdout(Stdio::piped()).stderr(Stdio::null())).map_err(err)?;
         *self.running.lock().unwrap() = Some(("setup".into(), child.id()));
         if self.setup_cancel.load(Ordering::SeqCst) || self.quit.load(Ordering::SeqCst) {
             process::kill_tree(child.id());
@@ -1522,6 +1533,7 @@ impl Service {
             }
         }
         let success = child.wait().map_err(err)?.success();
+        process::finished(child.id());
         *self.running.lock().unwrap() = None;
         if !success {
             if mode == "runtime" {
@@ -1677,14 +1689,27 @@ impl Service {
         let folder = self.data.join("recordings").join(id);
         let trash = self.data.join("recordings").join(format!(".deleted-{id}"));
         if folder.exists() {
-            fs::rename(&folder, &trash).map_err(err)?;
+            fs::rename(&folder, &trash).map_err(|e| {
+                if cfg!(windows) && e.kind() == std::io::ErrorKind::PermissionDenied {
+                    "This recording is still open, for example playing. Stop playback, then delete it again.".to_string()
+                } else {
+                    err(e)
+                }
+            })?;
         }
         if let Err(e) = db.conn.execute("DELETE FROM meetings WHERE id=?", [id]) {
             let _ = fs::rename(&trash, &folder);
             return Err(err(e));
         }
         if trash.exists() {
-            fs::remove_dir_all(trash).map_err(err)?;
+            // Windows can keep a just-closed file locked for a moment; the
+            // recording is already gone from the library, and the next start
+            // removes what is left.
+            if let Err(e) = fs::remove_dir_all(&trash) {
+                if !cfg!(windows) {
+                    return Err(err(e));
+                }
+            }
         }
         Ok(Value::Null)
     }
@@ -1730,14 +1755,15 @@ impl Service {
                     })
                     .collect::<String>()
             };
-            let mut child = process::python(self.helper_python(&db))
-                .arg(self.resources.join("worker/export_docx.py"))
-                .arg(&target)
-                .stdin(Stdio::piped())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .map_err(|_| {
+            let mut child = process::spawn(
+                process::python(self.helper_python(&db))
+                    .arg(self.resources.join("worker/export_docx.py"))
+                    .arg(&target)
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null()),
+            )
+            .map_err(|_| {
                     "Word export could not start. Check that Python 3 is installed.".to_string()
                 })?;
             let payload = serde_json::to_vec(
@@ -1750,6 +1776,7 @@ impl Service {
                 .ok_or("Word export input is unavailable")?
                 .write_all(&payload);
             let status = child.wait().map_err(err)?;
+            process::finished(child.id());
             if written.is_err() || !status.success() {
                 return Err(
                     "The Word document could not be saved. Check the folder and available space."

@@ -49,7 +49,7 @@ You need an Ubuntu 24.04 (or newer) x86_64 computer, an internet connection for 
 
    The script does everything in order and stops with a clear message if something is missing:
    - installs the Ubuntu packages listed below (it asks for your password once)
-   - installs private copies of Node.js 22 and Rust into `.toolchain/` if your computer doesn't have them; your system and shell settings are not changed
+   - installs private copies of Node.js 24 and Rust into `.toolchain/` if your computer doesn't have them; your system and shell settings are not changed
    - downloads the JavaScript libraries
    - compiles the speech and summary engines from pinned, checksum-verified sources. This happens only the first time and takes about 5–15 minutes; the whole first build took about 9 minutes on a 4-core laptop.
    - builds the app and copies the result into `release/`
@@ -84,7 +84,7 @@ This uses the Git-ignored `.local-data/` folder for this checkout's private libr
 
 ## Development prerequisites
 
-Ubuntu 24.04+: Node 22+, Rust stable (1.85+ declaration; validated with 1.99), a C/C++ toolchain and the packages above. `scripts/build-app.sh` sets all of this up; to do it by hand:
+Ubuntu 24.04+: Node 24 (22 still works), Rust stable (1.85+ declaration; validated with 1.99), a C/C++ toolchain and the packages above. `scripts/build-app.sh` sets all of this up; to do it by hand:
 
 ```bash
 npm ci

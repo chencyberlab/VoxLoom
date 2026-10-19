@@ -9,7 +9,10 @@ import sys
 import tempfile
 import xml.etree.ElementTree as ET
 from zipfile import ZIP_DEFLATED, ZipFile
-from notes import blocks, clean_meeting_notes, inline_runs
+
+# The embeddable Python bundled on Windows leaves the script's own folder off sys.path.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from notes import blocks, clean_meeting_notes, inline_runs  # noqa: E402
 
 W="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 ET.register_namespace("w",W)

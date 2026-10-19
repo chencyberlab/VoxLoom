@@ -5,7 +5,6 @@ are unloaded on completion/cancellation, and different engines never co-reside.
 """
 import argparse
 from array import array
-from notes import MEETING_SECTIONS, clean_meeting_notes, heading_text, normalise_meeting_notes
 import ctypes
 import difflib
 import json
@@ -19,6 +18,11 @@ import sys
 import tempfile
 import time
 import wave
+
+# The embeddable Python bundled on Windows leaves the script's own folder off
+# sys.path; the worker's modules sit next to it.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from notes import MEETING_SECTIONS, clean_meeting_notes, heading_text, normalise_meeting_notes  # noqa: E402
 
 try:
     import resource

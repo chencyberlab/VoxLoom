@@ -109,13 +109,14 @@ pub fn spawn(
     mic: Option<&str>,
     system: Option<&str>,
 ) -> Result<Child> {
-    process::command("ffmpeg")
-        .args(ffmpeg_args(folder, session, mic, system)?)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|_| {
+    process::spawn(
+        process::command("ffmpeg")
+            .args(ffmpeg_args(folder, session, mic, system)?)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped()),
+    )
+    .map_err(|_| {
             "FFmpeg capture could not start. Install FFmpeg with PulseAudio input support."
                 .to_string()
         })

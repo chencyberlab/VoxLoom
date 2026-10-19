@@ -38,7 +38,7 @@ A private Linux desktop app (Ubuntu 24.04, x86_64) that records microphone and/o
 | `src/` | React UI. `App.tsx` holds most of it; `api.ts` sends every call through one Tauri command, `dispatch(action, payload)`. |
 | `src-tauri/src/service.rs` | All `dispatch` actions, the job queue (`tick`), worker launch (`run_worker`), result ingestion and the live-transcription scheduler. |
 | `src-tauri/src/audio.rs` | Capture sessions, 30-second FLAC segment bookkeeping (`sNNNN-mic-NNNNNN.flac`, `sNNNN-system-NNNNNN.flac`), durations and export. The platform backends find devices and start capture: `audio/pulse.rs` (Linux: FFmpeg reads Pulse/PipeWire) and `audio/wasapi.rs` (Windows: not implemented yet, recording reports that plainly). |
-| `src-tauri/src/process.rs`, `src-tauri/src/platform.rs` | Everything else that differs by OS. `process`: start children (`command` supervised, `hidden` for quick probes, `python` adds UTF-8 mode on Windows) and `kill_tree`. `platform`: data folders, private permissions, free disk space, CPU features, executable and venv names, PATH lookup. |
+| `src-tauri/src/process.rs`, `src-tauri/src/platform.rs` | Everything else that differs by OS. `process`: build commands (`command` supervised, `hidden` for quick probes, `python` adds UTF-8 mode on Windows), `spawn` children `kill_tree` may have to end, `finished` once one has been waited for, and `contain_children` (Windows: the app's own kill-on-close Job Object, so a crash still ends every worker and engine). `platform`: data folders, private permissions, free disk space, CPU features, executable and venv names, bundled tools on PATH, PATH lookup. |
 | `src-tauri/src/db.rs`, `src-tauri/migrations/` | SQLite (WAL, FTS5). Migrations are idempotent SQL files applied in order on every open. |
 | `src-tauri/src/search.rs` | Vector storage, exact/semantic/combined search. |
 | `src-tauri/tests/` | Integration tests. The real-engine and real-capture tests are `#[ignore]`d and opt-in. |
@@ -49,7 +49,8 @@ A private Linux desktop app (Ubuntu 24.04, x86_64) that records microphone and/o
 | `scripts/` | Build, run and test tools (listed below). |
 | `tests/` | Python unit tests (`test_worker.py`, `test_notes.py`) and Playwright UI tests (`tests/ui`). |
 | `docs/` | `ARCHITECTURE.md` (how it works), `TESTING.md` (what was verified, with numbers), `IMPLEMENTATION.md` (per-version log), `PERFORMANCE.md`, `MODEL_SOURCES.md`, `WINDOWS.md` (Windows port status and plan), `reports/` (JSON measurement reports). |
-| `.github/workflows/ci.yml` | The fast checks on Windows and Linux for every push, plus a Windows build and launch smoke test. No models or real engines. |
+| `.github/workflows/ci.yml` | Every push: a Linux job cross-builds and caches the Windows runtime and makes speech fixtures; Windows and Linux run the fast checks; Windows also checks the bundled runtime, the Job Objects, a debug build and its launch; a Windows real-engine job runs the whole import-to-delete workflow with cached pinned models. |
+| `scripts/build-windows-runtime.sh`, `worker/requirements.windows.lock.txt` | Cross-builds on Linux everything the Windows package bundles, from pinned sources with SHA-256: the engines (same pins as `setup-runtimes.sh`), a minimal LGPL FFmpeg, and embeddable CPython with LiteRT installed with `--require-hashes`. `scripts/windows-runtime-smoke.py` checks the result on Windows. |
 
 ## Where things are stored
 
@@ -57,7 +58,9 @@ A private Linux desktop app (Ubuntu 24.04, x86_64) that records microphone and/o
 |---|---|---|
 | `~/.local/share/voxloom/` (`VOXLOOM_DATA_DIR`) | Installed app's library: `library.db`, `recordings/<id>/`, `models/`, `runtimes/inference` (LiteRT venv). Private (0700). | Never |
 | `~/.cache/voxloom/` (`VOXLOOM_CACHE_DIR`) | Temporary job folders and the last inference metrics. | Never |
-| `%LOCALAPPDATA%\VoxLoom\` and `…\VoxLoom\cache\` | The same library and cache on Windows. Local, not Roaming: Roaming can sync to a server on company networks. | Never |
+| `%LOCALAPPDATA%\org.voxloom.desktop\` and `…\cache\` | The same library and cache on Windows. Local, not Roaming (Roaming can sync to a server on company networks), and not the per-user program folder `%LOCALAPPDATA%\voxloom`. The uninstaller deletes it only if the user ticks "Delete the application data". The WebView2 profile lives here too. | Never |
+| `.local-data/windows-runtime/` | `build-windows-runtime.sh` output: `engines/`, `python/`, `VERSIONS.txt`, and `build/` (sources and objects, reusable). | Ignored |
+| `src-tauri/engines/`, `src-tauri/python/` on Windows | The Windows runtime staged for debug builds (found through `resources/src-tauri/…`) and packaging. | Ignored |
 | `.local-data/` | This checkout's own library, models and compiled engines (`.local-data/runtimes/{whisper,llama}{,-generic}/bin`). Used by `run-local.sh` and `build-app.sh`, so development never touches the installed app's data. | Ignored |
 | `.toolchain/` | Private Rust (`rustup`, `cargo`) and, if needed, Node (`node/`). Created by `build-app.sh`. | Ignored |
 | `.venv/` | Development Python with LiteRT, for real-engine tests. | Ignored |
@@ -73,6 +76,8 @@ Audio, video, Word/SRT exports, models and databases match `.gitignore` patterns
 ## Set up a development machine
 
 Easiest: `bash scripts/build-app.sh --install-deps`. It installs missing Ubuntu packages (with sudo), private Node/Rust, the npm dependencies and the compiled engines, then builds the package.
+
+Node is only a build tool; nothing in the app runs on it. CI and the private copy use Node 24 LTS (`build-app.sh` pins version and SHA-256); a system Node 22 still works until its support ends in April 2027. npm 11 (Node 24) runs a dependency's install script only if `allowScripts` in `package.json` allows it. None is allowed: esbuild works from its platform package without its own. Allow a new one only with a reason.
 
 Manual equivalent:
 
@@ -122,7 +127,7 @@ Windows-specific code must also compile. From Linux, with `mingw-w64` installed 
 cargo clippy --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-gnu -- -D warnings
 ```
 
-Every push also runs `.github/workflows/ci.yml` on GitHub's Windows and Linux machines: the fast set above, a Windows debug build, and `scripts/native-smoke-windows.py` (launch with throwaway data, close the window, nothing left running). GitHub's Windows machines are Windows Server with no audio devices, so recording and speed still need a real Windows 11 laptop.
+Every push also runs `.github/workflows/ci.yml` on GitHub's Windows and Linux machines: the fast set above, plus on Windows `scripts/windows-runtime-smoke.py` (every bundled program starts, FFmpeg writes capture-style segments in a non-ASCII folder, the bundled Python loads LiteRT), the Job Object tests, a debug build, `scripts/native-smoke-windows.py` (launch with throwaway data, close the window, nothing left running), and the real-engine workflow test through a model folder with non-ASCII letters. GitHub's Windows machines are Windows Server with no audio devices, so recording and speed still need a real Windows 11 laptop.
 
 For visual work, `TOUR_OUT=/tmp/voxloom-tour npx playwright test tour` captures every page in light and dark with sample data (skipped otherwise).
 
@@ -147,6 +152,8 @@ To judge transcription quality on real audio, compare against a stronger referen
 ```bash
 bash scripts/build-app.sh            # add --check to run the fast tests first
 ```
+
+The Windows runtime is built on Linux (mingw-w64, cmake, make, nasm, python3-venv) and needs github.com, ffmpeg.org, python.org and PyPI: `bash scripts/build-windows-runtime.sh [--parts engines,ffmpeg,python] [output]`. The first full build takes about 20 minutes; CI caches it. The Windows installer comes later (see `docs/WINDOWS.md`).
 
 The script checks system packages, installs private Node/Rust when needed, runs `npm ci`, and compiles the engines once into `.local-data/runtimes`. It then runs `desktop.sh build --bundles deb` and copies the `.deb` plus the run-in-place folder into `release/`. Use `--release-dir DIR` to build somewhere else, for example while the user is installing the current release. The first build spends most of its time compiling the engines; it took about 9 minutes in total on a 4-core laptop. `VOXLOOM_BUILD_JOBS` limits the number of parallel compile jobs, which defaults to all cores. Later builds reuse the engines and take 1–2 minutes.
 
@@ -205,10 +212,18 @@ Add `src-tauri/migrations/00N.sql`. Make it idempotent (`IF NOT EXISTS`) and end
 - Match the surrounding code. `App.tsx` and parts of `service.rs` are deliberately dense; don't reformat files you aren't changing.
 - Comments explain why (constraints, failure modes found in testing), not what.
 - The worker stays standard-library Python apart from LiteRT. FFmpeg does audio work; pure Python handles small per-frame maths.
-- OS differences live in `process.rs`, `platform.rs` and the `audio/` backends, behind `cfg`. Start child processes with `process::command` / `hidden` / `python`, never a bare `Command::new`, so Windows gets no console windows and Linux keeps its process groups. In the worker, start engines with `child_options()`, and give every text read or write `encoding="utf-8"` (Windows Python defaults to the ANSI code page).
+- OS differences live in `process.rs`, `platform.rs` and the `audio/` backends, behind `cfg`. Start child processes with `process::command` / `hidden` / `python`, never a bare `Command::new`, so Windows gets no console windows and Linux keeps its process groups. A child that `kill_tree` may have to end starts with `process::spawn`; call `process::finished(pid)` after waiting for one that exited on its own. In the worker, start engines with `child_options()`, and give every text read or write `encoding="utf-8"` (Windows Python defaults to the ANSI code page). A worker script that imports another worker module must first put its own folder on `sys.path`: the embeddable Python bundled on Windows leaves it off.
 - New dependencies, runtimes or model downloads need a clear reason and the user's agreement. Anything downloaded must be pinned (version + SHA-256).
 - User-facing text is plain and short; technical detail belongs under Advanced settings.
 - The app icon's source is `src-tauri/icons/icon.svg` (a rounded tile). To change it, render it at 1024 px (`rsvg-convert -w 1024`), run `npx tauri icon <png> -o <temp>`, and copy only `icon.png` and `icon.ico` into `src-tauri/icons/`.
+
+## Cursor Cloud specific instructions
+
+The Cloud Agent environment installs the Ubuntu packages from "Set up a development machine", plus Xvfb, X11 utilities and ImageMagick for the native launch check. It updates Rust to stable (`rust-version` is 1.85; the base image's 1.83 is too old) and runs `npm ci`. Rust lives in `/usr/local/rustup` and `/usr/local/cargo`. Login shells export `RUSTUP_HOME` and `CARGO_HOME` from `/etc/profile.d/voxloom-rust.sh`. Node 22 is also linked at `/usr/local/bin`.
+
+Playwright uses `/opt/google/chrome/chrome`. The fast checks (`npm run check`, `npm test`, `npm run test:ui`, `cargo test --manifest-path src-tauri/Cargo.toml --no-default-features`, and `cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings` after `mkdir -p src-tauri/engines`) do not need models.
+
+Whisper, llama.cpp and the model files are not installed. `scripts/desktop.sh build` stops until `scripts/setup-runtimes.sh` has compiled the engines. A debug desktop binary does not need them: `npx tauri build --debug --no-bundle`, then `xvfb-run -a python3 scripts/native-smoke.py src-tauri/target/debug/voxloom`. Do not download models unless the task is a real-engine check.
 
 ## Known gotchas
 

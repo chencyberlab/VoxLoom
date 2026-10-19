@@ -1,0 +1,16 @@
+# The Windows package's LiteRT runtime: the same pins as requirements.lock.txt,
+# with the SHA-256 of every wheel pip may choose for 64-bit Windows CPython 3.13.
+# scripts/build-windows-runtime.sh installs these with --require-hashes into the
+# bundled embeddable Python. Update both files together.
+absl-py==2.5.1 --hash=sha256:721200f2f0e9960f2ca9dc3a2a706b201f5f75d812c158f059cbbe29eeafbdb8
+click==8.5.0 --hash=sha256:255bc9599cf7748b4b1a446ccc735421bd08a2ae529a8b88597d3de5664ee360
+flatbuffers==25.12.19 --hash=sha256:7634f50c427838bb021c2d66a3d1168e9d199b0607e6329399f04846d42e20b4
+litert-lm==0.18.0 --hash=sha256:fa22fb54598aa8593bce29c5816fa40eb1d00d2dc56e689a00019b4ad7a6da12
+litert-lm-api==0.18.0 --hash=sha256:eb02dc5d0fc6a894a664cfcc63e3aaf3100973ba2c9a6a7eebf4df8749a01038
+litert-lm-builder==0.18.0 --hash=sha256:77a0969bcab6a89a32861887fc45bb6cc6683ac64e2b43fc84fd4074c8879903
+prompt_toolkit==3.0.53 --hash=sha256:01c0891d7f9237d5e339f7d3e42cdae80b7534abb1c7c0e3352efba6231492f2
+protobuf==7.36.2 --hash=sha256:a300819d441e078a5608c0d3c709796bb548136058fda017ae51d425b44fd353 --hash=sha256:bdb3a345d48db958e6ce1f18e508beb0cc981d64f24088427549c866cd039f1e
+questionary==2.1.1 --hash=sha256:a51af13f345f1cdea62347589fbb6df3b290306ab8930713bfae4d475a7d4a59
+tomli==2.5.0 --hash=sha256:fd4dc129784e0c5335bd4e61dfcc4487499a013419e655cf2da1d091b7e0efdc --hash=sha256:32a7b79ac57a2e83670ce329ccf675798bc5a2094783a63676866b70503f2e2b
+typing_extensions==4.16.0 --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8
+wcwidth==0.9.2 --hash=sha256:2a9746de704242bd4fdaabb31dd46b82f694a56a8d21081ad89b679a89da9fec --hash=sha256:89ca642c5bf0101157a09366be69fad0379db1f700ae39a920e103234573670e
