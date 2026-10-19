@@ -62,7 +62,7 @@ with tempfile.TemporaryDirectory() as directory:
     assert result.returncode == 0, result.stderr[-600:]
     probe = run(engines / "ffprobe.exe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", whole)
     assert probe.returncode == 0 and 2.9 < float(probe.stdout) < 3.1, (probe.returncode, probe.stdout, probe.stderr)
-    results["ffmpeg_segments_unicode_path"] = len(segments)
+    results["ffmpeg_segment_samples_unicode_path"] = samples
 
 result = run(python, "-I", "-c", "import importlib.metadata as m; assert m.version('litert-lm') == '0.18.0'; "
              "from litert_lm import Backend, EmbeddingEngine, Content; assert callable(EmbeddingEngine.compute_embedding)")
