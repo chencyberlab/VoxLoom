@@ -13,7 +13,7 @@ Library and cache: `%LOCALAPPDATA%\org.voxloom.desktop` and its `cache` folder. 
 | Phase | What | State |
 |---|---|---|
 | 1 | Platform seams; the app compiles, launches and passes the fast tests on Windows | Done |
-| 2 | Bundled runtime (engines, FFmpeg, Python with LiteRT, all pinned); Job Objects so a crash leaves nothing running; import → transcribe → index → search → summary → export → delete with the real engines on Windows | Done when CI's Windows jobs pass |
+| 2 | Bundled runtime (engines, FFmpeg, Python with LiteRT, all pinned); Job Objects so a crash leaves nothing running; import → transcribe → index → search → summary → export → delete with the real engines on Windows | Done; verified on GitHub's Windows machines (numbers in `docs/TESTING.md`) |
 | 3 | Live capture with WASAPI: microphones and loopback of the default output, same FLAC segments as Linux | |
 | 4 | NSIS installer (per-user and per-machine), models-only first-run setup, third-party notices, list of every bundled executable with SHA-256 for IT allow-listing | |
 | 5 | Measurements on a real Windows 11 laptop, transcription quality checks, docs | |
@@ -53,6 +53,7 @@ In the package, the runtime sits next to the app (`resources/engines`, `resource
 ## Gotchas to keep in mind
 
 - `python3` on Windows opens the Microsoft Store; always use the bundled interpreter. `preexec_fn` and `resource` don't exist there, and `HOME` is usually unset.
+- The embeddable Python takes `sys.path` only from its `._pth` file, which leaves out the script's own folder. A worker script that imports a neighbour (`notes.py`) adds its own folder first; `tests/test_worker.py` runs the scripts with `-P` to catch a new one that doesn't.
 - Windows won't delete or rename files another process has open, such as a recording being played.
 - WASAPI loopback delivers no packets while nothing is playing: Phase 3 must write silence so segment offsets match wall-clock time.
 - Headsets switching devices mid-meeting must never leave capture silently recording a dead device.

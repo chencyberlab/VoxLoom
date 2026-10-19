@@ -18,6 +18,47 @@ Meaningful unit checks cover pause-aligned chunk planning, skipped-speech retrie
 
 Version 0.1.1 added a first-run 1B/E2B summary selector. Six browser tests pass, including the request payload, displayed estimate and locked selection during setup for 1B, E2B and no summaries. These use an explicitly mocked bridge, without downloading models. A separate Rust regression executes the real offline provisioning script with tiny SHA-256-checked fixture files and a stubbed runtime readiness probe. It verifies core plus only the chosen summary model, saved E2B selection after success, core-only setup, missing-summary failure without changing the saved selection, and rejection of an unknown profile. Native checks on the final 0.1.1 package also passed launch, compact/expand and Quit, with all three observed processes released. The setup action remains fully visible at 900×720 in the browser checks. No user library or installed app data is reset during updates.
 
+## Windows port, Phase 2: bundled runtime on GitHub's Windows machines (2026-10-19)
+
+CI run 39196514916 on commit 7dfdf22, image `windows-2025` (Windows Server 2025 Datacenter 10.0.26100, GitHub's standard 4-vCPU, 16 GB machine, no audio devices). `scripts/build-windows-runtime.sh` cross-built the runtime on Ubuntu 24.04 and the Windows jobs received it as an artifact. Apart from CI's own build tools, nothing was installed on the Windows machine: no Python, FFmpeg or Visual C++ runtime for VoxLoom.
+
+The real-engine workflow (`cargo test --test workflow real_offline_import -- --ignored`) ran with the bundled Python and LiteRT, `whisper-cli.exe` and `llama-completion.exe`. The pinned models were opened through `%RUNNER_TEMP%\modèles Zoë`, a path with a space and non-ASCII letters. It did the following, and passed in 42.6 s:
+
+- ran setup against the cached, hash-checked models, with no download;
+- imported `voxloom-budget.wav`, transcribed it, and indexed it as text and audio vectors;
+- re-ran indexing without duplicating vectors;
+- found a native-audio hit and an exact hit;
+- made the requested E2B summary and a grounded answer;
+- exported SRT, TXT, Markdown, JSON and both Word files;
+- reopened the library and shut it down while a model was loaded (no worker or engine was still running five seconds later);
+- deleted the recording with all derived data.
+
+| Stage | Time | Peak memory, app and everything it started |
+|---|---|---|
+| Transcribe (base.en) | 1.6 s | 345 MiB |
+| Index (EmbeddingGemma 740M) | 2.3 s | 683 MiB |
+| Summary (Gemma 4 E2B) | 17.1 s | 2.6 GiB |
+
+Memory is the sum over the app's Job Object, and that sum includes the test process. On Windows the worker reports no peak of its own, because Python's `resource` module doesn't exist there. These are times for a short synthetic sentence on a server CPU, not laptop throughput; Phase 5 measures a real Windows 11 laptop.
+
+The other Windows checks, on every push:
+
+- Python unit tests, with the bundled FFmpeg on PATH.
+- Playwright UI tests in Edge (13 passed).
+- Rust unit tests, which include three Job Object tests:
+  - a killed worker's grandchildren end with it;
+  - a child that exits on its own leaves nothing behind;
+  - a force-killed stand-in app leaves nothing running, including a child it did not start through `process::spawn`.
+- Clippy and a debug build.
+- `native-smoke-windows.py`: the window opens and closes with exit code 0, and WebView2 is released.
+- `windows-runtime-smoke.py`:
+  - every bundled program starts;
+  - FFmpeg writes 1-second capture-style segments from raw PCM in a folder named `Zoë's café recordings`, with level metering;
+  - the segments decode to exactly the 48,000 input samples, cut on FLAC frames (16,128 / 16,128 / 15,744 samples);
+  - the bundled Python loads LiteRT and runs the worker and Word export with a non-ASCII file name.
+
+The first run of the real-engine job found the one Windows-only bug in Phase 2: the embeddable Python's `._pth` file leaves the script's folder off `sys.path`, so the worker could not import `notes.py` and stopped at once. A `-P` unit test now covers it on every platform.
+
 ## Version 0.1.2: continuous audio and finished summaries
 
 The user reported complete audio but missing transcript words, plus an E2B summary containing an unfinished thought channel. Regression work reproduced three app/runtime issues: independently decoding storage chunks, time-based rejection of valid recognized text, and seeking into segmented FLAC that skipped requested audio. Some FLAC segments also inherited the full recording duration in their header. Transcription now joins each source/session logically, counts/caches actual decoded samples, decodes segmented files before seeking, waits for natural pauses, and retains whole recognized segments. Nonstop speech uses bounded 120-second passes with six seconds of audio overlap and conservative text deduplication. Capture runs independently, and Stop/Pause flushes pending speech. Quiet audio is retained; only digital quiet is trimmed from inference copies.

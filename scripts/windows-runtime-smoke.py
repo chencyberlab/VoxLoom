@@ -48,10 +48,15 @@ with tempfile.TemporaryDirectory() as directory:
     assert b"lavfi.astats.Overall.RMS_level=" in result.stderr, "no level metering on stderr"
     segments = sorted(folder.glob("s0000-mic-*.flac"))
     assert len(segments) >= 3, [p.name for p in segments]
-    # Segment headers can lack a duration (the app counts decoded samples instead):
-    # each closed segment must decode to exactly one second.
-    decoded = run(engines / "ffmpeg.exe", "-v", "error", "-i", segments[1], "-ar", "16000", "-ac", "1", "-f", "s16le", "pipe:1")
-    assert decoded.returncode == 0 and len(decoded.stdout) == 32000, (decoded.returncode, len(decoded.stdout))
+    # Segment headers can lack a duration (the app counts decoded samples instead),
+    # and cuts fall on FLAC frames (1152 samples at 16 kHz), so a closed segment
+    # runs up to a frame past one second. Together they must hold every sample.
+    samples = []
+    for segment in segments:
+        decoded = run(engines / "ffmpeg.exe", "-v", "error", "-i", segment, "-ar", "16000", "-ac", "1", "-f", "s16le", "pipe:1")
+        assert decoded.returncode == 0, (segment.name, decoded.stderr[-400:])
+        samples.append(len(decoded.stdout) // 2)
+    assert sum(samples) == 48000 and all(16000 <= n < 17152 for n in samples[:2]), samples
     whole = folder / "whole.flac"
     result = run(engines / "ffmpeg.exe", "-v", "error", "-f", "s16le", "-ar", "16000", "-ac", "1", "-i", "pipe:0", "-c:a", "flac", whole, data=pcm)
     assert result.returncode == 0, result.stderr[-600:]
