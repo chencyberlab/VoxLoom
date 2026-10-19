@@ -77,6 +77,8 @@ Audio, video, Word/SRT exports, models and databases match `.gitignore` patterns
 
 Easiest: `bash scripts/build-app.sh --install-deps`. It installs missing Ubuntu packages (with sudo), private Node/Rust, the npm dependencies and the compiled engines, then builds the package.
 
+Node is only a build tool; nothing in the app runs on it. CI and the private copy use Node 24 LTS (`build-app.sh` pins version and SHA-256); a system Node 22 still works until its support ends in April 2027. npm 11 (Node 24) runs a dependency's install script only if `allowScripts` in `package.json` allows it. None is allowed: esbuild works from its platform package without its own. Allow a new one only with a reason.
+
 Manual equivalent:
 
 ```bash

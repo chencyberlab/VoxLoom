@@ -26,8 +26,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/cache/restore@v4
+      - uses: actions/checkout@v6
+      - uses: actions/cache/restore@v5
         id: runtime
         with:
           path: windows-runtime
@@ -41,19 +41,19 @@ jobs:
         run: |
           bash scripts/build-windows-runtime.sh windows-runtime
           rm -rf windows-runtime/build
-      - uses: actions/cache/save@v4
+      - uses: actions/cache/save@v5
         if: steps.runtime.outputs.cache-hit != 'true'
         with:
           path: windows-runtime
           key: ${{ steps.runtime.outputs.cache-primary-key }}
       - name: Speech fixtures
         run: bash scripts/make-fixtures.sh fixtures
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows-runtime
           path: windows-runtime
           retention-days: 7
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: fixtures
           path: fixtures
@@ -65,19 +65,19 @@ jobs:
     runs-on: windows-2025
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v7
         with:
           name: windows-runtime
           path: src-tauri
       - name: Bundled FFmpeg on PATH for the tests
         shell: bash
         run: echo "$GITHUB_WORKSPACE/src-tauri/engines" >> "$GITHUB_PATH"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
       - name: Rust toolchain
@@ -85,7 +85,7 @@ jobs:
           rustup update stable --no-self-update
           rustup default stable
           rustup component add clippy
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -129,23 +129,23 @@ jobs:
     runs-on: windows-2025
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v7
         with:
           name: windows-runtime
           path: src-tauri
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: fixtures
           path: fixtures
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
       - name: Rust toolchain
         run: |
           rustup update stable --no-self-update
           rustup default stable
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -153,7 +153,7 @@ jobs:
             src-tauri/target
           key: windows-engines-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
           restore-keys: windows-engines-cargo-
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v5
         id: models
         with:
           path: models-cache
@@ -161,7 +161,7 @@ jobs:
       - name: Pinned models (Whisper, embeddings, E2B summaries)
         if: steps.models.outputs.cache-hit != 'true'
         run: python worker/provision.py --download --directory models-cache
-      - uses: actions/cache/save@v4
+      - uses: actions/cache/save@v5
         if: steps.models.outputs.cache-hit != 'true'
         with:
           path: models-cache
@@ -182,7 +182,7 @@ jobs:
           cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --test workflow real_offline_import -- --ignored --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Get-Content "$env:RUNNER_TEMP\windows-engine-metrics.json"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: ${{ !cancelled() }}
         with:
           name: windows-engine-metrics
@@ -194,10 +194,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
       - name: System packages
         run: |
@@ -209,7 +209,7 @@ jobs:
           rustup update stable --no-self-update
           rustup default stable
           rustup component add clippy
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry

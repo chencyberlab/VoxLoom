@@ -14,8 +14,8 @@ umask 022
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo"
 
-NODE_VERSION=22.23.1
-NODE_SHA256=9749e988f437343b7fa832c69ded82a312e41a03116d766797ac14f6f9eee578
+NODE_VERSION=24.22.0
+NODE_SHA256=cc2f601cee82d9a5a233302fe307abc600727035fd7d2c3a3571755989e95008
 RUST_VERSION=1.99.0
 PACKAGES=(build-essential cmake pkg-config curl libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev
           libayatana-appindicator3-dev patchelf ffmpeg pulseaudio-utils python3 python3-venv)
@@ -57,7 +57,7 @@ or rerun: bash scripts/build-app.sh --install-deps"
 fi
 echo "System packages: OK"
 
-# Node.js 22+ (system install, else a private pinned copy in .toolchain/node).
+# Node.js 22+ (system install, else a private pinned Node 24 in .toolchain/node).
 if [[ -x "$repo/.toolchain/node/bin/node" ]]; then export PATH="$repo/.toolchain/node/bin:$PATH"; fi
 if ! command -v node >/dev/null || ! version_at_least "$(node --version | tr -d v)" 22.0.0; then
   step "Installing Node.js $NODE_VERSION privately into .toolchain/node"
