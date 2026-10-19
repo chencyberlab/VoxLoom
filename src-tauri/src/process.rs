@@ -397,14 +397,17 @@ mod tests {
     /// Run by `a_force_killed_app_leaves_nothing_running` as a stand-in app.
     #[test]
     fn stand_in_app() {
-        if std::env::var_os("VOXLOOM_STAND_IN_APP").is_none() {
+        // The harness may capture stdout, so the PIDs go to a file.
+        let Some(report) = std::env::var_os("VOXLOOM_STAND_IN_APP") else {
             return;
-        }
+        };
         contain_children();
         let mut supervised = spawn(&mut shell_with_grandchild(false)).unwrap();
         // Not started with `spawn`: the app's own job must still cover it.
         let mut plain = shell_with_grandchild(false).spawn().unwrap();
-        println!("STARTED {} {}", supervised.id(), plain.id());
+        let partial = std::path::PathBuf::from(&report).with_extension("part");
+        std::fs::write(&partial, format!("{} {}", supervised.id(), plain.id())).unwrap();
+        std::fs::rename(partial, report).unwrap();
         std::thread::sleep(Duration::from_secs(60));
         let _ = (
             supervised.kill(),
@@ -416,25 +419,28 @@ mod tests {
 
     #[test]
     fn a_force_killed_app_leaves_nothing_running() {
-        use std::io::{BufRead, BufReader};
+        let temp = tempfile::tempdir().unwrap();
+        let report = temp.path().join("started.txt");
         let mut app = Command::new(std::env::current_exe().unwrap())
             .args([
                 "process::tests::stand_in_app",
                 "--exact",
-                "--nocapture",
                 "--test-threads=1",
             ])
-            .env("VOXLOOM_STAND_IN_APP", "1")
-            .stdout(Stdio::piped())
+            .env("VOXLOOM_STAND_IN_APP", &report)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
             .unwrap();
-        let line = BufReader::new(app.stdout.take().unwrap())
-            .lines()
-            .map_while(std::result::Result::ok)
-            .find(|line| line.starts_with("STARTED "))
-            .expect("stand-in app did not start its children");
-        let shells: Vec<u32> = line[8..].split(' ').map(|p| p.parse().unwrap()).collect();
+        until("the stand-in app to start its children", || {
+            report.is_file()
+        });
+        let shells: Vec<u32> = std::fs::read_to_string(&report)
+            .unwrap()
+            .split(' ')
+            .map(|p| p.parse().unwrap())
+            .collect();
         let mut started = shells.clone();
         until("both pings to start", || {
             started = shells

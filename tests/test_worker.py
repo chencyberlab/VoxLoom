@@ -109,6 +109,24 @@ class InferenceUnits(unittest.TestCase):
         engine.execute({"kind":"answer", "evidence":[]}, lambda **v: rows.append(v), Path("/tmp"))
         self.assertIn("no supporting evidence", rows[0]["text"])
 
+    def test_scripts_run_without_their_folder_on_sys_path(self):
+        # -P is what the embeddable Python bundled on Windows does: the
+        # script's own folder is not on sys.path.
+        import subprocess
+        worker = Path(__file__).resolve().parents[1] / "worker"
+        with tempfile.TemporaryDirectory() as directory:
+            request, response = Path(directory) / "request.json", Path(directory) / "response.jsonl"
+            request.write_text(json.dumps({"kind": "answer", "evidence": []}), encoding="utf-8")
+            result = subprocess.run([sys.executable, "-P", str(worker / "engine.py"), "--request", str(request), "--response", str(response)],
+                                    capture_output=True, timeout=60)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("no supporting evidence", response.read_text(encoding="utf-8"))
+            target = Path(directory) / "Zoë notes.docx"
+            result = subprocess.run([sys.executable, "-P", str(worker / "export_docx.py"), str(target)],
+                                    input=json.dumps({"title": "Café", "text": "## Overview\nZoë agreed."}).encode(), capture_output=True, timeout=60)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(target.read_bytes().startswith(b"PK"))
+
 
 def speech_audio(spans, total):
     """Fixture PCM: silence is 0; speech samples encode their stream time / 100 ms."""

@@ -48,18 +48,30 @@ with tempfile.TemporaryDirectory() as directory:
     assert b"lavfi.astats.Overall.RMS_level=" in result.stderr, "no level metering on stderr"
     segments = sorted(folder.glob("s0000-mic-*.flac"))
     assert len(segments) >= 3, [p.name for p in segments]
-    probe = run(engines / "ffprobe.exe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", segments[0])
-    assert probe.returncode == 0 and 0.9 < float(probe.stdout) < 1.1, (probe.returncode, probe.stdout, probe.stderr)
+    # Segment headers can lack a duration (the app counts decoded samples instead):
+    # each closed segment must decode to exactly one second.
     decoded = run(engines / "ffmpeg.exe", "-v", "error", "-i", segments[1], "-ar", "16000", "-ac", "1", "-f", "s16le", "pipe:1")
     assert decoded.returncode == 0 and len(decoded.stdout) == 32000, (decoded.returncode, len(decoded.stdout))
+    whole = folder / "whole.flac"
+    result = run(engines / "ffmpeg.exe", "-v", "error", "-f", "s16le", "-ar", "16000", "-ac", "1", "-i", "pipe:0", "-c:a", "flac", whole, data=pcm)
+    assert result.returncode == 0, result.stderr[-600:]
+    probe = run(engines / "ffprobe.exe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", whole)
+    assert probe.returncode == 0 and 2.9 < float(probe.stdout) < 3.1, (probe.returncode, probe.stdout, probe.stderr)
     results["ffmpeg_segments_unicode_path"] = len(segments)
 
 result = run(python, "-I", "-c", "import importlib.metadata as m; assert m.version('litert-lm') == '0.18.0'; "
              "from litert_lm import Backend, EmbeddingEngine, Content; assert callable(EmbeddingEngine.compute_embedding)")
 assert result.returncode == 0, result.stderr[-800:]
 results["python_litert"] = "loads"
-result = run(python, "-I", "-c", f"import sys; sys.path.insert(0, {str(worker)!r}); import engine, notes, provision, export_docx; "
-             "assert engine.resource is None and engine.child_options()['creationflags']")
-assert result.returncode == 0, result.stderr[-800:]
-results["python_worker"] = "imports"
+# The worker and Word export, started the way the app starts them.
+with tempfile.TemporaryDirectory() as directory:
+    request, response = Path(directory) / "request.json", Path(directory) / "response.jsonl"
+    request.write_text(json.dumps({"kind": "answer", "evidence": []}), encoding="utf-8")
+    result = run(python, worker / "engine.py", "--request", request, "--response", response)
+    assert result.returncode == 0, result.stderr[-800:]
+    assert "no supporting evidence" in response.read_text(encoding="utf-8"), response.read_text(encoding="utf-8")
+    target = Path(directory) / "Zoë's notes.docx"
+    result = run(python, worker / "export_docx.py", target, data=json.dumps({"title": "Café", "text": "## Overview\nZoë agreed."}).encode())
+    assert result.returncode == 0 and target.read_bytes().startswith(b"PK"), result.stderr[-800:]
+results["python_worker_and_word_export"] = "run"
 print(json.dumps(results))
