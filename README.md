@@ -32,7 +32,7 @@ Current build: functional development preview on Ubuntu 24.04 x86_64. Real Whisp
 
 ## Install or run the preview
 
-Install `release/voxloom_0.1.5_amd64.deb` to add VoxLoom to the applications menu. On this prepared Ubuntu computer, you can also open `release/VoxLoom-0.1.5/voxloom` directly; keep its `usr/` folder beside it. Both run the compiled native app without a development server.
+Install `release/voxloom_0.1.11_amd64.deb` to add VoxLoom to the applications menu. On this prepared Ubuntu computer, you can also open `release/VoxLoom-0.1.11/voxloom` directly; keep its `usr/` folder beside it. Both run the compiled native app without a development server.
 
 The downloaded development models and setup data have been removed for a fresh first-run test. Choose **Download & set up** when the app opens. Models are separate from the package and download only when requested. This preview has passed native launch, compact/expand and Quit checks; physical devices and business recordings still need manual testing.
 
@@ -58,10 +58,10 @@ You need an Ubuntu 24.04 (or newer) x86_64 computer, an internet connection for 
 3. **Install.** The script prints the exact command at the end, for example:
 
    ```bash
-   sudo apt install ./release/voxloom_0.1.5_amd64.deb
+   sudo apt install ./release/voxloom_0.1.11_amd64.deb
    ```
 
-   Or run it without installing: `release/VoxLoom-0.1.5/voxloom`.
+   Or run it without installing: `release/VoxLoom-0.1.11/voxloom`.
 4. **First run.** Open VoxLoom from the applications menu and choose **Download & set up** to fetch the AI models (about 3.6 GB with the default summary model). Models are never part of the build.
 
 To build again after pulling changes, run `bash scripts/build-app.sh`. Later builds take a few minutes. Upgrading keeps your recordings, models and settings.
@@ -80,7 +80,7 @@ Developers and coding agents: see [AGENTS.md](AGENTS.md) for the project layout,
 bash scripts/run-local.sh
 ```
 
-This uses the Git-ignored `.local-data/` folder for this checkout's private library and model setup. The development test models were deliberately removed; provision them again before running real-engine checks. It starts the actual native application, with no dev server. Close the main window or click Quit to flush capture, stop inference and release workers. The compact-recorder button shrinks the same window; expand returns to the transcription studio.
+This uses the Git-ignored `.local-data/` folder for this checkout's private library and model setup. The development test models were deliberately removed; provision them again before running real-engine checks. It starts the actual native application, with no dev server. Close the main window or click Quit to flush capture, stop inference and release workers. The compact-recorder button shrinks the same window into a floating bar that stays on top; drag it anywhere by the bar. Expand returns to the transcription studio.
 
 ## Development prerequisites
 

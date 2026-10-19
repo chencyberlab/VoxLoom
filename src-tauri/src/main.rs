@@ -23,6 +23,9 @@ async fn dispatch(
             main.emit("window-mode", compact)
                 .map_err(|e| e.to_string())?;
             if compact {
+                // See-through only while floating, so the rounded bar has no square corners.
+                main.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)))
+                    .map_err(|e| e.to_string())?;
                 main.set_resizable(true).map_err(|e| e.to_string())?;
                 main.set_min_size(Some(tauri::LogicalSize::new(390., 92.)))
                     .map_err(|e| e.to_string())?;
@@ -35,6 +38,8 @@ async fn dispatch(
                 main.set_title("VoxLoom · Recorder")
                     .map_err(|e| e.to_string())?;
             } else {
+                main.set_background_color(opaque_background(&app))
+                    .map_err(|e| e.to_string())?;
                 main.set_max_size(None::<tauri::LogicalSize<f64>>)
                     .map_err(|e| e.to_string())?;
                 main.set_resizable(true).map_err(|e| e.to_string())?;
@@ -70,6 +75,11 @@ async fn dispatch(
         }
     }
     Ok(result)
+}
+/// The window is created transparent for the floating recorder, which leaves the
+/// webview see-through until the page paints. The studio keeps the configured colour.
+fn opaque_background(app: &tauri::AppHandle) -> Option<tauri::window::Color> {
+    app.config().app.windows.first().and_then(|w| w.background_color)
 }
 fn main() {
     // Private files from every Rust/Python/FFmpeg process, including WAL and temp.
@@ -113,6 +123,9 @@ fn main() {
             let service =
                 Service::open(data, cache, resources, notify).map_err(std::io::Error::other)?;
             app.manage(service);
+            if let Some(main) = app.get_webview_window("main") {
+                main.set_background_color(opaque_background(app.handle()))?;
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![dispatch])

@@ -34,6 +34,51 @@ The llama.cpp completion frontend accepted but failed to forward its reasoning s
 
 Validation for this update: 16 Python checks, six Rust unit checks plus the offline setup integration check, six browser checks (including hiding an old unfinished summary), desktop clippy with warnings denied, the real ASR/index/search/summary/restart/export/delete/shutdown workflow (22.18 s), and synthetic dual capture with live text, pause/resume, final-tail processing and shutdown (55.86 s). Cursor advancement and transcript rows commit atomically; a deliberately invalid batch rolls back both, retries do not duplicate rows, edited text survives, progress resumes after reopening SQLite, and meeting deletion cascades through the new checkpoint table. The database migrates to schema version 2. Tests use temporary libraries and never reset the installed user's data. The final extracted 0.1.2 package also passed native launch, compact/expand and Quit (exit 0; four observed processes released; sampled idle tree 434,888 KiB). Packaged workers, manifest, source notices and both patched completion binaries matched the source/staging hashes; no model weights are bundled.
 
+## Version 0.1.11: floating recorder drags and has rounded corners
+
+Validation:
+- Fast set: 38 Python checks, 12 Rust checks plus offline setup integration, 13 browser checks (the compact recorder's Expand and Quit buttons), TypeScript/privacy/version and desktop clippy pass.
+- Native smoke (`scripts/native-smoke.py`, Xvfb 1280×900, depth 24 with a 32-bit visual) on the debug build and on `release/VoxLoom-0.1.11/usr/bin/voxloom`: launch, shrink to 390×92, expand, Quit (exit 0; four observed processes released; idle sampled RSS 457,136 KiB).
+- Corners: in the compact screenshot, pixels outside the 12 px radius read (0,0,0) in both runs, which is how an alpha-0 window shows on a display without a compositor. The old opaque page background would read about (19,20,18), the bar body reads (25,26,23) (`--sidebar`), and the first-run screen is dark as before, with no flash.
+- Dragging needs a window manager and is not covered by Xvfb.
+
+## Moonshine Streaming as a transcription model (evaluated after 0.1.10, not adopted)
+
+Question: should Moonshine Streaming Small or Medium (Moonshine AI, MIT, English only) be offered next to Standard and Accurate? Published Open ASR Leaderboard averages: Small 7.84%, Medium 6.65%, against 10.32% for base.en and 7.44% for large-v3. Tested with the `moonshine-voice` 0.1.5 Python package (ONNX Runtime) and its int8 English models from download.moonshine.ai (`quantized_26_08_21`): Small, 123M parameters, 142,300,462 bytes in 7 files; Medium, 245M parameters, 269,141,110 bytes. Its catalog publishes CRC32C checksums only, no SHA-256.
+
+Method: `scripts/replay-live-asr.py` unchanged, with `whisper_pieces` swapped for Moonshine's batch call, so all four models decode the same pause-planned chunks of at most 28 s. Moonshine settings come from its own evaluation script: VAD off (`vad_threshold` 0, `vad_max_segment_duration` 100000), so no audio is skipped, and `max_tokens_per_second` 6.5. Moonshine returns one untimed line per chunk. The stretched-segment re-read was therefore off, as for Gemma 4, and the skipped-speech retry could not fire. The model loaded once per live pass, as a fresh worker would. Every run was pinned to the same two cores (`taskset`); Whisper used two threads.
+
+References: three recordings were scored against the videos' own transcripts: 76e99b52 (first 274 words), and 9337ef83 and d34b2474 (from "So Joe", 582 and 624 words). The other three were scored against whisper.cpp large-v3-turbo q5_0 run over each whole file (ggerganov/whisper.cpp revision 5359861c, 574,041,195 bytes, SHA-256 39422170…ffa7e2). Against the video transcripts, turbo itself scored 3.6%, 4.1% and 15.1%. On those three recordings, turbo-based and transcript-based WER for the four models agreed within 0.6 points on system audio and 3.7 points on the clipped microphone, with the same ranking. Scoring: word alignment, case and punctuation ignored, and fillers (um, uh, hmm…) removed on both sides. The 76e99b52 figures are therefore 0.4 points lower than in the 0.1.7 table, which counted fillers.
+
+| Recording | Reference | Standard | Accurate | Moonshine Small | Moonshine Medium |
+|---|---|---|---|---|---|
+| 76e99b52 counselling role-play, system audio, music bed (2 min 33 s) | video | 5.8% | 4.7% | 6.9% | 7.3% |
+| 9337ef83 parent relationship role-play, system audio (4 min 13 s) | video | 5.8% | 4.6% | 6.7% | 5.8% |
+| d34b2474 same video, clipped laptop microphone (4 min 45 s) | video | 44.1% | 32.4% | 62.0% | 53.8% |
+| 84cc8615 counselling podcast, noisy laptop microphone (4 min 24 s) | turbo | 20.9% | 11.5% | 32.6% | 19.1% |
+| 7735714c listening test, system audio (2 min 2 s) | turbo | 1.2% | 1.2% | 2.0% | 0.8% |
+| ef1e2714 listening test, system audio (4 min 31 s) | turbo | 4.1% | 3.9% | 2.6% | 3.6% |
+| Longest run of missing words | | 5 | 3 | 20 | 11 |
+| Time / audio, two cores | | 0.16-0.28 | 0.45-0.62 | 0.26-0.38 | 0.38-0.54 |
+| Peak memory | | 0.28-0.31 GB | 0.53-0.55 GB | 0.58-0.68 GB | 0.99-1.03 GB |
+
+Peak memory is the `whisper-cli` process for Whisper, and the whole worker process for Moonshine (Python started at about 15 MB). All 24 runs covered every captured millisecond, so the losses below come from the models, not the chunking:
+
+- **Small:** wrote the opening 20 s of d34b2474 (speech under music and microphone rumble, about 20 words) as "♪♪♪…??", and the 6 s opening sentence of ef1e2714 as "1.". Its 2.6% on ef1e2714 hides that loss.
+- **Medium:** lost runs of up to 11 words on d34b2474. It also prefixed "150,000" to ef1e2714's opening sentence and wrote "So I was going to fucking laugh" in a passage of d34b2474 where nothing like it is said.
+- **Both:** lost "Yeah, I guess" after the music bed in 76e99b52. Whisper recovers "I guess" through the re-read. Moonshine output is punctuated and capitalised, but Small once returned a lower-case run-on paragraph.
+
+The d34b2474 microphone was recorded at the maximum ALSA gain (Capture +30 dB, Internal Mic Boost +30 dB). Its signal averages −5 dBFS, with 20,000-40,000 clipped samples per 30 s file, mostly below 300 Hz. Its dual-capture system track was digital silence and was left out.
+
+Moonshine's published speed advantage (43.7× over large-v3 on an Apple M3) compares against Whisper re-decoding a 30 s window for every streaming update. VoxLoom decodes each chunk once.
+
+Decision: keep Whisper.
+- Medium costs Accurate's CPU and twice its memory. It is less accurate than Accurate on four of the six recordings and ahead by at most two words on the two listening tests.
+- Small is slower than Standard and worse than it on five of the six.
+- Both lose speech silently on difficult audio and invent words.
+
+On microphone audio, Accurate removes about half of Standard's errors (20.9% → 11.5%). Recordings and transcripts were copied to a temporary folder; they, the models and the test environment were deleted afterwards.
+
 ## Version 0.1.10: queued-job message
 
 The summary-style browser check now clicks Summarise and expects "Summary queued. Its progress shows at the top; click it to cancel." 38 Python checks, 12 Rust checks, offline setup integration, 13 browser checks, TypeScript/privacy/version and desktop clippy pass.
