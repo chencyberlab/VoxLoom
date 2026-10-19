@@ -195,3 +195,11 @@ Verified: see TESTING.md, "Version 0.1.17".
 Release result: built by the Apps workflow when this version reaches main: voxloom_0.1.17_amd64.deb and VoxLoom-0.1.17-windows-x64-preview.zip on the draft release v0.1.17, with their SHA-256 in its notes and SHA256SUMS.txt.
 Known limitations: the fix was checked with a regression test and on GitHub's Windows machines, not yet on the user's laptop.
 Next: user reruns model setup on Windows with 0.1.17, then tests transcription of recordings.
+
+
+Version 0.1.18: fix from the review of 0.1.17 (GitHub issue #7)
+Implemented: 0.1.17 ignored every saved tool path two folders below a folder holding a `voxloom` executable. That included the running Windows preview's own folder: choosing its generic engine build (or any tool placed inside it) under Advanced settings was ignored, and the next save of Settings erased the choice. A custom path that was missing for the moment was also erased by any save, because Settings showed the default and sent it back. Now `Service::other_copy` ignores only a path in the `engines` or `python` folder beside the app of a copy other than the running one, and `save_settings` changes a tool path only when the user edited it: saving what Settings shows keeps the stored value, and choosing the default stores nothing.
+Verified: see TESTING.md, "Version 0.1.18".
+Release result: built by the Apps workflow when this version reaches main: voxloom_0.1.18_amd64.deb and VoxLoom-0.1.18-windows-x64-preview.zip on the draft release v0.1.18, with their SHA-256 in its notes and SHA256SUMS.txt.
+Known limitations: checked with the regression test and on GitHub's Windows machines, not yet by choosing an engine in the packaged Windows preview.
+Next: user tests model setup and transcription on Windows with 0.1.18.

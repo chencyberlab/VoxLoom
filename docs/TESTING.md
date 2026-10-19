@@ -18,6 +18,21 @@ Meaningful unit checks cover pause-aligned chunk planning, skipped-speech retrie
 
 Version 0.1.1 added a first-run 1B/E2B summary selector. Six browser tests pass, including the request payload, displayed estimate and locked selection during setup for 1B, E2B and no summaries. These use an explicitly mocked bridge, without downloading models. A separate Rust regression executes the real offline provisioning script with tiny SHA-256-checked fixture files and a stubbed runtime readiness probe. It verifies core plus only the chosen summary model, saved E2B selection after success, core-only setup, missing-summary failure without changing the saved selection, and rejection of an unknown profile. Native checks on the final 0.1.1 package also passed launch, compact/expand and Quit, with all three observed processes released. The setup action remains fully visible at 900×720 in the browser checks. No user library or installed app data is reset during updates.
 
+## Version 0.1.18: fix from the review of 0.1.17 (issue #7)
+
+Tested on a 4-core cloud VM (Ubuntu 24.04, FFmpeg 6.1.1, no audio devices) and on GitHub's Windows Server 2025 machines.
+
+Validation:
+- `saved_tool_paths_follow_the_running_copy` was rewritten around the preview's layout: the running copy has its own `voxloom` executable beside `engines/`.
+- Each case checks what Settings shows and what the transcribe request runs, then saves every setting as shown (as both Save buttons do) and checks again. The cases:
+  - Nothing saved uses the default and stores nothing.
+  - The running copy's other engine build, and a tool placed inside it, are used and survive the save.
+  - An engine of another copy, on disk or deleted, is not used.
+  - A custom path that is missing is not used. It survives saves and is used once the file exists.
+  - Choosing the default again stores nothing.
+- On the 0.1.17 code, the new test fails: choosing the running copy's generic build left Settings and the request on the default `whisper-cli`.
+- Fast set: 45 Python checks, 29 Rust unit checks plus the offline setup integration check, 14 browser checks, TypeScript/privacy/version, and clippy for desktop and the Windows target (with tests).
+
 ## Version 0.1.17: Windows setup works after moving to a newer preview
 
 Tested on a 4-core cloud VM (Ubuntu 24.04, FFmpeg 6.1.1, no audio devices) and on GitHub's Windows Server 2025 machines.

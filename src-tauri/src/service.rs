@@ -54,16 +54,25 @@ fn disk_too_full(free: Option<u64>) -> bool {
 mod tests {
     use super::*;
 
-    /// Each Windows preview runs from its own folder. Paths an older copy saved,
-    /// whether that copy is still on disk or deleted, must not be used.
+    /// Each Windows preview runs from its own folder, its app beside
+    /// `engines/`. Another copy's saved paths are not used; the running copy's
+    /// own files and the user's custom paths are, and survive a save of
+    /// everything Settings shows (both Save buttons send that).
     #[test]
     fn saved_tool_paths_follow_the_running_copy() {
         let temp = tempfile::tempdir().unwrap();
-        let app = temp.path().join("VoxLoom-new");
-        fs::create_dir_all(app.join("engines")).unwrap();
-        for name in ["whisper-cli", "whisper-cli-generic"] {
-            fs::write(app.join("engines").join(platform::exe(name)), b"").unwrap();
-        }
+        let copy = |name: &str| {
+            let app = temp.path().join(name);
+            fs::create_dir_all(app.join("engines")).unwrap();
+            fs::write(app.join(platform::exe("voxloom")), b"").unwrap();
+            for engine in ["whisper-cli", "whisper-cli-generic"] {
+                fs::write(app.join("engines").join(platform::exe(engine)), b"").unwrap();
+            }
+            app
+        };
+        let app = copy("VoxLoom-new");
+        fs::create_dir_all(app.join("tools")).unwrap();
+        fs::write(app.join("tools").join(platform::exe("whisper-cli")), b"").unwrap();
         let service = Service::open(
             temp.path().join("data"),
             temp.path().join("cache"),
@@ -71,35 +80,53 @@ mod tests {
             Arc::new(|_| {}),
         )
         .unwrap();
-        let current = service.default_tool("whisper_cli");
-        assert!(current.starts_with(&*app.to_string_lossy()), "{current}");
-        let shown = |s: &Arc<Service>| {
-            s.dispatch("settings", json!({})).unwrap()["whisper_cli"]
-                .as_str()
-                .unwrap()
-                .to_string()
+        let default = service.default_tool("whisper_cli");
+        assert!(default.starts_with(&*app.to_string_lossy()), "{default}");
+        // What Settings shows and what transcription runs.
+        let used = |expected: &str| {
+            let shown = service.dispatch("settings", json!({})).unwrap();
+            assert_eq!(shown["whisper_cli"], expected);
+            let request = service.request("transcribe", None).unwrap();
+            assert_eq!(request["whisper_cli"], expected);
+            // Saving every setting as shown changes nothing.
+            service.dispatch("save_settings", shown).unwrap();
+            assert_eq!(service.request("transcribe", None).unwrap()["whisper_cli"], expected);
         };
-        let old = temp.path().join("VoxLoom-old");
-        fs::create_dir_all(old.join("engines")).unwrap();
-        fs::write(old.join(platform::exe("voxloom")), b"").unwrap();
-        let old_engine = old.join("engines").join(platform::exe("whisper-cli"));
-        fs::write(&old_engine, b"").unwrap();
-        let deleted = temp.path().join("VoxLoom-deleted/engines").join(platform::exe("whisper-cli"));
-        for stale in [old_engine, deleted] {
-            let stale = stale.to_string_lossy();
-            service.db.lock().unwrap().set_setting("whisper_cli", &stale).unwrap();
-            assert_eq!(shown(&service), current, "{stale}");
+        used(&default);
+        assert_eq!(service.db.lock().unwrap().setting("whisper_cli", "unset"), "unset");
+        let path = |p: PathBuf| p.to_string_lossy().to_string();
+        let choose = |chosen: &str| {
+            service.dispatch("save_settings", json!({"whisper_cli": chosen})).unwrap();
+        };
+        // The running copy's other build, or a tool put inside it, is the user's choice.
+        let other_build = if default.contains("generic") { "whisper-cli" } else { "whisper-cli-generic" };
+        for chosen in [
+            path(app.join("engines").join(platform::exe(other_build))),
+            path(app.join("tools").join(platform::exe("whisper-cli"))),
+        ] {
+            choose(&chosen);
+            used(&chosen);
         }
-        // A path the user chose stays.
+        // Another copy's engine is not, whether that copy is on disk or deleted.
+        let old = copy("VoxLoom-old");
+        for stale in [
+            path(old.join("engines").join(platform::exe("whisper-cli"))),
+            path(temp.path().join("VoxLoom-deleted/engines").join(platform::exe("whisper-cli"))),
+        ] {
+            service.db.lock().unwrap().set_setting("whisper_cli", &stale).unwrap();
+            used(&default);
+        }
+        // A custom path that is missing for now survives saves and is used once back.
         let custom = temp.path().join("my engines").join(platform::exe("whisper-cli"));
+        choose(&path(custom.clone()));
+        used(&default);
         fs::create_dir_all(custom.parent().unwrap()).unwrap();
         fs::write(&custom, b"").unwrap();
-        service.dispatch("save_settings", json!({"whisper_cli": custom})).unwrap();
-        assert_eq!(shown(&service), custom.to_string_lossy());
-        // Settings sends the default back on every save: nothing is stored.
-        service.dispatch("save_settings", json!({"whisper_cli": current})).unwrap();
+        used(&path(custom));
+        // Choosing the default again stores nothing.
+        choose(&default);
         assert_eq!(service.db.lock().unwrap().setting("whisper_cli", "unset"), "");
-        assert_eq!(shown(&service), current);
+        used(&default);
     }
 
     #[test]
@@ -730,25 +757,36 @@ impl Service {
         }
     }
     /// The engine or interpreter to run: the one saved in Settings, unless it
-    /// is gone or belongs to another copy of VoxLoom (a folder with its own
-    /// app beside `python/` or `engines/`). The Windows preview runs from
-    /// wherever it was unzipped, and saving any setting used to store that
-    /// copy's paths; after a newer copy replaced it, setup failed with "The
-    /// system cannot find the path specified".
+    /// is gone or is another copy's bundled tool. The Windows preview runs
+    /// from wherever it was unzipped, and saving any setting used to store
+    /// that copy's paths; after a newer copy replaced it, setup failed with
+    /// "The system cannot find the path specified".
     fn tool(&self, db: &Db, tool: &str) -> String {
         let saved = db.setting(tool, "");
         let path = Path::new(&saved);
         // A bare command name is looked up on PATH when it runs.
         let bare = path.components().count() == 1;
-        let bundled = path
-            .ancestors()
-            .nth(2)
-            .is_some_and(|copy| copy.join(platform::exe("voxloom")).is_file());
-        if saved.is_empty() || bundled || (!bare && !path.is_file()) {
+        if saved.is_empty() || self.other_copy(path) || (!bare && !path.is_file()) {
             self.default_tool(tool)
         } else {
             saved
         }
+    }
+    /// Whether `path` is in the `engines` or `python` folder beside the app
+    /// of a VoxLoom copy other than the running one. The running copy's own
+    /// files, such as its generic engine build, stay the user's choice.
+    fn other_copy(&self, path: &Path) -> bool {
+        let Some(folder) = path.parent() else {
+            return false;
+        };
+        let bundled = folder
+            .file_name()
+            .is_some_and(|name| ["engines", "python"].iter().any(|b| name.eq_ignore_ascii_case(b)));
+        folder.parent().is_some_and(|copy| {
+            bundled
+                && copy.join(platform::exe("voxloom")).is_file()
+                && fs::canonicalize(copy).ok() != fs::canonicalize(&self.resources).ok()
+        })
     }
     fn default_tool(&self, tool: &str) -> String {
         let (dev, installed, fallback) = match tool {
@@ -1485,15 +1523,19 @@ impl Service {
                         {
                             return Err("Use only local executable and model paths".into());
                         }
-                        // Settings sends back every path it showed. Keep only
-                        // one the user chose, so the default follows the app.
-                        let v = if ["whisper_cli", "llama_cli", "python"].contains(&k)
-                            && v == self.default_tool(k)
-                        {
-                            ""
-                        } else {
-                            v
-                        };
+                        // Settings sends back every path it showed. A path the
+                        // user did not edit stays as stored (a custom one that
+                        // is missing for now survives), and choosing the default
+                        // stores nothing, so the default follows the app.
+                        if ["whisper_cli", "llama_cli", "python"].contains(&k) {
+                            if v == self.tool(&db, k) {
+                                continue;
+                            }
+                            if v == self.default_tool(k) {
+                                db.set_setting(k, "")?;
+                                continue;
+                            }
+                        }
                         db.set_setting(k, v)?;
                     }
                 }
