@@ -7,8 +7,10 @@ use std::{
 };
 
 /// The library and cache folders. VOXLOOM_DATA_DIR / VOXLOOM_CACHE_DIR win.
-/// Windows uses Local AppData: Roaming can be synced to a server on company
-/// networks, which would copy recordings and models off the device.
+/// Windows uses Local AppData (Roaming can be synced to a server on company
+/// networks) under the app's identifier: the per-user installer puts the
+/// program in %LOCALAPPDATA%\voxloom, and its uninstaller removes this
+/// folder only when the user ticks "Delete the application data".
 pub fn data_dirs() -> Result<(PathBuf, PathBuf)> {
     let var = |name: &str| std::env::var_os(name).map(PathBuf::from);
     #[cfg(unix)]
@@ -26,7 +28,8 @@ pub fn data_dirs() -> Result<(PathBuf, PathBuf)> {
     #[cfg(windows)]
     let (data, cache) = {
         let local = var("LOCALAPPDATA").ok_or("LOCALAPPDATA is not set")?;
-        (local.join("VoxLoom"), local.join("VoxLoom").join("cache"))
+        let library = local.join("org.voxloom.desktop");
+        (library.clone(), library.join("cache"))
     };
     Ok((
         var("VOXLOOM_DATA_DIR").unwrap_or(data),
@@ -151,6 +154,35 @@ pub fn venv_python(venv: &Path) -> PathBuf {
     } else {
         venv.join("bin").join("python")
     }
+}
+
+/// Windows: puts the bundled FFmpeg and engines first on PATH, for the app and
+/// every worker it starts. `resources/engines` is the installed layout;
+/// `src-tauri/engines` is a checkout's staged copy (debug builds).
+/// Linux keeps the system FFmpeg.
+pub fn use_bundled_tools(resources: &Path) {
+    #[cfg(windows)]
+    {
+        let bundled = [
+            resources.join("engines"),
+            resources.join("src-tauri").join("engines"),
+        ];
+        let mut paths: Vec<PathBuf> = bundled.into_iter().filter(|p| p.is_dir()).collect();
+        if paths.is_empty() {
+            return;
+        }
+        paths.extend(
+            std::env::var_os("PATH")
+                .map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+                .unwrap_or_default(),
+        );
+        if let Ok(joined) = std::env::join_paths(paths) {
+            // Before any worker starts; Windows environment calls are thread-safe.
+            std::env::set_var("PATH", joined);
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = resources;
 }
 
 /// Whether `program` can be started by name from PATH.

@@ -20,7 +20,7 @@ MANIFEST = ROOT / "models" / "manifest.json"
 
 def data_dir():
     if sys.platform == "win32":
-        default = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData/Local")) / "VoxLoom"
+        default = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData/Local")) / "org.voxloom.desktop"
     else:
         default = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "voxloom"
     return Path(os.environ.get("VOXLOOM_DATA_DIR", default))

@@ -1,5 +1,10 @@
-// Opt-in real-engine checks driven by PipeWire tools, /proc and /tmp fixtures.
-#![cfg(target_os = "linux")]
+// Opt-in real-engine checks. The import workflow runs on Linux and Windows;
+// capture is driven by PipeWire tools and runs on Linux only.
+//   VOXLOOM_TEST_ROOT      checkout with worker/ and models/ (required)
+//   VOXLOOM_TEST_MODELS    models folder (default ROOT/.local-data/models)
+//   VOXLOOM_TEST_FIXTURES  folder of scripts/make-fixtures.sh output (default /tmp)
+//   VOXLOOM_TEST_PYTHON, VOXLOOM_TEST_WHISPER_CLI, VOXLOOM_TEST_LLAMA_CLI  engines
+//                          (default: the Linux checkout layout under ROOT)
 use serde_json::json;
 use std::{
     path::PathBuf,
@@ -7,6 +12,42 @@ use std::{
     time::{Duration, Instant},
 };
 use voxloom_core::service::Service;
+
+fn env_path(name: &str, default: PathBuf) -> PathBuf {
+    std::env::var_os(name).map(PathBuf::from).unwrap_or(default)
+}
+
+/// Processes the test host started, for the shutdown check.
+fn children() -> Vec<u32> {
+    #[cfg(target_os = "linux")]
+    let pids = voxloom_core::metrics::tree_pids(std::process::id());
+    #[cfg(windows)]
+    let pids = voxloom_core::process::contained_pids().unwrap_or_default();
+    pids.into_iter().filter(|p| *p != std::process::id()).collect()
+}
+
+fn gone(pid: u32) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap_or_default();
+        status.is_empty() || status.lines().any(|l| l.starts_with("State:") && l.contains('Z'))
+    }
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::{
+            Foundation::CloseHandle,
+            System::Threading::{GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION},
+        };
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process.is_null() {
+            return true;
+        }
+        let mut code = 0;
+        GetExitCodeProcess(process, &mut code);
+        CloseHandle(process);
+        code != 259 // STILL_ACTIVE
+    }
+}
 
 fn await_jobs(s: &Arc<Service>) {
     let deadline = Instant::now() + Duration::from_secs(180);
@@ -35,6 +76,9 @@ fn real_offline_import_transcribe_index_search_restart_export_delete() {
         return;
     };
     let root = PathBuf::from(root);
+    // Windows: the test is its own host, so its Job Object lists the workers.
+    voxloom_core::process::contain_children();
+    let fixtures = env_path("VOXLOOM_TEST_FIXTURES", PathBuf::from("/tmp"));
     let temp = tempfile::tempdir().unwrap();
     let data = temp.path().join("library café with spaces");
     let cache = temp.path().join("cache");
@@ -47,7 +91,7 @@ fn real_offline_import_transcribe_index_search_restart_export_delete() {
         Arc::new(move |event| event_sink.lock().unwrap().push(event)),
     )
     .unwrap();
-    s.dispatch("save_settings",json!({"python":root.join(".venv/bin/python"),"whisper_cli":root.join(".runtimes/whisper-build/bin/whisper-cli"),"llama_cli":root.join(".runtimes/llama-build/bin/llama-completion"),"models_dir":PathBuf::from(std::env::var_os("VOXLOOM_TEST_MODELS").unwrap_or_else(|| root.join(".local-data/models").into_os_string()))})).unwrap();
+    s.dispatch("save_settings",json!({"python":env_path("VOXLOOM_TEST_PYTHON",root.join(".venv/bin/python")),"whisper_cli":env_path("VOXLOOM_TEST_WHISPER_CLI",root.join(".runtimes/whisper-build/bin/whisper-cli")),"llama_cli":env_path("VOXLOOM_TEST_LLAMA_CLI",root.join(".runtimes/llama-build/bin/llama-completion")),"models_dir":env_path("VOXLOOM_TEST_MODELS",root.join(".local-data/models"))})).unwrap();
     assert_eq!(
         s.dispatch("runtime_status", json!({})).unwrap()["inference"],
         true
@@ -70,7 +114,7 @@ fn real_offline_import_transcribe_index_search_restart_export_delete() {
         std::thread::sleep(Duration::from_millis(50));
     }
     let imported = s
-        .dispatch("import", json!({"path":"/tmp/voxloom-budget.wav"}))
+        .dispatch("import", json!({"path":fixtures.join("voxloom-budget.wav")}))
         .unwrap();
     let id = imported["id"].as_str().unwrap();
     await_jobs(&s);
@@ -176,21 +220,16 @@ fn real_offline_import_transcribe_index_search_restart_export_delete() {
         );
         std::thread::sleep(Duration::from_millis(10));
     }
-    let children = voxloom_core::metrics::tree_pids(std::process::id())
-        .into_iter()
-        .filter(|p| *p != std::process::id())
-        .collect::<Vec<_>>();
+    let children = children();
     assert!(!children.is_empty());
     reopened.shutdown();
+    // Windows releases a killed process a moment after TerminateJobObject.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while children.iter().any(|pid| !gone(*pid)) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
     for pid in children {
-        let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap_or_default();
-        assert!(
-            status.is_empty()
-                || status
-                    .lines()
-                    .any(|l| l.starts_with("State:") && l.contains('Z')),
-            "Worker {pid} stayed resident after shutdown"
-        );
+        assert!(gone(pid), "Worker {pid} stayed resident after shutdown");
     }
     reopened
         .dispatch("cancel", json!({"id":running_job}))
@@ -209,6 +248,7 @@ fn real_offline_import_transcribe_index_search_restart_export_delete() {
     reopened.shutdown();
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 #[ignore = "requires explicit synthetic PipeWire fixture setup"]
 fn real_pulse_dual_capture_live_transcription_pause_resume_shutdown() {

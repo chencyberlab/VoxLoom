@@ -193,6 +193,7 @@ impl Capture {
                 process::kill_tree(child.id());
                 let _ = child.wait();
             }
+            process::finished(child.id());
         }
         self.elapsed_ms = self.elapsed();
         self.started = None;

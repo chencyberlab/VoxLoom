@@ -86,6 +86,7 @@ fn opaque_background(app: &tauri::AppHandle) -> Option<tauri::window::Color> {
 fn main() {
     // Private files from every Rust/Python/FFmpeg process, including WAL and temp.
     voxloom_core::platform::restrict_new_files();
+    voxloom_core::process::contain_children();
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
@@ -99,6 +100,7 @@ fn main() {
             } else {
                 app.path().resource_dir()?
             };
+            voxloom_core::platform::use_bundled_tools(&resources);
             let handle = app.handle().clone();
             let notify = Arc::new(move |event| {
                 let _ = handle.emit("voxloom", event);

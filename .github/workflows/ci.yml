@@ -1,5 +1,6 @@
-# Fast checks on Windows and Linux for every push. Nothing here downloads
-# models or runs the real engines; see AGENTS.md for the opt-in checks.
+# Checks on Windows and Linux for every push. The Windows runtime (engines,
+# FFmpeg, Python with LiteRT) is cross-built on Linux from pinned sources and
+# cached; the real-engine job downloads the pinned models once and caches them.
 name: CI
 
 on:
@@ -17,15 +18,61 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
 
-# Every check after npm ci runs even if an earlier one failed, so one run
+# Every check after setup runs even if an earlier one failed, so one run
 # reports all failures; the job still fails.
 jobs:
+  windows-runtime:
+    name: Windows runtime
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache/restore@v4
+        id: runtime
+        with:
+          path: windows-runtime
+          key: windows-runtime-${{ hashFiles('scripts/build-windows-runtime.sh', 'scripts/setup-runtimes.sh', 'scripts/patch-llama-completion.py', 'worker/requirements.windows.lock.txt') }}
+      - name: Build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mingw-w64 cmake nasm python3-venv espeak-ng ffmpeg
+      - name: Cross-build the runtime
+        if: steps.runtime.outputs.cache-hit != 'true'
+        run: |
+          bash scripts/build-windows-runtime.sh windows-runtime
+          rm -rf windows-runtime/build
+      - uses: actions/cache/save@v4
+        if: steps.runtime.outputs.cache-hit != 'true'
+        with:
+          path: windows-runtime
+          key: ${{ steps.runtime.outputs.cache-primary-key }}
+      - name: Speech fixtures
+        run: bash scripts/make-fixtures.sh fixtures
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-runtime
+          path: windows-runtime
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fixtures
+          path: fixtures
+          retention-days: 7
+
   windows:
     name: Windows
+    needs: windows-runtime
     runs-on: windows-2025
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-runtime
+          path: src-tauri
+      - name: Bundled FFmpeg on PATH for the tests
+        shell: bash
+        run: echo "$GITHUB_WORKSPACE/src-tauri/engines" >> "$GITHUB_PATH"
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -47,6 +94,9 @@ jobs:
           key: windows-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
           restore-keys: windows-cargo-
       - run: npm ci
+      - name: Bundled runtime starts on Windows
+        if: ${{ !cancelled() }}
+        run: python scripts/windows-runtime-smoke.py src-tauri
       - name: TypeScript, privacy rules and version
         if: ${{ !cancelled() }}
         run: npm run check
@@ -58,15 +108,12 @@ jobs:
         run: npx playwright test
         env:
           PLAYWRIGHT_CHROME: C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe
-      - name: Rust unit tests
+      - name: Rust unit tests (including Job Objects)
         if: ${{ !cancelled() }}
         run: cargo test --manifest-path src-tauri/Cargo.toml --no-default-features
       - name: Clippy
         if: ${{ !cancelled() }}
-        shell: bash
-        run: |
-          mkdir -p src-tauri/engines
-          cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
       - name: Build the desktop app
         if: ${{ !cancelled() }}
         run: npx tauri build --debug --no-bundle
@@ -75,6 +122,72 @@ jobs:
         run: python scripts/native-smoke-windows.py src-tauri/target/debug/voxloom.exe
         env:
           PYTHONUTF8: "1"
+
+  windows-engines:
+    name: Windows real engines
+    needs: windows-runtime
+    runs-on: windows-2025
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-runtime
+          path: src-tauri
+      - uses: actions/download-artifact@v4
+        with:
+          name: fixtures
+          path: fixtures
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Rust toolchain
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: windows-engines-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: windows-engines-cargo-
+      - uses: actions/cache/restore@v4
+        id: models
+        with:
+          path: models-cache
+          key: models-${{ hashFiles('models/manifest.json') }}
+      - name: Pinned models (Whisper, embeddings, E2B summaries)
+        if: steps.models.outputs.cache-hit != 'true'
+        run: python worker/provision.py --download --directory models-cache
+      - uses: actions/cache/save@v4
+        if: steps.models.outputs.cache-hit != 'true'
+        with:
+          path: models-cache
+          key: ${{ steps.models.outputs.cache-primary-key }}
+      - name: Import, transcribe, index, search, summarise, export, delete
+        shell: pwsh
+        run: |
+          # The engines must open models through a path with non-ASCII letters.
+          New-Item -ItemType Junction -Path "$env:RUNNER_TEMP\modèles Zoë" -Target "$env:GITHUB_WORKSPACE\models-cache" | Out-Null
+          $env:VOXLOOM_TEST_ROOT = "$env:GITHUB_WORKSPACE"
+          $env:VOXLOOM_TEST_MODELS = "$env:RUNNER_TEMP\modèles Zoë"
+          $env:VOXLOOM_TEST_FIXTURES = "$env:GITHUB_WORKSPACE\fixtures"
+          $env:VOXLOOM_TEST_PYTHON = "$env:GITHUB_WORKSPACE\src-tauri\python\python.exe"
+          $env:VOXLOOM_TEST_WHISPER_CLI = "$env:GITHUB_WORKSPACE\src-tauri\engines\whisper-cli.exe"
+          $env:VOXLOOM_TEST_LLAMA_CLI = "$env:GITHUB_WORKSPACE\src-tauri\engines\llama-completion.exe"
+          $env:VOXLOOM_TEST_REPORT = "$env:RUNNER_TEMP\windows-engine-metrics.json"
+          $env:Path = "$env:GITHUB_WORKSPACE\src-tauri\engines;$env:Path"
+          cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --test workflow real_offline_import -- --ignored --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-Content "$env:RUNNER_TEMP\windows-engine-metrics.json"
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: windows-engine-metrics
+          path: ${{ runner.temp }}/windows-engine-metrics.json
+          if-no-files-found: ignore
 
   linux:
     name: Linux
