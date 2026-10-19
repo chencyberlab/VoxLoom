@@ -67,6 +67,40 @@ class InferenceUnits(unittest.TestCase):
             self.assertEqual(samples, (1000).to_bytes(2,'little',signed=True)*8000+(-1000).to_bytes(2,'little',signed=True)*16000)
 
     @unittest.skipUnless(shutil.which('ffmpeg'), 'SKIPPED: FFmpeg not installed')
+    def test_segment_cut_before_its_first_frame_counts_as_empty(self):
+        """A crash in the first fraction of a second of a new segment leaves a
+        header-sized file that FFmpeg cannot open. Start-up registers it like
+        any other segment; the segments recorded before it must still be read."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            wav = root / 'speech.wav'
+            with wave.open(str(wav), 'wb') as output:
+                output.setparams((1, 2, 16000, 0, 'NONE', 'not compressed'))
+                output.writeframes(b''.join(((n * 17) % 4000 - 2000).to_bytes(2, 'little', signed=True) for n in range(32000)))
+            whole = root / 's0000-mic-000000.flac'
+            engine.run(['ffmpeg', '-nostdin', '-v', 'error', '-i', str(wav), str(whole)])
+            stub = root / 's0000-mic-000001.flac'
+            stub.write_bytes(whole.read_bytes()[:200])
+            empty = root / 's0001-mic-000000.flac'
+            empty.write_bytes(b'')
+            events = []
+            tracks = [
+                {'id': 'a', 'path': str(whole), 'source': 'mic', 'offset_ms': 0},
+                {'id': 'b', 'path': str(stub), 'source': 'mic', 'offset_ms': 30000},
+                {'id': 'c', 'path': str(empty), 'source': 'mic', 'offset_ms': 60000},
+            ]
+            streams = engine.audio_streams(tracks, lambda **event: events.append(event))
+            self.assertEqual([(s['key'], s['length']) for s in streams if s['tracks']], [('mic:s0000', 2000)])
+            self.assertEqual([t['id'] for s in streams for t, _, _ in s['tracks']], ['a'])
+            # Only audio that exists is cached: a stub is measured again, never trusted as 0.
+            self.assertEqual(events, [{'type': 'track_duration', 'track_id': 'a', 'duration_ms': 2000}])
+            # A file the user imported still reports that it cannot be read.
+            broken = root / 'import.flac'
+            broken.write_bytes(whole.read_bytes()[:200])
+            with self.assertRaises((ValueError, RuntimeError)):
+                engine.audio_streams([{'id': 'i', 'path': str(broken), 'source': 'mic', 'offset_ms': 0}], lambda **event: None)
+
+    @unittest.skipUnless(shutil.which('ffmpeg'), 'SKIPPED: FFmpeg not installed')
     def test_subsecond_asr_tail_is_padded_without_changing_original(self):
         with tempfile.TemporaryDirectory() as directory:
             source, target = Path(directory)/'short.wav', Path(directory)/'asr.wav'
@@ -367,6 +401,37 @@ class LiveTranscription(unittest.TestCase):
             self.assertEqual(engine.decode_pcm(growing, growing=True), b'')
             stream = engine.audio_streams([{'id': 'g', 'path': str(growing), 'source': 'mic', 'offset_ms': 0, 'growing': True}], lambda **e: None)
             self.assertEqual(stream[0]['length'], 0)
+
+    @unittest.skipUnless(shutil.which('ffmpeg'), 'SKIPPED: FFmpeg not installed')
+    def test_recovery_pass_transcribes_the_segments_before_a_crash_stub(self):
+        """After a power failure, start-up registers the file that was being
+        written, which may end before its first complete frame. The final pass
+        must still turn the earlier segments into rows."""
+        def whisper(request, model, samples, scratch):
+            return [{'text': 'Before the crash.', 'start_ms': 0, 'end_ms': len(samples) // 16}]
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(engine, 'ensure_model', return_value='fixture'), \
+                patch.object(engine, 'whisper_pieces', side_effect=whisper):
+            root = Path(directory)
+            wav = root / 'speech.wav'
+            with wave.open(str(wav), 'wb') as output:
+                output.setparams((1, 2, 16000, 0, 'NONE', 'not compressed'))
+                output.writeframes(b''.join(((n * 17) % 4000 - 2000).to_bytes(2, 'little', signed=True) for n in range(32000)))
+            whole, stub = root / 's0000-mic-000000.flac', root / 's0000-mic-000001.flac'
+            engine.run(['ffmpeg', '-nostdin', '-v', 'error', '-i', str(wav), str(whole)])
+            stub.write_bytes(whole.read_bytes()[:200])
+            tracks = [{'id': 'a', 'path': str(whole), 'source': 'mic', 'offset_ms': 0},
+                      {'id': 'b', 'path': str(stub), 'source': 'mic', 'offset_ms': 30000}]
+            events = []
+            engine.transcribe({'kind': 'transcribe_live', 'models': {'whisper': 'fixture'}, 'whisper_cli': 'fixture', 'threads': 2,
+                               'tracks': tracks, 'context_tracks': tracks, 'asr_progress': {}, 'finalize': True},
+                              lambda **event: events.append(event), root)
+            batches = [e for e in events if e['type'] == 'asr_batch']
+            self.assertEqual(batches[-1]['covered_ms'], 2000)
+            self.assertEqual([r['text'] for b in batches for r in b['segments']], ['Before the crash.'])
+            self.assertEqual([e for e in events if e['type'] == 'track_duration'],
+                             [{'type': 'track_duration', 'track_id': 'a', 'duration_ms': 2000}])
 
 
 class Provisioning(unittest.TestCase):

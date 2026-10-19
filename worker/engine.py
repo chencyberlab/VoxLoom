@@ -226,12 +226,37 @@ def audio_streams(tracks, emit):
             if not length:
                 continue
         else:
-            length = track.get("duration_ms") or duration(track["path"])
+            length = track.get("duration_ms") or stored_length(track["path"])
+            if not length:
+                # Not cached: a cached length is trusted for good, and this
+                # one costs a single failed open to measure again.
+                continue
             if not track.get("duration_ms"):
                 emit(type="track_duration", track_id=track["id"], duration_ms=length)
         group["tracks"].append((track, group["length"], length))
         group["length"] += length
     return list(groups.values())
+
+
+def stored_length(path):
+    """Length in ms of a closed storage file; 0 for a capture segment that
+    holds no audio.
+
+    A crash or power loss in the first fraction of a second of a new segment
+    leaves a file that ends before its first complete FLAC frame, and FFmpeg
+    cannot open it at all (a file with at least one complete frame decodes
+    fine, truncated or not, and FFmpeg exits 0 on decode errors). Start-up
+    registers that file like any other segment, so it must count as empty
+    instead of stopping the pass over the segments recorded before it, which
+    no retry could get past. An imported file that cannot be decoded still
+    fails loudly: the user chose it and needs to know.
+    """
+    try:
+        return duration(path)
+    except ValueError:
+        if not SEGMENTED.match(Path(path).name):
+            raise
+        return 0
 
 
 def decode_pcm(path, start=0, length=None, growing=False):
