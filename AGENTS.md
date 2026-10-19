@@ -208,6 +208,7 @@ Add `src-tauri/migrations/00N.sql`. Make it idempotent (`IF NOT EXISTS`) and end
 - OS differences live in `process.rs`, `platform.rs` and the `audio/` backends, behind `cfg`. Start child processes with `process::command` / `hidden` / `python`, never a bare `Command::new`, so Windows gets no console windows and Linux keeps its process groups. In the worker, start engines with `child_options()`, and give every text read or write `encoding="utf-8"` (Windows Python defaults to the ANSI code page).
 - New dependencies, runtimes or model downloads need a clear reason and the user's agreement. Anything downloaded must be pinned (version + SHA-256).
 - User-facing text is plain and short; technical detail belongs under Advanced settings.
+- The app icon's source is `src-tauri/icons/icon.svg` (a rounded tile). To change it, render it at 1024 px (`rsvg-convert -w 1024`), run `npx tauri icon <png> -o <temp>`, and copy only `icon.png` and `icon.ico` into `src-tauri/icons/`.
 
 ## Known gotchas
 

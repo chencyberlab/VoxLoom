@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 
-test('meeting notes render normally, copy rich text and export Word',async({page,context})=>{
+test('meeting notes render normally and copy as rich text or Markdown',async({page,context})=>{
   await context.grantPermissions(['clipboard-read','clipboard-write']);
   await page.addInitScript(()=>{
     const meeting={id:'notes',title:'Workshop planning',created_at:1,duration_ms:60000,status:'ready',notes:'',summary:'## Overview\nThe workshop covers privacy. [00:00:03]\n\n**Action items**\n- **Sarah** sends the guide on Friday at 09:30.'};
@@ -26,8 +26,12 @@ test('meeting notes render normally, copy rich text and export Word',async({page
   });
   expect(copied.plain).toContain('• Sarah sends the guide on Friday at 09:30.');expect(copied.plain).not.toMatch(/\*\*|##|\[00:00:03\]/);
   expect(copied.html).toContain('<h3');expect(copied.html).toContain('<strong>Sarah</strong>');
-  await page.getByRole('button',{name:'Word document',exact:true}).click();
-  await expect.poll(()=>page.evaluate(()=>(window as unknown as {__exports:unknown[]}).__exports)).toEqual([{id:'notes',path:'/tmp/Meeting notes.docx',format:'summary_docx',track_id:''}]);
+  await expect(page.getByRole('button',{name:'Word document'})).toHaveCount(0);
+  await page.getByRole('button',{name:'Copy Markdown',exact:true}).click();
+  await expect(page.getByRole('status')).toContainText('Markdown copied');
+  const markdown=await page.evaluate(async()=>{const items=await navigator.clipboard.read();return {types:items[0].types,text:await navigator.clipboard.readText()};});
+  expect(markdown.text).toBe('## Overview\n\nThe workshop covers privacy.\n\n## Action items\n\n- **Sarah** sends the guide on Friday at 09:30.');
+  expect(markdown.types).not.toContain('text/html');
   await page.setViewportSize({width:900,height:720});expect(await page.locator('.meeting-notes').evaluate(element=>element.scrollWidth<=element.clientWidth)).toBeTruthy();
   await page.screenshot({path:'test-results/meeting-notes.png',fullPage:true});
   await page.getByRole('button',{name:'Transcript',exact:true}).click();await expect(page.getByText('The workshop covers privacy.',{exact:true})).toBeVisible();
