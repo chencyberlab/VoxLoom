@@ -1,13 +1,14 @@
-# Builds the apps: the Linux .deb and the Windows preview, a zip that runs
-# without installing. Runs when VERSION changes, when this build recipe changes,
-# or from Actions → Apps → Run workflow; never for other pushes. From main it
-# also attaches the apps to a draft GitHub release for that version. A draft is
-# visible only to people with access to the repository until someone publishes
-# it, and a published release is never changed.
+# Builds the apps from main: the Linux .deb and the Windows preview, a zip that
+# runs without installing. Runs when a push to main changes VERSION or this
+# build recipe, or from Actions → Apps → Run workflow; never for other pushes or
+# branches. From main it attaches the apps to a draft GitHub release for that
+# version. A draft is visible only to people with access to the repository until
+# someone publishes it, and a published release is never changed.
 name: Apps
 
 on:
   push:
+    branches: [main]
     paths:
       - VERSION
       - .github/workflows/apps.yml

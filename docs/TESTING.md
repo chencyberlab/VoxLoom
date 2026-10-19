@@ -18,6 +18,13 @@ Meaningful unit checks cover pause-aligned chunk planning, skipped-speech retrie
 
 Version 0.1.1 added a first-run 1B/E2B summary selector. Six browser tests pass, including the request payload, displayed estimate and locked selection during setup for 1B, E2B and no summaries. These use an explicitly mocked bridge, without downloading models. A separate Rust regression executes the real offline provisioning script with tiny SHA-256-checked fixture files and a stubbed runtime readiness probe. It verifies core plus only the chosen summary model, saved E2B selection after success, core-only setup, missing-summary failure without changing the saved selection, and rejection of an unknown profile. Native checks on the final 0.1.1 package also passed launch, compact/expand and Quit, with all three observed processes released. The setup action remains fully visible at 900×720 in the browser checks. No user library or installed app data is reset during updates.
 
+## Version 0.1.12: Markdown copy, Windows preview, apps built by GitHub
+
+Validation:
+- Fast set on this Ubuntu computer: TypeScript/privacy/version (0.1.12 everywhere), 39 Python checks, 13 browser checks (Chromium) including both copy buttons, 14 Rust checks plus offline setup integration, desktop clippy, and clippy for the Windows target. The browser checks also pass on Node 24.22.0.
+- CI on GitHub's Windows and Linux machines: the fast set on both, and on Windows the runtime, Job Object, launch and real-engine checks recorded under "Windows port, Phase 2" below.
+- Packages: built and checked by the Apps workflow on main. Linux: `build-app.sh`, then launch, compact/expand and Quit in Xvfb. Windows: the release app with every bundled file and the runtime, zipped, unzipped into a folder with spaces and accents, the runtime check, then launch and close with nothing left running. The draft release is made only when both pass.
+
 ## Windows port, Phase 2: bundled runtime on GitHub's Windows machines (2026-10-19)
 
 CI run 39196514916 on commit 7dfdf22, image `windows-2025` (Windows Server 2025 Datacenter 10.0.26100, GitHub's standard 4-vCPU, 16 GB machine, no audio devices). `scripts/build-windows-runtime.sh` cross-built the runtime on Ubuntu 24.04 and the Windows jobs received it as an artifact. Apart from CI's own build tools, nothing was installed on the Windows machine: no Python, FFmpeg or Visual C++ runtime for VoxLoom.
