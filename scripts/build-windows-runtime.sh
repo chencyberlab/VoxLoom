@@ -65,6 +65,20 @@ set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
 set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
 EOF
+# ggml tells Windows 11 not to park its threads on efficiency cores. Ubuntu
+# 24.04's mingw-w64 11 headers lack that structure; define it for them.
+cat > "$work/mingw-compat.h" <<'HEADER'
+#include <_mingw.h>
+#if defined(__MINGW64_VERSION_MAJOR) && __MINGW64_VERSION_MAJOR < 12
+typedef struct _THREAD_POWER_THROTTLING_STATE {
+  unsigned long Version;
+  unsigned long ControlMask;
+  unsigned long StateMask;
+} THREAD_POWER_THROTTLING_STATE;
+#define THREAD_POWER_THROTTLING_CURRENT_VERSION 1
+#define THREAD_POWER_THROTTLING_EXECUTION_SPEED 0x1
+#endif
+HEADER
 build_engine() {
   local name="$1" version="$2" expected="$3" target="$4" upstream="$5"
   fetch "https://github.com/ggml-org/$upstream/archive/refs/tags/$version.tar.gz" "$expected" "$work/$name-$version.tar.gz"
@@ -78,6 +92,7 @@ build_engine() {
     cmake -S "$work/$name-src" -B "$work/$name-$variant" -DCMAKE_TOOLCHAIN_FILE="$work/mingw.cmake" \
       -DGGML_NATIVE=OFF "${cpu_flags[@]}" -DGGML_OPENMP=OFF -DGGML_CCACHE=OFF -DGGML_CUDA=OFF -DGGML_VULKAN=OFF \
       -DWHISPER_BUILD_TESTS=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_CURL=OFF -DLLAMA_OPENSSL=OFF \
+      -DCMAKE_C_FLAGS="-include $work/mingw-compat.h" -DCMAKE_CXX_FLAGS="-include $work/mingw-compat.h" \
       -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DCMAKE_EXE_LINKER_FLAGS="$static_ldflags" > "$work/$name-$variant.log"
     cmake --build "$work/$name-$variant" --target "$target" -j "$jobs" >> "$work/$name-$variant.log"
     cp "$work/$name-$variant/bin/$target.exe" "$out/engines/$target$suffix.exe"
