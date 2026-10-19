@@ -1,5 +1,23 @@
 {
+  "productName": "VoxLoom",
   "bundle": {
-    "icon": ["icons/icon.png", "icons/icon.ico"]
+    "targets": ["nsis"],
+    "publisher": "VoxLoom",
+    "icon": ["icons/icon.png", "icons/icon.ico"],
+    "resources": {
+      "python/": "python/",
+      "licenses/": "licenses/",
+      "VERSIONS.txt": "licenses/VERSIONS.txt",
+      "../LICENSE": "LICENSE.txt"
+    },
+    "windows": {
+      "webviewInstallMode": { "type": "skip" },
+      "nsis": {
+        "installMode": "both",
+        "installerIcon": "icons/icon.ico",
+        "installerHooks": "windows/hooks.nsh",
+        "customLanguageFiles": { "English": "windows/English.nsh" }
+      }
+    }
   }
 }

@@ -1,9 +1,10 @@
-# Builds the apps from main: the Linux .deb and the Windows preview, a zip that
-# runs without installing. Runs when a push to main changes VERSION or this
-# build recipe, or from Actions → Apps → Run workflow; never for other pushes or
-# branches. From main it attaches the apps to a draft GitHub release for that
-# version. A draft is visible only to people with access to the repository until
-# someone publishes it, and a published release is never changed.
+# Builds the apps from main: the Linux .deb, the Windows installer, and the
+# Windows preview, a zip that runs without installing. Runs when a push to main
+# changes VERSION or this build recipe, or from Actions → Apps → Run workflow;
+# never for other pushes or branches. From main it attaches the apps to a draft
+# GitHub release for that version. A draft is visible only to people with
+# access to the repository until someone publishes it, and a published release
+# is never changed.
 name: Apps
 
 on:
@@ -13,6 +14,9 @@ on:
       - VERSION
       - .github/workflows/apps.yml
       - scripts/package-windows-preview.py
+      - scripts/installer-smoke-windows.py
+      - src-tauri/tauri.windows.conf.json
+      - src-tauri/windows/**
   workflow_dispatch:
 
 permissions:
@@ -75,7 +79,7 @@ jobs:
           if-no-files-found: error
 
   windows:
-    name: Windows preview
+    name: Windows installer and preview
     needs: windows-runtime
     runs-on: windows-2025
     timeout-minutes: 60
@@ -105,8 +109,8 @@ jobs:
           key: windows-apps-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
           restore-keys: windows-apps-cargo-
       - run: npm ci
-      - name: Build the app
-        run: npx tauri build --no-bundle
+      - name: Build the app and its installer
+        run: npx tauri build
       - name: Assemble the preview
         run: python scripts/package-windows-preview.py "$env:RUNNER_TEMP\apps"
       - name: The unzipped preview runs from a folder with spaces and accents
@@ -122,10 +126,25 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         env:
           PYTHONUTF8: "1"
+      # Both install modes, each uninstalled once keeping recordings and once
+      # with /DELETEDATA; it fails on anything left behind.
+      - name: Install, launch and uninstall cleanly
+        shell: pwsh
+        run: |
+          $version = (Get-Content VERSION -Raw).Trim()
+          $setup = "$env:RUNNER_TEMP\apps\VoxLoom-$version-windows-x64-setup.exe"
+          Copy-Item (Get-ChildItem src-tauri\target\release\bundle\nsis\*-setup.exe).FullName $setup
+          python scripts/installer-smoke-windows.py $setup "$env:RUNNER_TEMP\apps\VoxLoom-$version-windows-x64-programs-SHA256.txt"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        env:
+          PYTHONUTF8: "1"
       - uses: actions/upload-artifact@v7
         with:
           name: windows-preview
-          path: ${{ runner.temp }}/apps/*.zip
+          path: |
+            ${{ runner.temp }}/apps/*.zip
+            ${{ runner.temp }}/apps/*-setup.exe
+            ${{ runner.temp }}/apps/*-programs-SHA256.txt
           if-no-files-found: error
 
   draft-release:
@@ -153,7 +172,8 @@ jobs:
           tag="v$version"
           deb="voxloom_${version}_amd64.deb"
           zip="VoxLoom-${version}-windows-x64-preview.zip"
-          (cd apps && sha256sum -- "$deb" "$zip" > SHA256SUMS.txt)
+          setup="VoxLoom-${version}-windows-x64-setup.exe"
+          (cd apps && sha256sum -- "$deb" "$setup" "$zip" > SHA256SUMS.txt)
           cat > notes.md <<EOF
           Built by the Apps workflow from ${GITHUB_SHA}.
 
@@ -163,9 +183,13 @@ jobs:
 
           Upgrades keep your recordings, models and settings.
 
-          **Windows 11 (x64) preview:** \`$zip\`
+          **Windows 11 (x64):** \`$setup\`
 
-          Unzip it and open voxloom.exe. It records the microphone and the computer's sound, imports files, transcribes, searches and summarises; an installer comes later. Windows lets it use the microphone only while Settings → Privacy & security → Microphone → "Let desktop apps access your microphone" is on. It is not signed yet, so Windows may warn about an unknown publisher: choose More info, then Run anyway.
+          Installs VoxLoom for you alone (no administrator needed) or for everyone on the computer (in Program Files). It records the microphone and the computer's sound, imports files, transcribes, searches and summarises. Windows lets it use the microphone only while Settings → Privacy & security → Microphone → "Let desktop apps access your microphone" is on. It is not signed yet, so Windows may warn about an unknown publisher: choose More info, then Run anyway. Uninstalling removes the program, its models and caches; your recordings and transcripts stay unless you tick the box to delete them too.
+
+          For IT: \`setup.exe /S /AllUsers\` (or \`/CurrentUser\`) installs silently; \`uninstall.exe /S\` removes it, adding \`/DELETEDATA\` also deletes recordings. \`VoxLoom-${version}-windows-x64-programs-SHA256.txt\` lists every program file it installs with its SHA-256.
+
+          **Windows without installing:** \`$zip\`: unzip it and open voxloom.exe.
 
           SHA-256:
 

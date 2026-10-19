@@ -6,7 +6,7 @@ Windows 11 x64 is a second platform of the same codebase. Linux stays fully supp
 
 One installer with everything the app needs: VoxLoom, its own Python with LiteRT, FFmpeg, and the speech and summary engines. Nothing else to install: no Python, no FFmpeg, no Visual C++ runtime prompts, and WebView2 is part of Windows 11. Only the models are downloaded, through the existing first-run setup (or imported offline), because they are several GB and never ship in the package.
 
-Library and cache: `%LOCALAPPDATA%\org.voxloom.desktop` and its `cache` folder. Local, not Roaming (Roaming can sync to a server on company networks), and not `%LOCALAPPDATA%\voxloom`, which is where the per-user installer puts the program. Tauri's uninstaller deletes the library folder only when the user ticks "Delete the application data". The WebView2 profile lives in the same folder.
+Library and cache: `%LOCALAPPDATA%\org.voxloom.desktop` and its `cache` folder. Local, not Roaming (Roaming can sync to a server on company networks), and not `%LOCALAPPDATA%\VoxLoom`, which is where the per-user installer puts the program. The WebView2 profile (`EBWebView`) and the downloaded models live in the same folder. Uninstalling is described below.
 
 ## Status
 
@@ -15,7 +15,7 @@ Library and cache: `%LOCALAPPDATA%\org.voxloom.desktop` and its `cache` folder. 
 | 1 | Platform seams; the app compiles, launches and passes the fast tests on Windows | Done |
 | 2 | Bundled runtime (engines, FFmpeg, Python with LiteRT, all pinned); Job Objects so a crash leaves nothing running; import → transcribe → index → search → summary → export → delete with the real engines on Windows | Done; verified on GitHub's Windows machines (numbers in `docs/TESTING.md`) |
 | 3 | Live capture with WASAPI: microphones and loopback of an output device, same FLAC segments as Linux | Built; checked on GitHub's Windows machines, which have no audio devices. Needs a real Windows 11 laptop |
-| 4 | NSIS installer (per-user and per-machine), models-only first-run setup, third-party notices, list of every bundled executable with SHA-256 for IT allow-listing | |
+| 4 | NSIS installer (per-user and per-machine), models-only first-run setup, third-party notices, list of every bundled executable with SHA-256 for IT allow-listing | Built (0.1.19); installed, launched and uninstalled in both modes on GitHub's Windows machines. Not code-signed yet |
 | 5 | Measurements on a real Windows 11 laptop, transcription quality checks, docs | |
 
 Recording on Windows has not yet run on real audio hardware; that is the next check.
@@ -43,14 +43,46 @@ In the package, the runtime sits next to the app (`resources/engines`, `resource
 - Devices on Windows: a source chosen as the default device follows the default, so plugging in a headset mid-meeting moves the recording to it. A device that disconnects is replaced, checked every second, by the same device or the default. Until then that source records silence and the studio says so. COM runs on the capture thread and on a short-lived thread for listing devices, never on the app's threads.
 - Microphone access: Windows gives desktop apps no prompt. The microphone works only while Settings → Privacy & security → Microphone → "Let desktop apps access your microphone" is on. VoxLoom appears in that list after it has used the microphone. When Windows refuses, VoxLoom says which switch to turn on and offers "Open microphone settings" (`ms-settings:privacy-microphone`).
 - `worker/engine.py`: `child_options()` for engine processes, explicit UTF-8 for all text files. The host also starts every Python with `PYTHONUTF8=1` on Windows.
-- `src-tauri/tauri.windows.conf.json`: Windows-only Tauri settings (the `.ico` today; the installer later). The Linux `tauri.conf.json` is unchanged.
+- `src-tauri/tauri.windows.conf.json`: Windows-only Tauri settings: the `.ico`, the installer and the runtime it bundles (`python/`, `licenses/`, `VERSIONS.txt` and `LICENSE` beside the engines). `src-tauri/windows/hooks.nsh` adds VoxLoom's clean-up to Tauri's uninstaller; `src-tauri/windows/English.nsh` is Tauri's English text with VoxLoom's wording for deleting recordings. The Linux `tauri.conf.json` is unchanged.
+- Bundled Python runs with `PYTHONDONTWRITEBYTECODE=1`: bytecode caches in the program folder would be files the uninstaller never installed.
 - Setup on Windows never builds a venv: if the bundled LiteRT is missing, it asks the user to reinstall.
 - Deleting a recording that is still open (for example, playing) says so instead of failing with a system error; folders a delete could not remove are removed at the next start.
+
+## Installing and uninstalling
+
+`VoxLoom-<version>-windows-x64-setup.exe` asks whether to install for the current user only (`%LOCALAPPDATA%\VoxLoom`, no administrator rights) or for everyone on the computer (`C:\Program Files\VoxLoom`, needs an administrator). It adds a Start menu shortcut and an entry in Settings → Apps. The package holds the program, its Python with LiteRT, FFmpeg, the engines and the licences of everything bundled (`licenses/`); models are downloaded by first-run setup. Installing a newer version over an older one keeps everything the user made.
+
+Uninstalling (Settings → Apps → VoxLoom → Uninstall, or `uninstall.exe` in the program folder) removes:
+
+- the program folder, including anything the app wrote into it later;
+- the Start menu and desktop shortcuts, the Apps entry and the remembered install location;
+- in `%LOCALAPPDATA%\org.voxloom.desktop`: the downloaded models, the cache and the window's browser data (`EBWebView`);
+- anything VoxLoom kept in `%APPDATA%\org.voxloom.desktop`, and Windows' record that VoxLoom used the microphone.
+
+The user's recordings, transcripts, notes and settings (`library.db`, `recordings\`) stay unless the user ticks "Also delete my recordings, transcripts and settings" on the uninstall page; then the whole `org.voxloom.desktop` folder goes. Recordings cannot be downloaded again, so keeping them is the default.
+
+For IT:
+
+| What | Command |
+|---|---|
+| Install for everyone, silently | `VoxLoom-<version>-windows-x64-setup.exe /S /AllUsers` (as administrator) |
+| Install for the current user, silently | `VoxLoom-<version>-windows-x64-setup.exe /S /CurrentUser` |
+| Uninstall silently, keeping recordings | `"<program folder>\uninstall.exe" /S` |
+| Uninstall silently, deleting recordings too | `"<program folder>\uninstall.exe" /S /DELETEDATA` |
+
+The draft release also carries `VoxLoom-<version>-windows-x64-programs-SHA256.txt`: every program file (`.exe`, `.dll`, `.pyd`) the installer puts down, with its SHA-256.
+
+Limits of the clean-up:
+
+- Data lives per Windows account. Uninstalling a per-machine install cleans the data of the account that runs the uninstaller; other accounts' `org.voxloom.desktop` folders stay.
+- A models folder or tool path the user chose under Advanced settings is theirs and is never deleted.
+- The program folder is deleted whole only when it is VoxLoom's own (named `VoxLoom` and holding the app). Installed into a shared folder, only the installed files go.
 
 ## Known limits today
 
 - Recording has passed its checks only on machines without audio devices: the timeline, the FFmpeg graph through the bundled FFmpeg, device listing and the refusal of a missing device. Real microphones, loopback, headset switching and the privacy switch need a Windows 11 laptop.
-- No installer yet (Phase 4). The Apps workflow makes a preview zip instead: unzip it and open `voxloom.exe`. It carries the licences of everything it bundles (`licenses/`).
+- The installer is not code-signed, so Windows SmartScreen warns on first run (More info → Run anyway), and managed laptops may block it until IT allows it. The programs list on the release helps IT write an allow-list rule by hash.
+- The preview zip still exists for running without installing: unzip it and open `voxloom.exe`. Its data is the same library as the installed app's.
 - Speeds and accuracy are measured only on GitHub's Windows Server machines so far; a real Windows 11 laptop comes in Phase 5.
 
 ## Gotchas to keep in mind

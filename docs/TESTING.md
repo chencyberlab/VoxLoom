@@ -18,6 +18,20 @@ Meaningful unit checks cover pause-aligned chunk planning, skipped-speech retrie
 
 Version 0.1.1 added a first-run 1B/E2B summary selector. Six browser tests pass, including the request payload, displayed estimate and locked selection during setup for 1B, E2B and no summaries. These use an explicitly mocked bridge, without downloading models. A separate Rust regression executes the real offline provisioning script with tiny SHA-256-checked fixture files and a stubbed runtime readiness probe. It verifies core plus only the chosen summary model, saved E2B selection after success, core-only setup, missing-summary failure without changing the saved selection, and rejection of an unknown profile. Native checks on the final 0.1.1 package also passed launch, compact/expand and Quit, with all three observed processes released. The setup action remains fully visible at 900×720 in the browser checks. No user library or installed app data is reset during updates.
 
+## Version 0.1.19: Windows installer (Windows phase 4)
+
+Tested on a 4-core cloud VM (Ubuntu 24.04, FFmpeg 6.1.1, no audio devices) and on GitHub's Windows Server 2025 machines.
+
+Validation:
+- `scripts/installer-smoke-windows.py`, run by the Apps workflow on the setup it has just built. For each install mode (`/CurrentUser` into `%LOCALAPPDATA%\VoxLoom`, `/AllUsers` into `C:\Program Files\VoxLoom`) it installs twice, silently:
+  - It checks the program, uninstaller, engines, FFmpeg, Python, worker, model manifest and licences are in place, with a Start menu shortcut and an Apps entry.
+  - It launches the installed app and closes it (`native-smoke-windows.py`), and runs every bundled program from the install folder (`windows-runtime-smoke.py`), which also leaves Python caches there.
+  - It puts a library, a recording, a model, a cache file, browser data and Windows' microphone record in place, then uninstalls: once keeping recordings, once with `/DELETEDATA`.
+  - It fails if the program folder, a shortcut, the Apps entry, the remembered install location, the installer language, the microphone record, the models, the cache, the browser data or anything in `%APPDATA%\org.voxloom.desktop` is left. Kept: only `library.db` and `recordings`; with `/DELETEDATA`, nothing.
+- The uninstall hooks compiled with warnings as errors in a stub uninstaller (`makensis -WX`) before the first Windows build.
+- `package-windows-preview.py` now takes the bundled files from the Windows Tauri settings, as the installer does; with stand-in files it assembles the same folder as before.
+- Fast set: 45 Python checks, 29 Rust unit checks plus the offline setup integration check, 14 browser checks, TypeScript/privacy/version, and clippy for desktop and the Windows target (with tests).
+
 ## Version 0.1.18: fix from the review of 0.1.17 (issue #7)
 
 Tested on a 4-core cloud VM (Ubuntu 24.04, FFmpeg 6.1.1, no audio devices) and on GitHub's Windows Server 2025 machines.

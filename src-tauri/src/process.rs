@@ -50,8 +50,10 @@ pub fn hidden(program: impl AsRef<OsStr>) -> Command {
 pub fn python(program: impl AsRef<OsStr>) -> Command {
     #[allow(unused_mut)]
     let mut c = command(program);
+    // No bytecode in the app's folder either: the uninstaller removes the
+    // files it installed, and Python's caches would stay behind.
     #[cfg(windows)]
-    c.env("PYTHONUTF8", "1");
+    c.env("PYTHONUTF8", "1").env("PYTHONDONTWRITEBYTECODE", "1");
     c
 }
 
