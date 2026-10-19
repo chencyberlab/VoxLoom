@@ -170,3 +170,7 @@ cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --offline
 ```
 
 Real-engine acceptance requires local fixtures/weights; see [TESTING.md](docs/TESTING.md). Architecture and limitations: [ARCHITECTURE.md](docs/ARCHITECTURE.md). Runtime/model provenance: [MODEL_SOURCES.md](docs/MODEL_SOURCES.md).
+
+## License
+
+VoxLoom's source code is released under the [MIT License](LICENSE). The engines it builds (whisper.cpp, llama.cpp) are also MIT. The models you download during setup keep their own terms, listed in [MODEL_SOURCES.md](docs/MODEL_SOURCES.md); Gemma models follow the [Gemma Terms of Use](https://ai.google.dev/gemma/terms).
