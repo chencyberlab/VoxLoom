@@ -1,3 +1,5 @@
+// Release builds on Windows are GUI apps: no console window behind the app.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 use std::{path::PathBuf, sync::Arc};
 use tauri::{Emitter, Manager};
 use voxloom_core::service::Service;
@@ -83,31 +85,12 @@ fn opaque_background(app: &tauri::AppHandle) -> Option<tauri::window::Color> {
 }
 fn main() {
     // Private files from every Rust/Python/FFmpeg process, including WAL and temp.
-    unsafe {
-        libc::umask(0o077);
-    }
+    voxloom_core::platform::restrict_new_files();
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let home = std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .ok_or("HOME is not set")?;
-            let data = std::env::var_os("VOXLOOM_DATA_DIR")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| {
-                    std::env::var_os("XDG_DATA_HOME")
-                        .map(PathBuf::from)
-                        .unwrap_or_else(|| home.join(".local/share"))
-                        .join("voxloom")
-                });
-            let cache = std::env::var_os("VOXLOOM_CACHE_DIR")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| {
-                    std::env::var_os("XDG_CACHE_HOME")
-                        .map(PathBuf::from)
-                        .unwrap_or_else(|| home.join(".cache"))
-                        .join("voxloom")
-                });
+            let (data, cache) =
+                voxloom_core::platform::data_dirs().map_err(std::io::Error::other)?;
             let resources = if cfg!(debug_assertions) {
                 PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                     .parent()

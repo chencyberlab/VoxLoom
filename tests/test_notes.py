@@ -127,7 +127,7 @@ class MeetingNotesTests(unittest.TestCase):
                 self.assertTrue(document.findall('.//w:numPr',namespace))
                 self.assertTrue(document.findall('.//w:b',namespace))
                 self.assertNotIn(b'TargetMode="External"',archive.read('word/_rels/document.xml.rels'))
-            self.assertEqual(target.stat().st_mode&0o777,0o600)
+            if sys.platform!='win32':self.assertEqual(target.stat().st_mode&0o777,0o600)  # Windows: AppData ACLs keep files private
 
     def test_word_transcript_retains_its_recording_times(self):
         with tempfile.TemporaryDirectory() as directory:

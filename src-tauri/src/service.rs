@@ -1,14 +1,15 @@
 use crate::{
     audio::{self, Capture},
     db::{self, Db},
-    err, search, Result,
+    err,
+    platform::{self, private_dir},
+    process, search, Result,
 };
 use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
 use std::{
     fs::{self, File},
     io::{BufRead, BufReader, Write},
-    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::Stdio,
     sync::{
@@ -137,6 +138,41 @@ mod tests {
         assert_eq!(summary(&service)["summary_prompt"], "List the client's goals.");
         assert!(service.dispatch("save_settings", json!({"summary_style":"poetry"})).is_err());
         assert!(service.dispatch("save_settings", json!({"summary_prompt":"x".repeat(2001)})).is_err());
+        service.shutdown();
+    }
+
+    #[test]
+    fn word_export_runs_the_helper_interpreter() {
+        // Word export holds the library lock while it starts Python; on
+        // Windows the interpreter comes from settings, so it must not lock again.
+        let temp = tempfile::tempdir().unwrap();
+        let resources = temp.path().join("resources");
+        fs::create_dir_all(resources.join("worker")).unwrap();
+        for name in ["export_docx.py", "notes.py"] {
+            fs::copy(
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("../worker").join(name),
+                resources.join("worker").join(name),
+            )
+            .unwrap();
+        }
+        let service = Service::open(
+            temp.path().join("data"),
+            temp.path().join("cache"),
+            resources,
+            Arc::new(|_| {}),
+        )
+        .unwrap();
+        {
+            let db = service.db.lock().unwrap();
+            db.create("meeting", "Café notes", 1000, "ready").unwrap();
+            db.conn.execute("INSERT INTO transcript_segments(meeting_id,start_ms,end_ms,text,source) VALUES('meeting',0,1000,'Zoë approved the budget — on Friday.','mic')", []).unwrap();
+        }
+        let target = temp.path().join("exports").join("Café notes.docx");
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        service
+            .dispatch("export", json!({"id":"meeting","path":target,"format":"docx"}))
+            .unwrap();
+        assert!(fs::read(&target).unwrap().starts_with(b"PK"));
         service.shutdown();
     }
 
@@ -298,10 +334,6 @@ mod tests {
 fn text<'a>(v: &'a Value, key: &str) -> Result<&'a str> {
     v[key].as_str().ok_or_else(|| format!("Missing {key}"))
 }
-fn private_dir(p: &Path) -> Result<()> {
-    fs::create_dir_all(p).map_err(err)?;
-    fs::set_permissions(p, fs::Permissions::from_mode(0o700)).map_err(err)
-}
 /// The chosen summary model. Gemma 3 1B was removed in 0.1.8; libraries
 /// that still name it use E2B, the new default.
 fn summary_profile(db: &Db) -> String {
@@ -315,18 +347,6 @@ fn part_path(model: &Path) -> PathBuf {
     let mut name = model.as_os_str().to_owned();
     name.push(".part");
     PathBuf::from(name)
-}
-fn free_disk_bytes(path: &Path) -> u64 {
-    use std::os::unix::ffi::OsStrExt;
-    let Ok(path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
-        return 0;
-    };
-    let mut info = std::mem::MaybeUninit::<libc::statvfs>::uninit();
-    if unsafe { libc::statvfs(path.as_ptr(), info.as_mut_ptr()) } != 0 {
-        return 0;
-    }
-    let info = unsafe { info.assume_init() };
-    info.f_bavail.saturating_mul(info.f_frsize)
 }
 struct ScratchDir(PathBuf);
 impl Drop for ScratchDir {
@@ -359,8 +379,7 @@ impl Service {
             }
         }
         let db = Db::open(&data.join("library.db"))?;
-        fs::set_permissions(data.join("library.db"), fs::Permissions::from_mode(0o600))
-            .map_err(err)?;
+        platform::private_file(&data.join("library.db"))?;
         let s = Arc::new(Self {
             db: Mutex::new(db),
             data,
@@ -460,41 +479,49 @@ impl Service {
             .unwrap()
             .setting("python", &self.default_tool("python"))
     }
+    /// The interpreter for setup and Word export, which need only the standard
+    /// library. Linux uses the system python3, which also creates the LiteRT
+    /// venv; the Windows package bundles one interpreter for everything.
+    /// Takes the locked library: callers already hold it.
+    fn helper_python(&self, db: &Db) -> String {
+        if cfg!(windows) {
+            db.setting("python", &self.default_tool("python"))
+        } else {
+            "python3".into()
+        }
+    }
     fn default_tool(&self, tool: &str) -> String {
         let (dev, installed, fallback) = match tool {
             "python" => (
-                ".venv/bin/python",
-                "runtimes/inference/bin/python",
-                "python3",
+                platform::venv_python(Path::new(".venv")),
+                platform::venv_python(Path::new("runtimes/inference")),
+                if cfg!(windows) { "python" } else { "python3" },
             ),
             "whisper_cli" => (
-                ".runtimes/whisper-build/bin/whisper-cli",
-                "runtimes/whisper/bin/whisper-cli",
+                Path::new(".runtimes/whisper-build/bin").join(platform::exe("whisper-cli")),
+                Path::new("runtimes/whisper/bin").join(platform::exe("whisper-cli")),
                 "whisper-cli",
             ),
             _ => (
-                ".runtimes/llama-build/bin/llama-completion",
-                "runtimes/llama/bin/llama-completion",
+                Path::new(".runtimes/llama-build/bin").join(platform::exe("llama-completion")),
+                Path::new("runtimes/llama/bin").join(platform::exe("llama-completion")),
                 "llama-completion",
             ),
         };
-        let optimized = fs::read_to_string("/proc/cpuinfo")
-            .map(|s| {
-                ["avx2", "fma", "f16c", "bmi2"]
-                    .iter()
-                    .all(|feature| s.split_whitespace().any(|word| word == *feature))
-            })
-            .unwrap_or(false);
-        let bundled = self
-            .resources
-            .join("engines")
-            .join(if tool != "python" && !optimized {
-                format!("{fallback}-generic")
-            } else {
-                fallback.into()
-            });
+        let optimized = platform::optimized_cpu();
+        let engines = self.resources.join("engines");
+        let bundled = match tool {
+            // The Windows package ships its own interpreter with LiteRT installed.
+            "python" if cfg!(windows) => self.resources.join("python").join("python.exe"),
+            "python" => engines.join(fallback),
+            _ if !optimized => engines.join(platform::exe(&format!("{fallback}-generic"))),
+            _ => engines.join(platform::exe(fallback)),
+        };
         if tool != "python" && !optimized {
-            let generic = self.resources.join(".runtimes/generic").join(fallback);
+            let generic = self
+                .resources
+                .join(".runtimes/generic")
+                .join(platform::exe(fallback));
             if generic.is_file() {
                 return generic.to_string_lossy().to_string();
             }
@@ -748,7 +775,7 @@ impl Service {
         if capture_guard.is_some() && request["kind"] != "transcribe_live" {
             return Err("Inference deferred while recording".into());
         }
-        let mut child = audio::command(&self.python())
+        let mut child = process::python(self.python())
             .arg(self.resources.join("worker/engine.py"))
             .arg("--request")
             .arg(&input)
@@ -862,7 +889,7 @@ impl Service {
                     continue;
                 }
                 if self.quit.load(Ordering::SeqCst) || start.elapsed() > Duration::from_secs(7200) {
-                    audio::kill_group(pid, libc::SIGKILL);
+                    process::kill_tree(pid);
                     let _ = child.wait();
                     failure = Some("Inference stopped or timed out".into());
                     break;
@@ -872,7 +899,7 @@ impl Service {
             Ok(())
         })();
         // Also reap a worker's descendants if a runtime exits unexpectedly.
-        audio::kill_group(pid, libc::SIGKILL);
+        process::kill_tree(pid);
         let status = child.wait().map_err(err);
         *self.running.lock().unwrap() = None;
         let _ = fs::remove_dir_all(&folder);
@@ -1016,7 +1043,7 @@ impl Service {
                     .job_status(id, "cancelled", 0., None)?;
                 if let Some((job, pid)) = running.as_ref() {
                     if job == id {
-                        audio::kill_group(*pid, libc::SIGKILL);
+                        process::kill_tree(*pid);
                     }
                 }
                 Ok(Value::Null)
@@ -1041,18 +1068,10 @@ impl Service {
                 let db = self.db.lock().unwrap();
                 let available = |tool: &str| {
                     let path = db.setting(tool, &self.default_tool(tool));
-                    if Path::new(&path).is_file() {
-                        true
-                    } else {
-                        std::process::Command::new("which")
-                            .arg(path)
-                            .output()
-                            .map(|o| o.status.success())
-                            .unwrap_or(false)
-                    }
+                    Path::new(&path).is_file() || platform::on_path(path)
                 };
                 let python = db.setting("python", &self.default_tool("python"));
-                let inference = audio::command(&python)
+                let inference = process::python(&python)
                     .args([
                         "-I",
                         "-c",
@@ -1064,7 +1083,7 @@ impl Service {
                     .map(|s| s.success())
                     .unwrap_or(false);
                 Ok(
-                    json!({"inference":inference,"whisper":available("whisper_cli"),"llama":available("llama_cli"),"python":python,"storage":self.data,"disk_free_bytes":free_disk_bytes(&self.data)}),
+                    json!({"inference":inference,"whisper":available("whisper_cli"),"llama":available("llama_cli"),"python":python,"storage":self.data,"disk_free_bytes":platform::free_disk_bytes(&self.data)}),
                 )
             }
             "setup" => {
@@ -1103,7 +1122,7 @@ impl Service {
                 self.setup_cancel.store(true, Ordering::SeqCst);
                 if let Some((job, pid)) = self.running.lock().unwrap().as_ref() {
                     if job == "setup" {
-                        audio::kill_group(*pid, libc::SIGKILL);
+                        process::kill_tree(*pid);
                     }
                 }
                 Ok(Value::Null)
@@ -1171,24 +1190,22 @@ impl Service {
                 Ok(Value::Null)
             }
             "diagnostics" => {
-                let tools = [
-                    "ffmpeg",
-                    "ffprobe",
-                    "pactl",
-                    "whisper-cli",
-                    "llama-cli",
-                    "python3",
-                ]
-                .iter()
-                .map(|name| {
-                    let found = std::process::Command::new("which")
-                        .arg(name)
-                        .output()
-                        .map(|o| o.status.success())
-                        .unwrap_or(false);
-                    json!({"name":name,"available":found})
-                })
-                .collect::<Vec<_>>();
+                let tools: &[&str] = if cfg!(windows) {
+                    &["ffmpeg", "ffprobe", "whisper-cli", "llama-cli", "python"]
+                } else {
+                    &[
+                        "ffmpeg",
+                        "ffprobe",
+                        "pactl",
+                        "whisper-cli",
+                        "llama-cli",
+                        "python3",
+                    ]
+                };
+                let tools = tools
+                    .iter()
+                    .map(|name| json!({"name":name,"available":platform::on_path(name)}))
+                    .collect::<Vec<_>>();
                 Ok(
                     json!({"tools":tools,"audio":audio::devices().ok(),"data":self.data,"network":"No runtime networking. Only explicit model setup can download.","last_metrics":fs::read_to_string(self.cache.join("last-inference-metrics.json")).ok().and_then(|s|serde_json::from_str::<Value>(&s).ok())}),
                 )
@@ -1241,7 +1258,7 @@ impl Service {
         private_dir(&folder)?;
         // Video is decoded to FLAC without storing picture frames or blobs.
         let target = folder.join("original.flac");
-        let status = audio::command("ffmpeg")
+        let status = process::command("ffmpeg")
             .args([
                 "-nostdin",
                 "-protocol_whitelist",
@@ -1397,7 +1414,7 @@ impl Service {
                 _ => return Err("Choose a supported summary model: E2B or E4B.".into()),
             };
             let python = self.python();
-            let ready = audio::command(&python)
+            let ready = process::python(&python)
                 .args([
                     "-I",
                     "-c",
@@ -1451,7 +1468,7 @@ impl Service {
             .lock()
             .unwrap()
             .setting("models_dir", &self.data.join("models").to_string_lossy());
-        let mut cmd = audio::command("python3");
+        let mut cmd = process::python(self.helper_python(&self.db.lock().unwrap()));
         if mode == "runtime" {
             cmd.arg(self.resources.join("worker/setup_runtime.py"))
                 .arg("--install")
@@ -1494,7 +1511,7 @@ impl Service {
             .map_err(err)?;
         *self.running.lock().unwrap() = Some(("setup".into(), child.id()));
         if self.setup_cancel.load(Ordering::SeqCst) || self.quit.load(Ordering::SeqCst) {
-            audio::kill_group(child.id(), libc::SIGKILL);
+            process::kill_tree(child.id());
         }
         for line in BufReader::new(child.stdout.take().unwrap())
             .lines()
@@ -1515,10 +1532,7 @@ impl Service {
         if mode == "runtime" {
             self.db.lock().unwrap().set_setting(
                 "python",
-                &self
-                    .data
-                    .join("runtimes/inference/bin/python")
-                    .to_string_lossy(),
+                &platform::venv_python(&self.data.join("runtimes/inference")).to_string_lossy(),
             )?;
         }
         Ok(())
@@ -1605,7 +1619,7 @@ impl Service {
         )?;
         *capture = Some(c);
         if let Some((_, pid)) = self.running.lock().unwrap().as_ref() {
-            audio::kill_group(*pid, libc::SIGKILL);
+            process::kill_tree(*pid);
         }
         Ok(json!({"id":id}))
     }
@@ -1716,7 +1730,7 @@ impl Service {
                     })
                     .collect::<String>()
             };
-            let mut child = audio::command("python3")
+            let mut child = process::python(self.helper_python(&db))
                 .arg(self.resources.join("worker/export_docx.py"))
                 .arg(&target)
                 .stdin(Stdio::piped())
@@ -1742,7 +1756,7 @@ impl Service {
                         .into(),
                 );
             }
-            fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).map_err(err)?;
+            platform::private_file(&target)?;
             return Ok(Value::Null);
         }
         let content = match format {
@@ -1799,13 +1813,13 @@ impl Service {
                     .collect::<Vec<_>>();
                 source_tracks.sort_by_key(|t| t.offset_ms);
                 audio::export_audio(&source_tracks, &target)?;
-                fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).map_err(err)?;
+                platform::private_file(&target)?;
                 return Ok(Value::Null);
             }
             _ => return Err("Unsupported export format".into()),
         };
         fs::write(&target, content).map_err(err)?;
-        fs::set_permissions(target, fs::Permissions::from_mode(0o600)).map_err(err)?;
+        platform::private_file(&target)?;
         Ok(Value::Null)
     }
     pub fn shutdown(&self) {
@@ -1815,7 +1829,7 @@ impl Service {
         {
             let running = self.running.lock().unwrap();
             if let Some((_, pid)) = running.as_ref() {
-                audio::kill_group(*pid, libc::SIGKILL);
+                process::kill_tree(*pid);
             }
         }
         if self.capture.lock().unwrap().is_some() {

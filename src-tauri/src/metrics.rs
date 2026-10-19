@@ -1,5 +1,9 @@
-//! Linux RSS sampling; shared pages are conservatively counted per process.
+//! Memory of the host's process tree, for job metrics. Linux reads /proc;
+//! shared pages are conservatively counted per process. Other platforms report
+//! 0 until the Windows Job Object accounting lands.
+#[cfg(target_os = "linux")]
 use std::{collections::HashSet, fs};
+#[cfg(target_os = "linux")]
 pub fn tree_pids(root: u32) -> Vec<u32> {
     let mut seen = HashSet::new();
     let mut queue = vec![root];
@@ -21,6 +25,7 @@ pub fn tree_pids(root: u32) -> Vec<u32> {
     }
     seen.into_iter().collect()
 }
+#[cfg(target_os = "linux")]
 pub fn tree_rss_kib(root: u32) -> u64 {
     tree_pids(root)
         .into_iter()
@@ -36,4 +41,8 @@ pub fn tree_rss_kib(root: u32) -> u64 {
                 .unwrap_or(0)
         })
         .sum()
+}
+#[cfg(not(target_os = "linux"))]
+pub fn tree_rss_kib(_root: u32) -> u64 {
+    0
 }

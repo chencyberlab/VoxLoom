@@ -1,3 +1,5 @@
+// Opt-in real-engine checks driven by PipeWire tools, /proc and /tmp fixtures.
+#![cfg(target_os = "linux")]
 use serde_json::json;
 use std::{
     path::PathBuf,

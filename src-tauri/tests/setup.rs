@@ -1,3 +1,6 @@
+// Linux setup installs LiteRT into a venv with the system python3, stubbed here
+// with /bin/true. The Windows package bundles its runtime and needs its own test.
+#![cfg(unix)]
 use serde_json::{json, Value};
 use std::{
     fs,

@@ -1,6 +1,8 @@
 pub mod audio;
 pub mod db;
 pub mod metrics;
+pub mod platform;
+pub mod process;
 pub mod search;
 pub mod service;
 

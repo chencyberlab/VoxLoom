@@ -1,66 +1,28 @@
-//! Linux boundary. No virtual sinks or routing changes. A single FFmpeg process
-//! owns both inputs; segmented FLAC keeps completed chunks recoverable.
-use crate::{db::Track, err, Result};
+//! Capture and stored audio. Finding devices and starting the capture process
+//! are per platform (`pulse` on Linux, `wasapi` on Windows); session files,
+//! segment bookkeeping, durations and export are shared. Segmented FLAC keeps
+//! completed chunks recoverable.
+use crate::{db::Track, err, process, Result};
 use serde_json::{json, Value};
 use std::{
     fs,
     io::{BufRead, BufReader, Write},
-    os::unix::process::CommandExt,
     path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
+    process::{Child, Stdio},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
-pub fn command(program: &str) -> Command {
-    let mut c = Command::new(program);
-    // A killed host must not leave a recorder or model resident. All descendants
-    // join a dedicated process group; orderly shutdown also kills that group.
-    unsafe {
-        c.pre_exec(|| {
-            libc::setpgid(0, 0);
-            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-    c
-}
-pub fn kill_group(pid: u32, signal: i32) {
-    unsafe {
-        libc::kill(-(pid as i32), signal);
-    }
-}
-pub fn devices() -> Result<Value> {
-    let out = Command::new("pactl")
-        .args(["--format=json", "list", "sources"])
-        .output()
-        .map_err(|_| "pactl is missing. Install pulseaudio-utils".to_string())?;
-    if !out.status.success() {
-        return Err(
-            "Cannot connect to PipeWire/PulseAudio. Check your desktop audio session.".into(),
-        );
-    }
-    let data: Value = serde_json::from_slice(&out.stdout).map_err(err)?;
-    let default = Command::new("pactl")
-        .arg("get-default-source")
-        .output()
-        .ok()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default();
-    let sink = Command::new("pactl")
-        .arg("get-default-sink")
-        .output()
-        .ok()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default();
-    let sources=data.as_array().ok_or("Unexpected pactl source format")?.iter().map(|s|{
-        let name=s["name"].as_str().unwrap_or("");let monitor=name.ends_with(".monitor")||s["monitor_of_sink"].as_str().map(|v|v!="n/a").unwrap_or(false);
-        json!({"name":name,"label":s["description"],"monitor":monitor,"state":s["state"],"default":if monitor {name==format!("{sink}.monitor")}else{name==default}})
-    }).collect::<Vec<_>>();
-    Ok(json!(sources))
-}
+#[cfg(target_os = "linux")]
+mod pulse;
+#[cfg(target_os = "linux")]
+use pulse as backend;
+#[cfg(windows)]
+mod wasapi;
+#[cfg(windows)]
+use wasapi as backend;
+
+pub use backend::devices;
 
 pub struct Capture {
     pub meeting: String,
@@ -103,61 +65,12 @@ impl Capture {
             serde_json::to_vec(&json!({"offset_ms":self.elapsed_ms})).map_err(err)?,
         )
         .map_err(err)?;
-        let mut cmd = command("ffmpeg");
-        cmd.args(["-hide_banner", "-loglevel", "info", "-y"]);
-        let sources = [self.mic.as_ref(), self.system.as_ref()]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>();
-        if sources.is_empty() {
-            return Err("Choose a microphone or system monitor".into());
-        }
-        for source in &sources {
-            cmd.args(["-thread_queue_size", "512", "-f", "pulse", "-i", source]);
-        }
-        for (i, source) in sources.iter().enumerate() {
-            let kind = if self.mic.as_ref() == Some(source) {
-                "mic"
-            } else {
-                "system"
-            };
-            let filter=format!("aresample=async=1:first_pts=0,astats=metadata=1:reset=1,ametadata@{kind}=print:key=lavfi.astats.Overall.RMS_level");
-            cmd.args([
-                "-map",
-                &format!("{i}:a"),
-                "-af",
-                &filter,
-                "-ac",
-                "1",
-                "-ar",
-                "16000",
-                "-c:a",
-                "flac",
-                "-f",
-                "segment",
-                "-segment_time",
-                "30",
-                // Write each FLAC frame as it is encoded, so live transcription
-                // can read the file still being recorded seconds behind capture.
-                "-segment_format_options",
-                "flush_packets=1",
-                "-reset_timestamps",
-                "1",
-            ]);
-            cmd.arg(
-                self.folder
-                    .join(format!("s{:04}-{kind}-%06d.flac", self.session)),
-            );
-        }
-        let mut child = cmd
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|_| {
-                "FFmpeg capture could not start. Install FFmpeg with PulseAudio input support."
-                    .to_string()
-            })?;
+        let mut child = backend::spawn(
+            &self.folder,
+            self.session,
+            self.mic.as_deref(),
+            self.system.as_deref(),
+        )?;
         let stderr = child.stderr.take().unwrap();
         let levels = self.levels.clone();
         std::thread::spawn(move || {
@@ -181,7 +94,7 @@ impl Capture {
         });
         std::thread::sleep(Duration::from_millis(180));
         if child.try_wait().map_err(err)?.is_some() {
-            return Err("Capture failed: device disconnected, access denied, or FFmpeg Pulse input unavailable. Refresh sources and retry.".into());
+            return Err(backend::START_FAILED.into());
         }
         self.child = Some(child);
         self.started = Some(Instant::now());
@@ -277,7 +190,7 @@ impl Capture {
                 std::thread::sleep(Duration::from_millis(50));
             }
             if child.try_wait().map_err(err)?.is_none() {
-                kill_group(child.id(), libc::SIGKILL);
+                process::kill_tree(child.id());
                 let _ = child.wait();
             }
         }
@@ -320,7 +233,7 @@ impl Drop for Capture {
 }
 
 pub fn duration(path: &Path) -> Result<i64> {
-    let out = Command::new("ffprobe")
+    let out = process::hidden("ffprobe")
         .args([
             "-protocol_whitelist",
             "file,pipe",
@@ -362,7 +275,7 @@ pub fn export_audio(tracks: &[Track], target: &Path) -> Result<()> {
         contents.push_str(&format!("file '{}'\n", track.path.replace('\'', "'\\''")));
     }
     fs::write(&list, contents).map_err(err)?;
-    let result = command("ffmpeg")
+    let result = process::command("ffmpeg")
         .args([
             "-nostdin",
             "-v",
@@ -393,6 +306,7 @@ pub fn export_audio(tracks: &[Track], target: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
     #[test]
     fn exports_complete_source_with_space_unicode_and_quote_paths() {
         if Command::new("ffmpeg")

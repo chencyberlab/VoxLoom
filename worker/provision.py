@@ -19,7 +19,11 @@ MANIFEST = ROOT / "models" / "manifest.json"
 
 
 def data_dir():
-    return Path(os.environ.get("VOXLOOM_DATA_DIR", Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "voxloom"))
+    if sys.platform == "win32":
+        default = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData/Local")) / "VoxLoom"
+    else:
+        default = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "voxloom"
+    return Path(os.environ.get("VOXLOOM_DATA_DIR", default))
 
 
 def emit(**payload):
@@ -103,7 +107,7 @@ def main():
     parser.add_argument("--model", choices=["whisper", "whisper_accurate", "embedding", "summary_e2b", "summary_e4b"])
     parser.add_argument("--directory", type=Path, default=data_dir() / "models")
     args = parser.parse_args()
-    models = json.loads(MANIFEST.read_text())["models"]
+    models = json.loads(MANIFEST.read_text(encoding="utf-8"))["models"]
     missing = False
     for model in models:
         if model.get("manual_only") and args.model != model["id"]:

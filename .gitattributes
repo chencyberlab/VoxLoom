@@ -1,0 +1,7 @@
+# Keep LF on every platform. Git for Windows otherwise checks out CRLF, which
+# breaks the bash scripts and any test that compares text byte for byte.
+* text=auto eol=lf
+
+*.png binary
+*.ico binary
+*.jpg binary
