@@ -52,6 +52,21 @@ class MeetingNotesTests(unittest.TestCase):
         self.assertEqual([title for *_,title in calls],[False]*(len(calls)-1)+[True])
         self.assertEqual(rows[-1]['title'],'Privacy workshop')
 
+    def test_odd_leftover_note_waits_for_a_partner_instead_of_a_solo_pass(self):
+        calls=[]
+        def generate(request,content,scratch,meeting_notes=False,title=False):
+            calls.append(content)
+            notes=f'Overview\nNote {len(calls)}.'
+            return (notes,'Title') if title else notes
+        segments=[{'start_ms':i*30000,'text':('The workshop covers privacy. '*100)} for i in range(3)]
+        with patch.object(engine,'generate',side_effect=generate):
+            engine.summarize({'segments':segments},lambda **row:None,Path('/tmp'))
+        # Three batches: three note passes, one combine of the first pair, then
+        # the final combine of that result with the untouched third note.
+        self.assertEqual(len(calls),5)
+        self.assertIn('Note 3.',calls[-1]);self.assertIn('Note 4.',calls[-1])
+        self.assertNotIn('Note 3.',calls[3])
+
     def test_short_transcript_gets_title_from_its_only_pass(self):
         rows=[]
         with tempfile.TemporaryDirectory() as directory:

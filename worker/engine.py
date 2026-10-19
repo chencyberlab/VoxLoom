@@ -659,7 +659,9 @@ def index(request, emit, scratch):
     from litert_lm import Content
     segments = request.get("segments", [])
     tracks = request["tracks"]
-    lengths = [duration(t["path"]) for t in tracks]
+    # Transcription already measured every segment file; decoding each one
+    # again just to count windows cost about as long as embedding them.
+    lengths = [t.get("duration_ms") or duration(t["path"]) for t in tracks]
     total = len(segments) + sum(len(list(windows(d))) for d in lengths)
     done = 0
     completed = {tuple(item) for item in request.get("indexed", [])}
@@ -874,8 +876,14 @@ def summarize(request, emit, scratch):
     while len(notes) > 1:
         reduced = []
         for i in range(0, len(notes), 2):
-            pair = "\n".join(notes[i:i + 2])[:6500]
-            reduced.append(notes_pass(STYLES[style]["combine"] + "\n<EVIDENCE>\n" + pair + "\n</EVIDENCE>", len(notes) <= 2))
+            pair = notes[i:i + 2]
+            if len(pair) == 1:
+                # An odd note has nothing to combine with yet; a model pass
+                # over it alone costs a minute on a laptop and can only lose
+                # detail. It joins a pair in the next round.
+                reduced.append(pair[0])
+                continue
+            reduced.append(notes_pass(STYLES[style]["combine"] + "\n<EVIDENCE>\n" + "\n".join(pair)[:6500] + "\n</EVIDENCE>", len(notes) <= 2))
         notes = reduced
     explicit_question = any(re.search(r"\?|\b(?:question|asked|unclear|uncertain|whether)\b",segment['text'],re.I) for segment in segments)
     emit(type="summary", text=normalise_meeting_notes(notes[0], include_questions=bool(explicit_question), headings=STYLES[style]["sections"]), title=title)
