@@ -132,3 +132,11 @@ Verified: see TESTING.md, "Version 0.1.11".
 Release result: release/voxloom_0.1.11_amd64.deb (15,007,136 bytes; no model weights; package version 0.1.11; SHA-256 910a7642…68530f) and release/VoxLoom-0.1.11/voxloom, built with `python3 scripts/version.py set 0.1.11` and `build-app.sh --check`. The packaged web build has the deep drag region and the transparent compact background. Native launch, compact/expand and Quit passed in Xvfb (exit 0; four observed processes released; idle sampled RSS 457,136 KiB).
 Limitations: dragging needs a window manager and was not exercised in Xvfb; it is left to the user's GNOME X11 desktop. Not tested on Wayland. Without a compositor, the corners show black instead of the desktop.
 Next: user installs 0.1.11 and drags the floating recorder on the real desktop.
+
+
+Version 0.1.12: Markdown copy, Windows preview, apps built by GitHub
+Implemented: the summary page copies notes as rich text (Copy notes) or as Markdown (Copy Markdown); its Word document button is gone, and transcripts still export to Word. The app icon is a rounded tile. Windows 11 joins as a second platform of the same code (docs/WINDOWS.md, phases 1-2): a bundled runtime (engines, FFmpeg, Python with LiteRT, all pinned), Job Objects so a crash leaves nothing running, and a preview zip that imports, transcribes, searches and summarises but does not record yet. Builds use Node 24 LTS. GitHub's Apps workflow now builds both apps when VERSION changes on main and attaches them to a draft release. Linux behaviour is otherwise unchanged.
+Verified: see TESTING.md, "Version 0.1.12".
+Release result: built by the Apps workflow on main, not on this computer: voxloom_0.1.12_amd64.deb and VoxLoom-0.1.12-windows-x64-preview.zip on the draft release v0.1.12, with their SHA-256 in its notes and SHA256SUMS.txt. The draft is made only after both launch checks in that run pass.
+Limitations: the Windows preview cannot record (phase 3), is not signed, has no installer (phase 4) and has not yet run on a real Windows 11 laptop. Upgrading the Linux package from 0.1.11 keeps recordings, models and settings.
+Next: user installs 0.1.12 on Linux and tries the Windows preview on a Windows 11 laptop.

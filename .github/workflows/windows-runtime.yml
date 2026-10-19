@@ -1,0 +1,58 @@
+# The Windows runtime (engines, FFmpeg, Python with LiteRT), cross-built on
+# Linux from pinned sources and cached until its recipe changes. Called by
+# ci.yml and apps.yml, so both use the same cache entry. Uploads it as the
+# "windows-runtime" artifact of the calling run.
+name: Windows runtime
+
+on:
+  workflow_call:
+    inputs:
+      fixtures:
+        description: Also make the speech fixtures the real-engine checks use.
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/cache/restore@v5
+        id: runtime
+        with:
+          path: windows-runtime
+          key: windows-runtime-${{ hashFiles('scripts/build-windows-runtime.sh', 'scripts/setup-runtimes.sh', 'scripts/patch-llama-completion.py', 'worker/requirements.windows.lock.txt') }}
+      - name: Cross-build the runtime
+        if: steps.runtime.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mingw-w64 cmake nasm python3-venv
+          bash scripts/build-windows-runtime.sh windows-runtime
+          rm -rf windows-runtime/build
+      - uses: actions/cache/save@v5
+        if: steps.runtime.outputs.cache-hit != 'true'
+        with:
+          path: windows-runtime
+          key: ${{ steps.runtime.outputs.cache-primary-key }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-runtime
+          path: windows-runtime
+          retention-days: 7
+      - name: Speech fixtures
+        if: inputs.fixtures
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends espeak-ng ffmpeg
+          bash scripts/make-fixtures.sh fixtures
+      - uses: actions/upload-artifact@v7
+        if: inputs.fixtures
+        with:
+          name: fixtures
+          path: fixtures
+          retention-days: 7

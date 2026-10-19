@@ -1,0 +1,183 @@
+# Builds the apps from main: the Linux .deb and the Windows preview, a zip that
+# runs without installing. Runs when a push to main changes VERSION or this
+# build recipe, or from Actions → Apps → Run workflow; never for other pushes or
+# branches. From main it attaches the apps to a draft GitHub release for that
+# version. A draft is visible only to people with access to the repository until
+# someone publishes it, and a published release is never changed.
+name: Apps
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - VERSION
+      - .github/workflows/apps.yml
+      - scripts/package-windows-preview.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apps-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows-runtime:
+    name: Windows runtime
+    uses: ./.github/workflows/windows-runtime.yml
+
+  linux:
+    name: Linux package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - name: Rust toolchain
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: linux-apps-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: linux-apps-cargo-
+      # build-app.sh compiles the engines only when these are missing.
+      - uses: actions/cache@v5
+        with:
+          path: |
+            .local-data/runtimes/whisper/bin
+            .local-data/runtimes/llama/bin
+            .local-data/runtimes/whisper-generic/bin
+            .local-data/runtimes/llama-generic/bin
+          key: linux-engines-${{ hashFiles('scripts/setup-runtimes.sh', 'scripts/patch-llama-completion.py') }}
+      - name: Build the package
+        run: bash scripts/build-app.sh --install-deps --release-dir "$RUNNER_TEMP/apps"
+      - name: Launch, float, expand and quit
+        run: |
+          sudo apt-get install -y --no-install-recommends xvfb x11-utils libxtst6 imagemagick
+          version="$(tr -d '[:space:]' < VERSION)"
+          xvfb-run -a python3 scripts/native-smoke.py "$RUNNER_TEMP/apps/VoxLoom-$version/usr/bin/voxloom"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux-package
+          path: ${{ runner.temp }}/apps/*.deb
+          if-no-files-found: error
+
+  windows:
+    name: Windows preview
+    needs: windows-runtime
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v7
+        with:
+          name: windows-runtime
+          path: src-tauri
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Rust toolchain
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: windows-apps-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: windows-apps-cargo-
+      - run: npm ci
+      - name: Build the app
+        run: npx tauri build --no-bundle
+      - name: Assemble the preview
+        run: python scripts/package-windows-preview.py "$env:RUNNER_TEMP\apps"
+      - name: The unzipped preview runs from a folder with spaces and accents
+        shell: pwsh
+        run: |
+          $version = (Get-Content VERSION -Raw).Trim()
+          $place = "$env:RUNNER_TEMP\Zoë's apps"
+          python -m zipfile -e "$env:RUNNER_TEMP\apps\VoxLoom-$version-windows-x64-preview.zip" $place
+          $folder = "$place\VoxLoom-$version-windows-x64-preview"
+          python scripts/windows-runtime-smoke.py $folder
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/native-smoke-windows.py "$folder\voxloom.exe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        env:
+          PYTHONUTF8: "1"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-preview
+          path: ${{ runner.temp }}/apps/*.zip
+          if-no-files-found: error
+
+  draft-release:
+    name: Draft release
+    needs: [linux, windows]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v7
+        with:
+          name: linux-package
+          path: apps
+      - uses: actions/download-artifact@v7
+        with:
+          name: windows-preview
+          path: apps
+      - name: Attach the apps to the draft release for this version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(tr -d '[:space:]' < VERSION)"
+          tag="v$version"
+          deb="voxloom_${version}_amd64.deb"
+          zip="VoxLoom-${version}-windows-x64-preview.zip"
+          (cd apps && sha256sum -- "$deb" "$zip" > SHA256SUMS.txt)
+          cat > notes.md <<EOF
+          Built by the Apps workflow from ${GITHUB_SHA}.
+
+          **Linux (Ubuntu 24.04, x86_64):** \`$deb\`
+
+              sudo apt install ./$deb
+
+          Upgrades keep your recordings, models and settings.
+
+          **Windows 11 (x64) preview:** \`$zip\`
+
+          Unzip it and open voxloom.exe. It imports, transcribes, searches and summarises; recording and an installer come later. It is not signed yet, so Windows may warn about an unknown publisher: choose More info, then Run anyway.
+
+          SHA-256:
+
+          $(sed 's/^/    /' apps/SHA256SUMS.txt)
+          EOF
+          if draft="$(gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null)"; then
+            if [[ "$draft" != true ]]; then
+              echo "$tag is already published; it is left unchanged."
+              exit 0
+            fi
+            gh release edit "$tag" --target "$GITHUB_SHA" --notes-file notes.md
+            gh release upload "$tag" apps/* --clobber
+          else
+            gh release create "$tag" apps/* --draft --target "$GITHUB_SHA" --title "VoxLoom $version" --notes-file notes.md
+          fi

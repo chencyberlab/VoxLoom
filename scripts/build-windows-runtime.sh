@@ -21,7 +21,7 @@ wants() { [[ ",$parts," == *",$1,"* ]]; }
 out="$(mkdir -p "${1:-$repo/.local-data/windows-runtime}" && cd "${1:-$repo/.local-data/windows-runtime}" && pwd)"
 work="$out/build"
 jobs="${VOXLOOM_BUILD_JOBS:-$(nproc)}"
-mkdir -p "$work" "$out/engines"
+mkdir -p "$work" "$out/engines" "$out/licenses"
 
 ffmpeg_version=7.1.5
 ffmpeg_sha256=de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f
@@ -84,6 +84,7 @@ build_engine() {
   fetch "https://github.com/ggml-org/$upstream/archive/refs/tags/$version.tar.gz" "$expected" "$work/$name-$version.tar.gz"
   rm -rf "$work/$name-src" && mkdir -p "$work/$name-src"
   tar -xzf "$work/$name-$version.tar.gz" -C "$work/$name-src" --strip-components=1
+  cp "$work/$name-src/LICENSE" "$out/licenses/$upstream-LICENSE.txt"
   if [[ "$name" == llama ]]; then python3 "$repo/scripts/patch-llama-completion.py" "$work/$name-src"; fi
   for variant in optimized generic; do
     local cpu_flags=(-DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DGGML_BMI2=ON -DGGML_AVX512=OFF -DGGML_AVX_VNNI=OFF) suffix=""
@@ -111,6 +112,8 @@ if wants ffmpeg; then
 fetch "https://ffmpeg.org/releases/ffmpeg-$ffmpeg_version.tar.xz" "$ffmpeg_sha256" "$work/ffmpeg-$ffmpeg_version.tar.xz"
 rm -rf "$work/ffmpeg-src" && mkdir -p "$work/ffmpeg-src"
 tar -xJf "$work/ffmpeg-$ffmpeg_version.tar.xz" -C "$work/ffmpeg-src" --strip-components=1
+cp "$work/ffmpeg-src/COPYING.LGPLv2.1" "$out/licenses/FFmpeg-COPYING.LGPLv2.1.txt"
+cp "$work/ffmpeg-src/LICENSE.md" "$out/licenses/FFmpeg-LICENSE.md"
 (
   cd "$work/ffmpeg-src"
   ./configure --enable-cross-compile --target-os=mingw32 --arch=x86_64 --cross-prefix=x86_64-w64-mingw32- \
@@ -155,4 +158,19 @@ done
 
 printf 'whisper.cpp %s\nllama.cpp %s\nFFmpeg %s (LGPL)\nCPython %s embeddable\n' \
   "$whisper_version" "$llama_version" "$ffmpeg_version" "$python_version" > "$out/VERSIONS.txt"
+# What a package that bundles the runtime must say about it.
+cat > "$out/licenses/README.txt" <<EOF
+Third-party software bundled with VoxLoom for Windows
+
+whisper.cpp $whisper_version (MIT): https://github.com/ggml-org/whisper.cpp/tree/$whisper_version
+  Licence: whisper.cpp-LICENSE.txt
+llama.cpp $llama_version (MIT): https://github.com/ggml-org/llama.cpp/tree/$llama_version
+  Patched by scripts/patch-llama-completion.py in VoxLoom's source. Licence: llama.cpp-LICENSE.txt
+FFmpeg $ffmpeg_version (LGPL 2.1 or later): https://ffmpeg.org/releases/ffmpeg-$ffmpeg_version.tar.xz
+  Built unmodified with the options in scripts/build-windows-runtime.sh in VoxLoom's
+  source (https://github.com/chencyberlab/VoxLoom). Licence: FFmpeg-COPYING.LGPLv2.1.txt, FFmpeg-LICENSE.md
+CPython $python_version embeddable package (PSF License): https://www.python.org/downloads/release/python-${python_version//./}/
+  Licence: python\LICENSE.txt
+LiteRT-LM and the Python packages it needs: their licences are in python\Lib\site-packages\*.dist-info
+EOF
 printf 'Windows runtime in %s\n' "$out"

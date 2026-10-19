@@ -49,7 +49,9 @@ A private Linux desktop app (Ubuntu 24.04, x86_64) that records microphone and/o
 | `scripts/` | Build, run and test tools (listed below). |
 | `tests/` | Python unit tests (`test_worker.py`, `test_notes.py`) and Playwright UI tests (`tests/ui`). |
 | `docs/` | `ARCHITECTURE.md` (how it works), `TESTING.md` (what was verified, with numbers), `IMPLEMENTATION.md` (per-version log), `PERFORMANCE.md`, `MODEL_SOURCES.md`, `WINDOWS.md` (Windows port status and plan), `reports/` (JSON measurement reports). |
-| `.github/workflows/ci.yml` | Every push: a Linux job cross-builds and caches the Windows runtime and makes speech fixtures; Windows and Linux run the fast checks; Windows also checks the bundled runtime, the Job Objects, a debug build and its launch; a Windows real-engine job runs the whole import-to-delete workflow with cached pinned models. |
+| `.github/workflows/ci.yml` | Every push that changes more than documentation (`*.md`, `docs/`): Windows and Linux run the fast checks; Windows also checks the bundled runtime, the Job Objects, a debug build and its launch; a Windows real-engine job runs the whole import-to-delete workflow with cached pinned models. Pull requests run it only from forks (this repository's branches are checked by their pushes). |
+| `.github/workflows/windows-runtime.yml` | Shared by CI and Apps: cross-builds the Windows runtime on Linux, caches it until its recipe changes, and makes the speech fixtures when asked. |
+| `.github/workflows/apps.yml`, `scripts/package-windows-preview.py` | Apps: builds the Linux `.deb` and the Windows preview zip (runs without installing) from main, launches each, and attaches them to a draft GitHub release for the version. Runs only when a push to main changes `VERSION` or this recipe, or from Actions → Apps → Run workflow. |
 | `scripts/build-windows-runtime.sh`, `worker/requirements.windows.lock.txt` | Cross-builds on Linux everything the Windows package bundles, from pinned sources with SHA-256: the engines (same pins as `setup-runtimes.sh`), a minimal LGPL FFmpeg, and embeddable CPython with LiteRT installed with `--require-hashes`. `scripts/windows-runtime-smoke.py` checks the result on Windows. |
 
 ## Where things are stored
@@ -59,8 +61,8 @@ A private Linux desktop app (Ubuntu 24.04, x86_64) that records microphone and/o
 | `~/.local/share/voxloom/` (`VOXLOOM_DATA_DIR`) | Installed app's library: `library.db`, `recordings/<id>/`, `models/`, `runtimes/inference` (LiteRT venv). Private (0700). | Never |
 | `~/.cache/voxloom/` (`VOXLOOM_CACHE_DIR`) | Temporary job folders and the last inference metrics. | Never |
 | `%LOCALAPPDATA%\org.voxloom.desktop\` and `…\cache\` | The same library and cache on Windows. Local, not Roaming (Roaming can sync to a server on company networks), and not the per-user program folder `%LOCALAPPDATA%\voxloom`. The uninstaller deletes it only if the user ticks "Delete the application data". The WebView2 profile lives here too. | Never |
-| `.local-data/windows-runtime/` | `build-windows-runtime.sh` output: `engines/`, `python/`, `VERSIONS.txt`, and `build/` (sources and objects, reusable). | Ignored |
-| `src-tauri/engines/`, `src-tauri/python/` on Windows | The Windows runtime staged for debug builds (found through `resources/src-tauri/…`) and packaging. | Ignored |
+| `.local-data/windows-runtime/` | `build-windows-runtime.sh` output: `engines/`, `python/`, `licenses/` (bundled software's licences and sources), `VERSIONS.txt`, and `build/` (sources and objects, reusable). | Ignored |
+| `src-tauri/engines/`, `src-tauri/python/`, `src-tauri/licenses/`, `src-tauri/VERSIONS.txt` on Windows | The Windows runtime staged for debug builds (found through `resources/src-tauri/…`) and packaging. | Ignored |
 | `.local-data/` | This checkout's own library, models and compiled engines (`.local-data/runtimes/{whisper,llama}{,-generic}/bin`). Used by `run-local.sh` and `build-app.sh`, so development never touches the installed app's data. | Ignored |
 | `.toolchain/` | Private Rust (`rustup`, `cargo`) and, if needed, Node (`node/`). Created by `build-app.sh`. | Ignored |
 | `.venv/` | Development Python with LiteRT, for real-engine tests. | Ignored |
@@ -127,7 +129,7 @@ Windows-specific code must also compile. From Linux, with `mingw-w64` installed 
 cargo clippy --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-gnu -- -D warnings
 ```
 
-Every push also runs `.github/workflows/ci.yml` on GitHub's Windows and Linux machines: the fast set above, plus on Windows `scripts/windows-runtime-smoke.py` (every bundled program starts, FFmpeg writes capture-style segments in a non-ASCII folder, the bundled Python loads LiteRT), the Job Object tests, a debug build, `scripts/native-smoke-windows.py` (launch with throwaway data, close the window, nothing left running), and the real-engine workflow test through a model folder with non-ASCII letters. GitHub's Windows machines are Windows Server with no audio devices, so recording and speed still need a real Windows 11 laptop.
+Every push that changes more than documentation also runs `.github/workflows/ci.yml` on GitHub's Windows and Linux machines: the fast set above, plus on Windows `scripts/windows-runtime-smoke.py` (every bundled program starts, FFmpeg writes capture-style segments in a non-ASCII folder, the bundled Python loads LiteRT), the Job Object tests, a debug build, `scripts/native-smoke-windows.py` (launch with throwaway data, close the window, nothing left running), and the real-engine workflow test through a model folder with non-ASCII letters. GitHub's Windows machines are Windows Server with no audio devices, so recording and speed still need a real Windows 11 laptop.
 
 For visual work, `TOUR_OUT=/tmp/voxloom-tour npx playwright test tour` captures every page in light and dark with sample data (skipped otherwise).
 
@@ -155,13 +157,15 @@ bash scripts/build-app.sh            # add --check to run the fast tests first
 
 The Windows runtime is built on Linux (mingw-w64, cmake, make, nasm, python3-venv) and needs github.com, ffmpeg.org, python.org and PyPI: `bash scripts/build-windows-runtime.sh [--parts engines,ffmpeg,python] [output]`. The first full build takes about 20 minutes; CI caches it. The Windows installer comes later (see `docs/WINDOWS.md`).
 
+GitHub builds the apps too. The Apps workflow (`.github/workflows/apps.yml`) runs when a push to main changes `VERSION`, or from Actions → Apps → Run workflow. Branches never build apps. It makes `voxloom_<version>_amd64.deb` with `build-app.sh` and `VoxLoom-<version>-windows-x64-preview.zip` with `scripts/package-windows-preview.py`, and runs each one's launch check. On main it attaches both, with their SHA-256, to a draft release `v<version>`. A draft is visible only to people with access to the repository; publishing it is a person's decision, and the workflow never changes a published release. So releasing is: bump the version, push to main, check the draft, publish.
+
 The script checks system packages, installs private Node/Rust when needed, runs `npm ci`, and compiles the engines once into `.local-data/runtimes`. It then runs `desktop.sh build --bundles deb` and copies the `.deb` plus the run-in-place folder into `release/`. Use `--release-dir DIR` to build somewhere else, for example while the user is installing the current release. The first build spends most of its time compiling the engines; it took about 9 minutes in total on a 4-core laptop. `VOXLOOM_BUILD_JOBS` limits the number of parallel compile jobs, which defaults to all cores. Later builds reuse the engines and take 1–2 minutes.
 
 When releasing a new version:
 
 1. Bump the version: `python3 scripts/version.py set X.Y.Z`. It writes `VERSION` and the copies in `package.json`, `package-lock.json` (root entries), `src-tauri/Cargo.toml` and the `voxloom` entry of `src-tauri/Cargo.lock`. `npm run check` and `build-app.sh` fail if any copy differs from `VERSION`. Never edit those copies by hand.
 2. Run the fast tests and the real checks relevant to the change.
-3. Build, then run the native smoke test on `release/VoxLoom-<version>/usr/bin/voxloom`.
+3. Build, then run the native smoke test on `release/VoxLoom-<version>/usr/bin/voxloom`. Or merge to main and let the Apps workflow build both apps and run their launch checks; the draft release then holds the files and SHA-256.
 4. Add a version section to `docs/IMPLEMENTATION.md` (implemented / verified / limitations / release result / next) and to `docs/TESTING.md` (with measured numbers). Update `README.md` paths and user-visible behaviour.
 5. Tell the user the install command (`sudo apt install ./release/voxloom_<version>_amd64.deb`) and the SHA-256. Upgrades keep the user's recordings, models and settings.
 
