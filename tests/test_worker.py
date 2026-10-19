@@ -94,6 +94,12 @@ class InferenceUnits(unittest.TestCase):
             self.assertEqual([t['id'] for s in streams for t, _, _ in s['tracks']], ['a'])
             # Only audio that exists is cached: a stub is measured again, never trusted as 0.
             self.assertEqual(events, [{'type': 'track_duration', 'track_id': 'a', 'duration_ms': 2000}])
+            # Search preparation runs after that pass with the cached length for
+            # the real file and none for the stub; it must not fail on the stub,
+            # and the stub adds no audio windows.
+            lengths = engine.track_lengths([dict(tracks[0], duration_ms=2000), tracks[1], tracks[2]])
+            self.assertEqual(lengths, [2000, 0, 0])
+            self.assertEqual([len(list(engine.windows(length))) for length in lengths], [1, 0, 0])
             # A file the user imported still reports that it cannot be read.
             broken = root / 'import.flac'
             broken.write_bytes(whole.read_bytes()[:200])

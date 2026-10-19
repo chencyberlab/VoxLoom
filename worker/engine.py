@@ -259,6 +259,14 @@ def stored_length(path):
         return 0
 
 
+def track_lengths(tracks):
+    """Lengths transcription already measured, else measured now. Every
+    later job over a recording's files must go through here: a segment that
+    holds no audio has no cached length on purpose, and `duration()` on it
+    would fail the job on every retry."""
+    return [t.get("duration_ms") or stored_length(t["path"]) for t in tracks]
+
+
 def decode_pcm(path, start=0, length=None, growing=False):
     """Decode part of one stored file to 16 kHz mono s16le bytes."""
     argv = ["ffmpeg", "-nostdin", "-v", "error"]
@@ -686,7 +694,7 @@ def index(request, emit, scratch):
     tracks = request["tracks"]
     # Transcription already measured every segment file; decoding each one
     # again just to count windows cost about as long as embedding them.
-    lengths = [t.get("duration_ms") or duration(t["path"]) for t in tracks]
+    lengths = track_lengths(tracks)
     total = len(segments) + sum(len(list(windows(d))) for d in lengths)
     done = 0
     completed = {tuple(item) for item in request.get("indexed", [])}
