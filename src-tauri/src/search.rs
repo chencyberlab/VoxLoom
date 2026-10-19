@@ -39,8 +39,19 @@ pub fn exact(db: &Db, query: &str, filter: &Value) -> Result<Vec<Value>> {
     if terms.is_empty() {
         return Ok(vec![]);
     }
-    let mut stmt=db.conn.prepare("SELECT s.meeting_id,m.title,m.created_at,s.start_ms,s.end_ms,s.text,s.source,bm25(transcript_fts) FROM transcript_fts JOIN transcript_segments s ON s.id=transcript_fts.rowid JOIN meetings m ON m.id=s.meeting_id WHERE transcript_fts MATCH ? ORDER BY bm25(transcript_fts) LIMIT 500").map_err(err)?;
-    let rows=stmt.query_map([terms],|r|Ok(json!({"meeting_id":r.get::<_,String>(0)?,"title":r.get::<_,String>(1)?,"created_at":r.get::<_,i64>(2)?,"start_ms":r.get::<_,i64>(3)?,"end_ms":r.get::<_,i64>(4)?,"text":r.get::<_,String>(5)?,"source":r.get::<_,String>(6)?,"modality":"text","rank":r.get::<_,f64>(7)?}))).map_err(err)?;
+    // The recording and source filters are applied before the row cap. A
+    // common word can match thousands of rows across the library, and the
+    // best 500 of those may hold none from the recording being searched.
+    let chosen = |key: &str| -> String {
+        filter[key]
+            .as_str()
+            .filter(|s| !s.is_empty() && *s != "all")
+            .unwrap_or("")
+            .to_string()
+    };
+    let (meeting, source) = (chosen("meeting_id"), chosen("source"));
+    let mut stmt=db.conn.prepare("SELECT s.meeting_id,m.title,m.created_at,s.start_ms,s.end_ms,s.text,s.source,bm25(transcript_fts) FROM transcript_fts JOIN transcript_segments s ON s.id=transcript_fts.rowid JOIN meetings m ON m.id=s.meeting_id WHERE transcript_fts MATCH ?1 AND (?2='' OR s.meeting_id=?2) AND (?3='' OR s.source=?3) ORDER BY bm25(transcript_fts) LIMIT 500").map_err(err)?;
+    let rows=stmt.query_map(params![terms,meeting,source],|r|Ok(json!({"meeting_id":r.get::<_,String>(0)?,"title":r.get::<_,String>(1)?,"created_at":r.get::<_,i64>(2)?,"start_ms":r.get::<_,i64>(3)?,"end_ms":r.get::<_,i64>(4)?,"text":r.get::<_,String>(5)?,"source":r.get::<_,String>(6)?,"modality":"text","rank":r.get::<_,f64>(7)?}))).map_err(err)?;
     rows.filter_map(|r| match r {
         Ok(v) if matches(&v, filter) => Some(Ok(v)),
         Ok(_) => None,
@@ -174,5 +185,24 @@ mod tests {
             json!({"meeting_id":"a","start_ms":30000,"modality":"audio"}),
         ];
         assert_eq!(dedup(items, 40).len(), 3);
+    }
+    #[test]
+    fn exact_search_filters_before_the_row_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("library.db")).unwrap();
+        db.create("busy", "Busy", 10000, "ready").unwrap();
+        db.create("quiet", "Quiet", 10000, "ready").unwrap();
+        // 600 rows in one recording match the word; the only row from the
+        // other recording ranks no better and used to fall outside the cap.
+        for i in 0..600 {
+            db.conn.execute("INSERT INTO transcript_segments(meeting_id,start_ms,end_ms,text,source) VALUES('busy',?,?,'the budget was approved again','mic')", params![i * 1000, i * 1000 + 900]).unwrap();
+        }
+        db.conn.execute("INSERT INTO transcript_segments(meeting_id,start_ms,end_ms,text,source) VALUES('quiet',0,900,'the budget was approved again and then some more words','system')", []).unwrap();
+        let hits = exact(&db, "budget", &json!({"meeting_id":"quiet"})).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0]["meeting_id"], "quiet");
+        assert_eq!(exact(&db, "budget", &json!({"source":"system"})).unwrap().len(), 1);
+        assert_eq!(exact(&db, "budget", &json!({"meeting_id":"all","source":"all"})).unwrap().len(), 80);
+        assert!(exact(&db, "budget", &json!({"meeting_id":"missing"})).unwrap().is_empty());
     }
 }
