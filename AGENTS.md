@@ -210,6 +210,14 @@ Add `src-tauri/migrations/00N.sql`. Make it idempotent (`IF NOT EXISTS`) and end
 - User-facing text is plain and short; technical detail belongs under Advanced settings.
 - The app icon's source is `src-tauri/icons/icon.svg` (a rounded tile). To change it, render it at 1024 px (`rsvg-convert -w 1024`), run `npx tauri icon <png> -o <temp>`, and copy only `icon.png` and `icon.ico` into `src-tauri/icons/`.
 
+## Cursor Cloud specific instructions
+
+The Cloud Agent environment installs the Ubuntu packages from "Set up a development machine", plus Xvfb, X11 utilities and ImageMagick for the native launch check. It updates Rust to stable (`rust-version` is 1.85; the base image's 1.83 is too old) and runs `npm ci`. Rust lives in `/usr/local/rustup` and `/usr/local/cargo`. Login shells export `RUSTUP_HOME` and `CARGO_HOME` from `/etc/profile.d/voxloom-rust.sh`. Node 22 is also linked at `/usr/local/bin`.
+
+Playwright uses `/opt/google/chrome/chrome`. The fast checks (`npm run check`, `npm test`, `npm run test:ui`, `cargo test --manifest-path src-tauri/Cargo.toml --no-default-features`, and `cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings` after `mkdir -p src-tauri/engines`) do not need models.
+
+Whisper, llama.cpp and the model files are not installed. `scripts/desktop.sh build` stops until `scripts/setup-runtimes.sh` has compiled the engines. A debug desktop binary does not need them: `npx tauri build --debug --no-bundle`, then `xvfb-run -a python3 scripts/native-smoke.py src-tauri/target/debug/voxloom`. Do not download models unless the task is a real-engine check.
+
 ## Known gotchas
 
 - FFmpeg's segment muxer can leave the full recording length in a later file's FLAC header. Count decoded samples (`duration()`), and decode segmented files before seeking.
