@@ -18,6 +18,20 @@ Meaningful unit checks cover pause-aligned chunk planning, skipped-speech retrie
 
 Version 0.1.1 added a first-run 1B/E2B summary selector. Six browser tests pass, including the request payload, displayed estimate and locked selection during setup for 1B, E2B and no summaries. These use an explicitly mocked bridge, without downloading models. A separate Rust regression executes the real offline provisioning script with tiny SHA-256-checked fixture files and a stubbed runtime readiness probe. It verifies core plus only the chosen summary model, saved E2B selection after success, core-only setup, missing-summary failure without changing the saved selection, and rejection of an unknown profile. Native checks on the final 0.1.1 package also passed launch, compact/expand and Quit, with all three observed processes released. The setup action remains fully visible at 900×720 in the browser checks. No user library or installed app data is reset during updates.
 
+## Version 0.1.14: fixes from the review of 0.1.13 (issue #5)
+
+Tested on the same 4-core cloud VM (Ubuntu 24.04, FFmpeg 6.1.1, no audio devices, no models).
+
+How FFmpeg treats damaged capture segments, measured here with a 30-second pink-noise segment (1,225,490 bytes) and a 2-second tone segment: a 200-byte or 6,000-byte prefix (no complete frame) cannot be opened at all (`Error opening input: End of file`, exit 187, no samples); a 15,000-byte prefix decodes 144 ms and a 100,000-byte prefix 2,232 ms, both with exit 0 and a logged `decode_frame() failed` for the half frame at the end; 400 bytes overwritten in the middle lose 216 ms and exit 0. So a segment that `duration()` rejects holds no audio FFmpeg can read, which is what the worker now relies on. Audio export (`ffconcat`) still succeeds when such a file is last in the list (2.0 s out of a 2 s segment plus a stub) and fails only when it comes first, which a crash cannot produce.
+
+Validation:
+- Fast set: 45 Python checks (2 new), 21 Rust unit checks (2 new) plus the offline setup integration check, 13 browser checks, TypeScript/privacy/version, desktop clippy with warnings denied, and clippy for `x86_64-pc-windows-gnu` with warnings denied.
+- Worker (`test_segment_cut_before_its_first_frame_counts_as_empty`): one 2-second segment, a 200-byte prefix named `s0000-mic-000001.flac` and an empty `s0001-mic-000000.flac`: `audio_streams` returns the first segment's stream (2,000 ms), emits one `track_duration` (for the real file only) and no error; a 200-byte prefix with an import's name still raises. Against the 0.1.13 worker the same test fails with `Saved audio could not be decoded`.
+- Worker, end to end (`test_recovery_pass_transcribes_the_segments_before_a_crash_stub`): the same files through `transcribe()` with a fake Whisper: the pass commits `covered_ms` 2,000, one row, and one `track_duration`. Fails on the 0.1.13 worker with the same error.
+- Host (`a_full_disk_refuses_recording_but_an_unknown_one_does_not`, `free_space_is_unknown_for_a_missing_volume_and_measured_for_a_real_one`): `Some(0)` and `Some(256 MiB − 1)` refuse, `Some(256 MiB)` and `None` do not; a path on no volume reports `None`, the temp folder reports a figure.
+
+Native smoke (`npx tauri build --debug --no-bundle`, then `xvfb-run -a python3 scripts/native-smoke.py src-tauri/target/debug/voxloom`): launch, shrink to 390×92, expand, Quit (exit 0; four observed processes released; peak sampled RSS 662,704 KiB for the unoptimised debug build). The sidebar shows 0.1.14. No `.deb` was built on this machine; the Apps workflow builds it from main.
+
 ## Version 0.1.13: code review fixes
 
 Tested on a 4-core cloud VM (Ubuntu 24.04, 15 GiB, no audio devices, no models), so the real-engine and real-capture checks were not run; each fix has a unit test on the host or the worker.
