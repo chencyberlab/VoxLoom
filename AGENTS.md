@@ -59,7 +59,7 @@ A private Linux desktop app (Ubuntu 24.04, x86_64) that records microphone and/o
 | Location | Contents | In Git? |
 |---|---|---|
 | `~/.local/share/voxloom/` (`VOXLOOM_DATA_DIR`) | Installed app's library: `library.db`, `recordings/<id>/`, `models/`, `runtimes/inference` (LiteRT venv). Private (0700). | Never |
-| `~/.cache/voxloom/` (`VOXLOOM_CACHE_DIR`) | Temporary job folders and the last inference metrics. | Never |
+| `~/.cache/voxloom/` (`VOXLOOM_CACHE_DIR`) | Temporary job folders, the last inference metrics and `verified-models.json` (size, mtime and pinned hash of each model that passed its SHA-256 check, so workers do not re-hash unchanged files). | Never |
 | `%LOCALAPPDATA%\org.voxloom.desktop\` and `…\cache\` | The same library and cache on Windows. Local, not Roaming (Roaming can sync to a server on company networks), and not the per-user program folder `%LOCALAPPDATA%\voxloom`. The uninstaller deletes it only if the user ticks "Delete the application data". The WebView2 profile lives here too. | Never |
 | `.local-data/windows-runtime/` | `build-windows-runtime.sh` output: `engines/`, `python/`, `licenses/` (bundled software's licences and sources), `VERSIONS.txt`, and `build/` (sources and objects, reusable). | Ignored |
 | `src-tauri/engines/`, `src-tauri/python/`, `src-tauri/licenses/`, `src-tauri/VERSIONS.txt` on Windows | The Windows runtime staged for debug builds (found through `resources/src-tauri/…`) and packaging. | Ignored |
@@ -182,7 +182,8 @@ The live path: `service.rs::tick` polls every 2.5 s → `request("transcribe_liv
 - **Rows are sentences.** An unfinished sentence is carried in the checkpoint and finished by the next chunk, or flushed after silence, at 300 characters / 30 s, or at Stop/Pause.
 - **Checkpoints are atomic.** Coverage (`covered_ms`), rows and carry state commit in one transaction. The state is stored as JSON in `asr_progress.overlap_text`; the column name is historical.
 - **The file still being recorded** is read up to its last CRC-valid frame (`decode_pcm(growing=True)`). It is never registered or cached. This depends on FFmpeg's `-segment_format_options flush_packets=1` in `audio.rs`; without it the newest file is unreadable for about 16 s.
-- **A provisional (non-final) pass that ends after Stop/Pause** must trigger a final pass. `tick` does this.
+- **A provisional (non-final) pass that ends after Stop/Pause** must trigger a final pass. `tick` does this. Stop and Pause both queue one themselves (`finish_capture`), and start-up queues one for an interrupted recording that still has unread files or an unfinished sentence (`recover_tracks`).
+- **A live pass registers closed segments itself.** `request()` calls `closed_tracks()` under the capture and library locks before it reads the growing file, so a segment that closed since `tick`'s last poll is never missing from the stream. Keep registration and both reads under the same locks.
 - **Before claiming a transcription improvement,** run the unit tests (`LiveTranscription` in `tests/test_worker.py`), the continuity script and a replay of a real recording.
 
 Summary style: Settings → Summary style (`summary_style`: `counselling` (default), `service`, `meeting`, `custom` with `summary_prompt`, at most 2,000 characters). The prompts live in `engine.py::STYLES`; the Meeting prompt is the pre-0.1.7 text unchanged. Custom instructions are wrapped in the same safety rules and reach the worker in the request file, never on a command line. Saved notes mark section titles with `## `; `notes.py::heading_text` also reads older plain titles. The final summarising pass also returns a title, which replaces only the default name "Untitled recording".

@@ -18,6 +18,25 @@ Meaningful unit checks cover pause-aligned chunk planning, skipped-speech retrie
 
 Version 0.1.1 added a first-run 1B/E2B summary selector. Six browser tests pass, including the request payload, displayed estimate and locked selection during setup for 1B, E2B and no summaries. These use an explicitly mocked bridge, without downloading models. A separate Rust regression executes the real offline provisioning script with tiny SHA-256-checked fixture files and a stubbed runtime readiness probe. It verifies core plus only the chosen summary model, saved E2B selection after success, core-only setup, missing-summary failure without changing the saved selection, and rejection of an unknown profile. Native checks on the final 0.1.1 package also passed launch, compact/expand and Quit, with all three observed processes released. The setup action remains fully visible at 900×720 in the browser checks. No user library or installed app data is reset during updates.
 
+## Version 0.1.13: code review fixes
+
+Tested on a 4-core cloud VM (Ubuntu 24.04, 15 GiB, no audio devices, no models), so the real-engine and real-capture checks were not run; each fix has a unit test on the host or the worker.
+
+Validation:
+- Fast set: 42 Python checks (4 new), 19 Rust unit checks (5 new) plus the offline setup integration check, 13 browser checks, TypeScript/privacy/version, desktop clippy with warnings denied, and clippy for `x86_64-pc-windows-gnu` (mingw-w64) with warnings denied.
+- Live stream gap (`live_request_registers_segments_closed_since_the_last_tick`): with the scheduler stopped, two segment files on disk and a capture that has registered nothing, one `transcribe_live` request registers the closed file and lists it in `context_tracks`; a second request does not register it twice.
+- Pause (`pause_and_stop_both_queue_the_final_live_pass`): Pause registers the open segment and queues one `transcribe_live` job, whose request finalises with no growing file; Stop afterwards leaves exactly one job (the duplicate is refused).
+- Recovery (`interrupted_recordings_resume_transcription_and_regain_their_length`): a library closed with a `recording` meeting and two files on disk reopens with both registered (offsets 0 and 30,000 ms) and one live pass queued; a meeting whose files are all transcribed but whose checkpoint carries an unfinished sentence is queued too; one with nothing owed, and a `ready` meeting, are not. Two `track_duration` events raise the interrupted meeting's length from 0 to 42,000 ms and leave a `ready` meeting's length alone.
+- Queue cap (`full_queue_never_turns_away_a_live_pass`): with eight summaries pending, a ninth summary and an index are refused and a live pass is accepted; its duplicate is still refused.
+- Search (`exact_search_filters_before_the_row_cap`): 600 short matching rows in one recording and one longer matching row in another. Filtering on the second recording returned 0 rows before the fix and 1 after; the unfiltered search still returns 80.
+- Worker (`test_pinned_models_are_hashed_once_until_they_change`): a manifest-named file is hashed on the first call only; a rewrite of the same size with a later timestamp is hashed again and fails; the corrected file is hashed once more and then trusted; a damaged cache file is ignored; with no cache location every call hashes; files the manifest does not name are never hashed.
+- Summaries (`test_odd_leftover_note_waits_for_a_partner_instead_of_a_solo_pass`): three batches now take five model passes instead of six, and the third note reaches the final combine unchanged.
+- Setup (`test_damaged_partial_download_is_removed_so_retry_can_work`, `test_mismatched_download_is_removed_instead_of_left_for_the_user`): an HTTP 416 on a wrong full-length `.part` removes it and the next attempt downloads; a correct `.part` is promoted without another byte; a download whose hash fails is removed and the retry succeeds.
+
+Measured hashing cost on this VM (SHA-256 in Python, 1 MiB reads): a 2.85 GB file, the size of the E2B summary model, takes 2.9 s from disk and 2.3 s from the page cache. Every `generate` call verified the model, so a summary with 19 passes spent 45-55 s hashing before the change; on a laptop SATA SSD (about 500 MB/s) each pass would be nearer 6 s. The whisper model (148 MB) cost 0.10 s per live pass.
+
+Native smoke (`npx tauri build --debug --no-bundle`, then `xvfb-run -a python3 scripts/native-smoke.py src-tauri/target/debug/voxloom`; the VM has no engines or models, which the smoke test does not use): launch, shrink to 390×92, expand, Quit (exit 0; three observed processes released; peak sampled RSS 664,808 KiB for the unoptimised debug build without GPU acceleration). The sidebar shows the new version. No `.deb` was built on this machine; the Apps workflow builds it from main.
+
 ## Version 0.1.12: Markdown copy, Windows preview, apps built by GitHub
 
 Validation:

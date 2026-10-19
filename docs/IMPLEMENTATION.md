@@ -140,3 +140,23 @@ Verified: see TESTING.md, "Version 0.1.12".
 Release result: built by the Apps workflow on main, not on this computer: voxloom_0.1.12_amd64.deb and VoxLoom-0.1.12-windows-x64-preview.zip on the draft release v0.1.12, with their SHA-256 in its notes and SHA256SUMS.txt. The draft is made only after both launch checks in that run pass.
 Limitations: the Windows preview cannot record (phase 3), is not signed, has no installer (phase 4) and has not yet run on a real Windows 11 laptop. Upgrading the Linux package from 0.1.11 keeps recordings, models and settings.
 Next: user installs 0.1.12 on Linux and tries the Windows preview on a Windows 11 laptop.
+
+
+Version 0.1.13: code review fixes (reliability of live transcription, recovery, setup and search)
+Implemented, from a review of the whole codebase rather than a user report:
+- Live stream gap: `request()` read the growing file under a short capture lock and the registered tracks under a later library lock. A 30-second segment that closed between `tick`'s registration and that read was neither, so the live pass saw a stream with a hole and its words were lost, and the file registered one tick later was transcribed against a checkpoint that had moved past it. Registration and both reads now happen under the same two locks.
+- Pause flushes the tail: only Stop queued the final live pass. A Pause taken while no pass was running left the unfinished sentence in the checkpoint until Resume; now Pause queues it too.
+- Interrupted recordings: after a crash or power loss, start-up registered the segment files of a `recording` meeting but never transcribed them, and the meeting kept the length of its last Pause (or 0). Start-up now queues a final pass when any file is untranscribed or the last checkpoint carries an unfinished sentence, and decoded segment lengths extend the recording's length.
+- Starting a recording no longer kills a running setup (pip into the LiteRT venv, or a model download); live passes wait for it instead. Recording refuses to start with under 256 MB free on the data volume (unknown free space is not treated as 0).
+- A full job queue (8 pending) no longer turns away the live pass, which is the only way a recording's words reach the transcript.
+- The worker time limit is max(2 h, twice the recording's length), so a long recording's summary on a slow laptop is not stopped half-way. The 300-character title limit counts characters, not bytes.
+- Exact search applied the recording and source filters after the 500-row rank cap, so a common word with many hits in other recordings could hide every hit in the chosen one. The filters are now part of the query.
+- `pactl` probes go through `process::hidden`, as the conventions require.
+- Pinned models were hashed in full by every worker (each summary batch read the 2.8 GB GGUF again). A model whose size and modification time are unchanged since it last passed is trusted, recorded in `<cache>/verified-models.json`; any change hashes it again.
+- Summary reduction no longer sends an odd leftover note through the model alone; it waits for a partner in the next round (one model pass fewer on three- and five-batch recordings). Indexing reuses the segment lengths transcription measured instead of decoding every file again.
+- Setup: a `.part` download the server refuses to resume (HTTP 416) or that fails its hash is removed, so Retry works instead of failing the same way for ever and telling the user to delete a hidden file.
+- UI: the title box is cleared once a recording starts, so the next recording does not inherit the name; "Save correction" is disabled for empty text, and the host rejects an empty correction.
+Verified: see TESTING.md, "Version 0.1.13".
+Release result: built by the Apps workflow when this version reaches main: voxloom_0.1.13_amd64.deb and VoxLoom-0.1.13-windows-x64-preview.zip on the draft release v0.1.13, with their SHA-256 in its notes. Upgrading keeps recordings, models and settings; no database migration.
+Known limitations: no real-engine or real-capture run in this pass (the development machine had no models); the new behaviour is covered by unit tests on the host and worker. Trusting size and modification time means a model file replaced by one of the same size with its timestamp preserved is not re-hashed; downloads and imports are still verified in full.
+Next: user installs 0.1.13.
