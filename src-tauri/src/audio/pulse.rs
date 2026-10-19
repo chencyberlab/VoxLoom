@@ -5,13 +5,13 @@ use serde_json::{json, Value};
 use std::{
     ffi::OsString,
     path::Path,
-    process::{Child, Command, Stdio},
+    process::{Child, Stdio},
 };
 
 pub const START_FAILED: &str = "Capture failed: device disconnected, access denied, or FFmpeg Pulse input unavailable. Refresh sources and retry.";
 
 pub fn devices() -> Result<Value> {
-    let out = Command::new("pactl")
+    let out = process::hidden("pactl")
         .args(["--format=json", "list", "sources"])
         .output()
         .map_err(|_| "pactl is missing. Install pulseaudio-utils".to_string())?;
@@ -21,13 +21,13 @@ pub fn devices() -> Result<Value> {
         );
     }
     let data: Value = serde_json::from_slice(&out.stdout).map_err(err)?;
-    let default = Command::new("pactl")
+    let default = process::hidden("pactl")
         .arg("get-default-source")
         .output()
         .ok()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_default();
-    let sink = Command::new("pactl")
+    let sink = process::hidden("pactl")
         .arg("get-default-sink")
         .output()
         .ok()
