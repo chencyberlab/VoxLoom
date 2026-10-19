@@ -80,7 +80,7 @@ def export_docx(target,title,text,summary=True):
 
 if __name__=="__main__":
     try:
-        request=json.load(sys.stdin)
+        request=json.load(sys.stdin.buffer)
         export_docx(sys.argv[1],request["title"],request["text"],request.get("summary",True))
     except Exception:
         raise SystemExit("The Word document could not be saved. Check the folder and available space.") from None

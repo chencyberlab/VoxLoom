@@ -13,6 +13,7 @@ A private Linux desktop app (Ubuntu 24.04, x86_64) that records microphone and/o
   - LiteRT-LM EmbeddingGemma 2 740M for search
   - `llama-completion` (llama.cpp v0.6.0, patched) for summaries
 - **Target hardware:** ordinary business laptops with 4–8 CPU cores and 16 GB RAM, no GPU. Measure CPU and latency on that class of machine before making anything heavier.
+- **Windows 11 (x64)** is being added on the same codebase, not a fork; see `docs/WINDOWS.md` for status and plan. The Windows package bundles every runtime (its own Python with LiteRT, FFmpeg, the engines) so users install nothing else; only models download, through first-run setup. Linux behaviour must not change while this happens.
 
 ## Ground rules (do not break these)
 
@@ -36,7 +37,8 @@ A private Linux desktop app (Ubuntu 24.04, x86_64) that records microphone and/o
 |---|---|
 | `src/` | React UI. `App.tsx` holds most of it; `api.ts` sends every call through one Tauri command, `dispatch(action, payload)`. |
 | `src-tauri/src/service.rs` | All `dispatch` actions, the job queue (`tick`), worker launch (`run_worker`), result ingestion and the live-transcription scheduler. |
-| `src-tauri/src/audio.rs` | Capture: FFmpeg reads Pulse/PipeWire sources and writes 30-second FLAC files (`sNNNN-mic-NNNNNN.flac`, `sNNNN-system-NNNNNN.flac`). This is the boundary for future Windows/macOS backends. |
+| `src-tauri/src/audio.rs` | Capture sessions, 30-second FLAC segment bookkeeping (`sNNNN-mic-NNNNNN.flac`, `sNNNN-system-NNNNNN.flac`), durations and export. The platform backends find devices and start capture: `audio/pulse.rs` (Linux: FFmpeg reads Pulse/PipeWire) and `audio/wasapi.rs` (Windows: not implemented yet, recording reports that plainly). |
+| `src-tauri/src/process.rs`, `src-tauri/src/platform.rs` | Everything else that differs by OS. `process`: start children (`command` supervised, `hidden` for quick probes, `python` adds UTF-8 mode on Windows) and `kill_tree`. `platform`: data folders, private permissions, free disk space, CPU features, executable and venv names, PATH lookup. |
 | `src-tauri/src/db.rs`, `src-tauri/migrations/` | SQLite (WAL, FTS5). Migrations are idempotent SQL files applied in order on every open. |
 | `src-tauri/src/search.rs` | Vector storage, exact/semantic/combined search. |
 | `src-tauri/tests/` | Integration tests. The real-engine and real-capture tests are `#[ignore]`d and opt-in. |
@@ -46,7 +48,8 @@ A private Linux desktop app (Ubuntu 24.04, x86_64) that records microphone and/o
 | `VERSION` | The app version, the only place to change it. `scripts/version.py set X.Y.Z` writes the copies npm and Cargo need; the UI reads `VERSION`, `tauri.conf.json` reads `package.json`. |
 | `scripts/` | Build, run and test tools (listed below). |
 | `tests/` | Python unit tests (`test_worker.py`, `test_notes.py`) and Playwright UI tests (`tests/ui`). |
-| `docs/` | `ARCHITECTURE.md` (how it works), `TESTING.md` (what was verified, with numbers), `IMPLEMENTATION.md` (per-version log), `PERFORMANCE.md`, `MODEL_SOURCES.md`, `WINDOWS_FUTURE.md`, `reports/` (JSON measurement reports). |
+| `docs/` | `ARCHITECTURE.md` (how it works), `TESTING.md` (what was verified, with numbers), `IMPLEMENTATION.md` (per-version log), `PERFORMANCE.md`, `MODEL_SOURCES.md`, `WINDOWS.md` (Windows port status and plan), `reports/` (JSON measurement reports). |
+| `.github/workflows/ci.yml` | The fast checks on Windows and Linux for every push, plus a Windows build and launch smoke test. No models or real engines. |
 
 ## Where things are stored
 
@@ -54,6 +57,7 @@ A private Linux desktop app (Ubuntu 24.04, x86_64) that records microphone and/o
 |---|---|---|
 | `~/.local/share/voxloom/` (`VOXLOOM_DATA_DIR`) | Installed app's library: `library.db`, `recordings/<id>/`, `models/`, `runtimes/inference` (LiteRT venv). Private (0700). | Never |
 | `~/.cache/voxloom/` (`VOXLOOM_CACHE_DIR`) | Temporary job folders and the last inference metrics. | Never |
+| `%LOCALAPPDATA%\VoxLoom\` and `…\VoxLoom\cache\` | The same library and cache on Windows. Local, not Roaming: Roaming can sync to a server on company networks. | Never |
 | `.local-data/` | This checkout's own library, models and compiled engines (`.local-data/runtimes/{whisper,llama}{,-generic}/bin`). Used by `run-local.sh` and `build-app.sh`, so development never touches the installed app's data. | Ignored |
 | `.toolchain/` | Private Rust (`rustup`, `cargo`) and, if needed, Node (`node/`). Created by `build-app.sh`. | Ignored |
 | `.venv/` | Development Python with LiteRT, for real-engine tests. | Ignored |
@@ -104,13 +108,21 @@ Run the fast set before every hand-off:
 
 ```bash
 npm run check                 # TypeScript + privacy rules
-npm test                      # Python unit tests (python3 -m unittest discover -s tests)
+npm test                      # Python unit tests (unittest discover -s tests, via scripts/python.mjs)
 npm run test:ui               # Playwright UI tests (PLAYWRIGHT_CHROME=/path/to/chrome to choose a browser)
 cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --offline
 cargo clippy --manifest-path src-tauri/Cargo.toml --offline -- -D warnings
 ```
 
-`cargo clippy --all-targets` currently reports `items_after_test_module` in `service.rs`, an older layout issue. The documented check is without `--all-targets`.
+`cargo clippy --all-targets` currently reports `items_after_test_module` in `service.rs`, an older layout issue. The documented check is without `--all-targets`. Clippy and the desktop build need `src-tauri/engines/` to exist (empty is fine); `desktop.sh` creates it.
+
+Windows-specific code must also compile. From Linux, with `mingw-w64` installed and `rustup target add x86_64-pc-windows-gnu`:
+
+```bash
+cargo clippy --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-gnu -- -D warnings
+```
+
+Every push also runs `.github/workflows/ci.yml` on GitHub's Windows and Linux machines: the fast set above, a Windows debug build, and `scripts/native-smoke-windows.py` (launch with throwaway data, close the window, nothing left running). GitHub's Windows machines are Windows Server with no audio devices, so recording and speed still need a real Windows 11 laptop.
 
 For visual work, `TOUR_OUT=/tmp/voxloom-tour npx playwright test tour` captures every page in light and dark with sample data (skipped otherwise).
 
@@ -193,6 +205,7 @@ Add `src-tauri/migrations/00N.sql`. Make it idempotent (`IF NOT EXISTS`) and end
 - Match the surrounding code. `App.tsx` and parts of `service.rs` are deliberately dense; don't reformat files you aren't changing.
 - Comments explain why (constraints, failure modes found in testing), not what.
 - The worker stays standard-library Python apart from LiteRT. FFmpeg does audio work; pure Python handles small per-frame maths.
+- OS differences live in `process.rs`, `platform.rs` and the `audio/` backends, behind `cfg`. Start child processes with `process::command` / `hidden` / `python`, never a bare `Command::new`, so Windows gets no console windows and Linux keeps its process groups. In the worker, start engines with `child_options()`, and give every text read or write `encoding="utf-8"` (Windows Python defaults to the ANSI code page).
 - New dependencies, runtimes or model downloads need a clear reason and the user's agreement. Anything downloaded must be pinned (version + SHA-256).
 - User-facing text is plain and short; technical detail belongs under Advanced settings.
 

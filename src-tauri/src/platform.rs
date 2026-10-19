@@ -1,0 +1,163 @@
+//! Operating-system differences outside audio capture and child processes.
+use crate::{err, Result};
+use std::{
+    ffi::OsString,
+    fs,
+    path::{Path, PathBuf},
+};
+
+/// The library and cache folders. VOXLOOM_DATA_DIR / VOXLOOM_CACHE_DIR win.
+/// Windows uses Local AppData: Roaming can be synced to a server on company
+/// networks, which would copy recordings and models off the device.
+pub fn data_dirs() -> Result<(PathBuf, PathBuf)> {
+    let var = |name: &str| std::env::var_os(name).map(PathBuf::from);
+    #[cfg(unix)]
+    let (data, cache) = {
+        let home = var("HOME").ok_or("HOME is not set")?;
+        (
+            var("XDG_DATA_HOME")
+                .unwrap_or_else(|| home.join(".local/share"))
+                .join("voxloom"),
+            var("XDG_CACHE_HOME")
+                .unwrap_or_else(|| home.join(".cache"))
+                .join("voxloom"),
+        )
+    };
+    #[cfg(windows)]
+    let (data, cache) = {
+        let local = var("LOCALAPPDATA").ok_or("LOCALAPPDATA is not set")?;
+        (local.join("VoxLoom"), local.join("VoxLoom").join("cache"))
+    };
+    Ok((
+        var("VOXLOOM_DATA_DIR").unwrap_or(data),
+        var("VOXLOOM_CACHE_DIR").unwrap_or(cache),
+    ))
+}
+
+/// Files the app creates are readable only by the user. On Windows the
+/// per-user AppData folders are already private to the account.
+pub fn restrict_new_files() {
+    #[cfg(unix)]
+    unsafe {
+        libc::umask(0o077);
+    }
+}
+
+pub fn private_dir(p: &Path) -> Result<()> {
+    fs::create_dir_all(p).map_err(err)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(p, fs::Permissions::from_mode(0o700)).map_err(err)?;
+    }
+    Ok(())
+}
+
+pub fn private_file(p: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(p, fs::Permissions::from_mode(0o600)).map_err(err)?;
+    }
+    #[cfg(windows)]
+    let _ = p;
+    Ok(())
+}
+
+/// Bytes available to the user on the volume holding `path`; 0 if unknown.
+pub fn free_disk_bytes(path: &Path) -> u64 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let Ok(path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+            return 0;
+        };
+        let mut info = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+        if unsafe { libc::statvfs(path.as_ptr(), info.as_mut_ptr()) } != 0 {
+            return 0;
+        }
+        let info = unsafe { info.assume_init() };
+        #[allow(clippy::unnecessary_cast)]
+        (info.f_bavail as u64).saturating_mul(info.f_frsize as u64)
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn GetDiskFreeSpaceExW(
+                directory: *const u16,
+                available: *mut u64,
+                total: *mut u64,
+                free: *mut u64,
+            ) -> i32;
+        }
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        let mut available = 0u64;
+        let ok = unsafe {
+            GetDiskFreeSpaceExW(
+                wide.as_ptr(),
+                &mut available,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        if ok == 0 {
+            0
+        } else {
+            available
+        }
+    }
+}
+
+/// Whether this CPU runs the AVX2-optimised engine builds.
+pub fn optimized_cpu() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        fs::read_to_string("/proc/cpuinfo")
+            .map(|s| {
+                ["avx2", "fma", "f16c", "bmi2"]
+                    .iter()
+                    .all(|feature| s.split_whitespace().any(|word| word == *feature))
+            })
+            .unwrap_or(false)
+    }
+    #[cfg(all(not(target_os = "linux"), target_arch = "x86_64"))]
+    {
+        std::arch::is_x86_feature_detected!("avx2")
+            && std::arch::is_x86_feature_detected!("fma")
+            && std::arch::is_x86_feature_detected!("f16c")
+            && std::arch::is_x86_feature_detected!("bmi2")
+    }
+    #[cfg(all(not(target_os = "linux"), not(target_arch = "x86_64")))]
+    {
+        false
+    }
+}
+
+/// An executable's file name on this platform.
+pub fn exe(name: &str) -> String {
+    if cfg!(windows) {
+        format!("{name}.exe")
+    } else {
+        name.to_string()
+    }
+}
+
+/// The interpreter inside a Python virtual environment.
+pub fn venv_python(venv: &Path) -> PathBuf {
+    if cfg!(windows) {
+        venv.join("Scripts").join("python.exe")
+    } else {
+        venv.join("bin").join("python")
+    }
+}
+
+/// Whether `program` can be started by name from PATH.
+pub fn on_path(program: impl Into<OsString>) -> bool {
+    crate::process::hidden(if cfg!(windows) { "where" } else { "which" })
+        .arg(program.into())
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}

@@ -12,7 +12,6 @@ import json
 import math
 import os
 from pathlib import Path
-import resource
 import re
 import signal
 import subprocess
@@ -20,6 +19,11 @@ import sys
 import tempfile
 import time
 import wave
+
+try:
+    import resource
+except ImportError:  # Windows: the host measures the whole process tree there.
+    resource = None
 
 os.environ.update(HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1", HF_HUB_DISABLE_TELEMETRY="1", DO_NOT_TRACK="1")
 DIM = 768
@@ -55,13 +59,22 @@ def parent_death():
     ctypes.CDLL(None).prctl(1, signal.SIGKILL)
 
 
+def child_options():
+    """Engines die with the worker. Linux asks the kernel to kill them if the
+    worker dies; on Windows the host's process tree covers them, and they must
+    not open a console window."""
+    if sys.platform == "win32":
+        return {"creationflags": subprocess.CREATE_NO_WINDOW}
+    return {"preexec_fn": parent_death}
+
+
 def run(argv, timeout=600, return_stderr=False, data=None):
     if Path(argv[0]).name in ("ffmpeg", "ffprobe"):
         argv = [argv[0], "-protocol_whitelist", "file,pipe", *argv[1:]]
     # Never include transcript, file names or subprocess stderr in routine logs.
     result = subprocess.run(argv, input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE if return_stderr else subprocess.DEVNULL,
                             stdin=None if data is not None else subprocess.DEVNULL,
-                            timeout=timeout, check=False, preexec_fn=parent_death)
+                            timeout=timeout, check=False, **child_options())
     if result.returncode:
         raise RuntimeError(f"Local {Path(argv[0]).name} failed (exit {result.returncode}); check the executable and model in Settings")
     return result.stderr if return_stderr else result.stdout
@@ -74,7 +87,7 @@ def duration(path):
         # instead of trusting either header duration or progress timestamps.
         child = subprocess.Popen(["ffmpeg", "-nostdin", "-v", "error", "-protocol_whitelist", "file,pipe", "-i", str(path),
                                   "-vn", "-ar", "16000", "-ac", "1", "-f", "s16le", "pipe:1"],
-                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, preexec_fn=parent_death)
+                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, **child_options())
         count = 0
         try:
             while block := child.stdout.read(65536):
@@ -119,7 +132,7 @@ def ensure_model(path):
     # Pinned distributions are validated before inference, including manual
     # copies. Custom GGUFs are explicitly user-selected and remain unverified.
     import provision
-    for model in json.loads(provision.MANIFEST.read_text())["models"]:
+    for model in json.loads(provision.MANIFEST.read_text(encoding="utf-8"))["models"]:
         if path.name == model["filename"] and not provision.valid(path, model):
             raise ValueError("Local model failed its pinned SHA-256 check. Re-import or retry model setup.")
     return str(path.resolve())
@@ -345,7 +358,7 @@ def whisper_pieces(request, model, samples, scratch):
          "-t", str(request["threads"]), "-l", request.get("language", "en"), "-ng", "-np"], timeout=600)
     length = len(samples) // 16
     pieces = []
-    for segment in json.loads(output.with_suffix(".json").read_text()).get("transcription", []):
+    for segment in json.loads(output.with_suffix(".json").read_text(encoding="utf-8")).get("transcription", []):
         text = " ".join(NON_SPEECH.sub(" ", segment["text"]).split())
         if not text:
             continue
@@ -758,7 +771,7 @@ def generate(request, content, scratch, meeting_notes=False, title=False):
             + style +
             "Put the entire answer between <voxloom_result> and </voxloom_result>.\n" + content)
     path = scratch / "prompt.txt"
-    path.write_text(text)
+    path.write_text(text, encoding="utf-8")
     result = run([request["llama_cli"], "-m", model, "-f", str(path), "-n", "768", "-c", "4096", "-t", str(request["threads"]),
                   "-ngl", "0", "-b", "512", "-ub", "128", "--temp", "0.1", "--seed", "42",
                   "--offline", "--jinja", "--reasoning", "off", "--no-display-prompt", "--simple-io", "--single-turn"], timeout=600)
@@ -855,9 +868,9 @@ def main():
     parser.add_argument("--request", type=Path, required=True)
     parser.add_argument("--response", type=Path, required=True)
     args = parser.parse_args()
-    request = json.loads(args.request.read_text())
+    request = json.loads(args.request.read_text(encoding="utf-8"))
     os.umask(0o077)
-    with args.response.open("w") as output:
+    with args.response.open("w", encoding="utf-8") as output:
         def emit(**payload):
             output.write(json.dumps(payload) + "\n")
             output.flush()
@@ -866,8 +879,8 @@ def main():
             with tempfile.TemporaryDirectory(dir=args.request.parent, prefix="chunks-") as directory:
                 execute(request, emit, Path(directory))
             emit(type="metrics", elapsed_seconds=time.monotonic() - started,
-                 worker_peak_rss_kib=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
-                 child_peak_rss_kib=resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)
+                 worker_peak_rss_kib=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss if resource else None,
+                 child_peak_rss_kib=resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss if resource else None)
         except Exception as error:
             # Runtime failure details may include user paths: keep them out of routine logs.
             message = str(error) if isinstance(error, (ValueError, RuntimeError)) else f"Local runtime failed ({type(error).__name__}). Check runtime compatibility in diagnostics."

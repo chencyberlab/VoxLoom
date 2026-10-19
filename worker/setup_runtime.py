@@ -33,15 +33,18 @@ def main():
     env = dict(os.environ, PIP_DISABLE_PIP_VERSION_CHECK="1", PIP_NO_INPUT="1",
                PIP_CACHE_DIR=str(args.directory.parent / "wheel-cache"))
 
+    # Windows packages bundle LiteRT, so this runs there only from a checkout.
+    options = {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {"preexec_fn": parent_death}
+
     def run(argv):
         result = subprocess.run(argv, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                timeout=1200, preexec_fn=parent_death)
+                                timeout=1200, **options)
         if result.returncode:
             raise RuntimeError("Runtime setup failed. Check available disk space and the internet connection, or retry using an offline wheels folder. The Linux package requires python3-venv.")
 
     emit("creating_environment")
     run([sys.executable, "-m", "venv", str(args.directory)])
-    python = str(args.directory / "bin/python")
+    python = str(args.directory / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python"))
     lock = Path(__file__).resolve().with_name("requirements.lock.txt")
     emit("installing_pinned_dependencies")
     command = [python, "-m", "pip", "install", "--no-deps", "--no-input", "--disable-pip-version-check", "-r", str(lock)]
