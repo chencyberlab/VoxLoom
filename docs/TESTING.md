@@ -18,6 +18,16 @@ Meaningful unit checks cover pause-aligned chunk planning, skipped-speech retrie
 
 Version 0.1.1 added a first-run 1B/E2B summary selector. Six browser tests pass, including the request payload, displayed estimate and locked selection during setup for 1B, E2B and no summaries. These use an explicitly mocked bridge, without downloading models. A separate Rust regression executes the real offline provisioning script with tiny SHA-256-checked fixture files and a stubbed runtime readiness probe. It verifies core plus only the chosen summary model, saved E2B selection after success, core-only setup, missing-summary failure without changing the saved selection, and rejection of an unknown profile. Native checks on the final 0.1.1 package also passed launch, compact/expand and Quit, with all three observed processes released. The setup action remains fully visible at 900×720 in the browser checks. No user library or installed app data is reset during updates.
 
+## Version 0.1.15: fix from the review of 0.1.14 (issue #6)
+
+Tested on the same 4-core cloud VM (Ubuntu 24.04, FFmpeg 6.1.1, no audio devices, no models, no LiteRT).
+
+Validation:
+- Fast set: 45 Python checks (one extended), 21 Rust unit checks plus the offline setup integration check, 13 browser checks, TypeScript/privacy/version, desktop clippy with warnings denied, and clippy for `x86_64-pc-windows-gnu` with warnings denied.
+- Worker (`test_segment_cut_before_its_first_frame_counts_as_empty`, extended): with the 2-second segment's length cached (as the host sends it after the recovery pass) and no length for the 200-byte stub or the empty file, `track_lengths()` returns `[2000, 0, 0]` and `windows()` over those yields one audio window for the real file and none for the others. The expression `index()` used in 0.1.14 on the same list raises `Saved audio could not be decoded`.
+
+Native smoke (`npx tauri build --debug --no-bundle`, then `xvfb-run -a python3 scripts/native-smoke.py src-tauri/target/debug/voxloom`): launch, shrink to 390×92, expand, Quit (exit 0; three observed processes released; peak sampled RSS 670,116 KiB for the unoptimised debug build). The sidebar shows 0.1.15. No `.deb` was built on this machine; the Apps workflow builds it from main.
+
 ## Version 0.1.14: fixes from the review of 0.1.13 (issue #5)
 
 Tested on the same 4-core cloud VM (Ubuntu 24.04, FFmpeg 6.1.1, no audio devices, no models).

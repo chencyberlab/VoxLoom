@@ -170,3 +170,12 @@ Verified: see TESTING.md, "Version 0.1.14".
 Release result: built by the Apps workflow when this version reaches main: voxloom_0.1.14_amd64.deb and VoxLoom-0.1.14-windows-x64-preview.zip on the draft release v0.1.14, with their SHA-256 in its notes. Upgrading keeps recordings, models and settings; no database migration.
 Known limitations: no real-engine or real-capture run in this pass; the stub case is covered by worker tests with real FLAC files and a fake Whisper. A segment with no complete frame stays registered (it is harmless: audio export tolerates a trailing file it cannot open, and the file is measured again by each pass over that recording, one failed open each time).
 Next: user installs 0.1.14.
+
+
+Version 0.1.15: fix from the review of 0.1.14 (GitHub issue #6)
+Implemented:
+- Search preparation no longer fails on a crash stub. 0.1.14 made the recovery pass count a segment FFmpeg cannot open as empty and, on purpose, cached no length for it. `index()` still measured any file without a cached length with `duration()`, so on a machine with the embedding model installed the "Preparing search" job that follows a successful recovery pass failed with "Saved audio could not be decoded" before emitting any embedding, and Retry, Prepare search and Rebuild index failed the same way. Exact word search still worked (rows were in FTS); meaning search had no vectors for that recording. `index()` now takes its lengths from `track_lengths()`, which uses `stored_length()`; the stub's 0 adds no audio windows and the text embeddings run. No other job measures files directly.
+Verified: see TESTING.md, "Version 0.1.15".
+Release result: built by the Apps workflow when this version reaches main: voxloom_0.1.15_amd64.deb and VoxLoom-0.1.15-windows-x64-preview.zip on the draft release v0.1.15, with their SHA-256 in its notes. Upgrading keeps recordings, models and settings; no database migration.
+Known limitations: `index()` itself was not run (no LiteRT on the development machine); the length list it uses is tested with the real files, and the rest of `index()` is unchanged.
+Next: user installs 0.1.15.
