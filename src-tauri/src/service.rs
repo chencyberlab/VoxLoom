@@ -1212,6 +1212,7 @@ impl Service {
             "detail" => self.db.lock().unwrap().detail(text(&p, "id")?),
             "jobs" => self.db.lock().unwrap().jobs(),
             "devices" => audio::devices(),
+            "open_microphone_settings" => audio::open_microphone_settings().map(|_| Value::Null),
             "status" => Ok(self
                 .capture
                 .lock()

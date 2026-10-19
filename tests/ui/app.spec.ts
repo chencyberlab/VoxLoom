@@ -187,6 +187,28 @@ test('recording shows a steady live transcription indicator',async({page})=>{
   await expect(chip).toHaveText('Creating summary · Waiting');
 });
 
+test('a blocked microphone points to its Windows setting, and device changes show while recording',async({page})=>{
+  await page.addInitScript(()=>{
+    const blocked='Windows is blocking VoxLoom from using the microphone. Turn on Settings → Privacy & security → Microphone → Let desktop apps access your microphone, then start again.';
+    Object.assign(window,{isTauri:true,__calls:[],__capture:null,__TAURI_INTERNALS__:{transformCallback:()=>1,invoke:async(command:string,args:{action?:string})=>{
+      if(command.startsWith('plugin:event'))return 1;
+      const w=window as unknown as {__calls:string[];__capture:unknown};w.__calls.push(args?.action||command);
+      switch(args?.action){case 'library':case 'jobs':return [];case 'devices':return [{name:'mic-1',label:'Headset Microphone',monitor:false,default:true},{name:'out-1',label:'Speakers',monitor:true,default:true}];case 'status':return w.__capture;case 'record':throw blocked;case 'runtime_status':return {inference:true,whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models:[{id:'whisper',present:true},{id:'embedding',present:true}]};case 'settings':return {};default:return null;}
+    }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
+  });
+  await page.goto('/');await page.getByRole('navigation').getByRole('button',{name:'New recording'}).click();
+  await page.getByRole('button',{name:'Start recording'}).click();
+  await expect(page.getByRole('alert')).toContainText('Let desktop apps access your microphone');
+  await page.getByRole('button',{name:'Open microphone settings'}).click();
+  expect(await page.evaluate(()=>(window as unknown as {__calls:string[]}).__calls)).toContain('open_microphone_settings');
+  await expect(page.getByRole('alert')).toBeVisible();
+  // While recording, the backend reports a disconnected device or the one it moved to.
+  await page.evaluate(()=>{(window as unknown as {__capture:unknown}).__capture={meeting_id:'rec',elapsed_ms:5000,paused:false,failed:false,levels:[-30,-90],warning:'The microphone was disconnected. Recording continues; this part stays silent until a microphone is available.'};});
+  await expect(page.getByRole('status').filter({hasText:'The microphone was disconnected'})).toBeVisible();
+  await page.evaluate(()=>{(window as unknown as {__capture:{warning?:string}}).__capture.warning=undefined;});
+  await expect(page.getByText('The microphone was disconnected')).toHaveCount(0);
+});
+
 test('downloaded models can be removed to free space, keeping recordings',async({page})=>{
   // Mocked bridge: real file removal and its safety checks are covered by the
   // Rust removing_models test.

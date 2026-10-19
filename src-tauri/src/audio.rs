@@ -6,7 +6,7 @@ use crate::{db::Track, err, process, Result};
 use serde_json::{json, Value};
 use std::{
     fs,
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader},
     path::{Path, PathBuf},
     process::{Child, Stdio},
     sync::{Arc, Mutex},
@@ -21,8 +21,11 @@ use pulse as backend;
 mod wasapi;
 #[cfg(windows)]
 use wasapi as backend;
+// Capture from raw PCM on FFmpeg's stdin; the Windows backend feeds it.
+#[cfg(any(windows, test))]
+mod pcm;
 
-pub use backend::devices;
+pub use backend::{devices, open_microphone_settings};
 
 pub struct Capture {
     pub meeting: String,
@@ -177,14 +180,16 @@ impl Capture {
             .as_mut()
             .and_then(|c| c.try_wait().ok().flatten())
             .is_some();
-        json!({"meeting_id":self.meeting,"elapsed_ms":self.elapsed(),"paused":self.paused,"failed":failed,"levels":*self.levels.lock().unwrap()})
+        let mut status = json!({"meeting_id":self.meeting,"elapsed_ms":self.elapsed(),"paused":self.paused,"failed":failed,"levels":*self.levels.lock().unwrap()});
+        if let Some(warning) = self.child.as_ref().and_then(backend::warning) {
+            status["warning"] = json!(warning);
+        }
+        status
     }
     pub fn pause(&mut self) -> Result<Vec<(PathBuf, String, i64)>> {
         let offset = self.elapsed_ms;
         if let Some(mut child) = self.child.take() {
-            if let Some(mut input) = child.stdin.take() {
-                let _ = input.write_all(b"q\n");
-            }
+            backend::finish(&mut child);
             let deadline = Instant::now() + Duration::from_secs(4);
             while child.try_wait().map_err(err)?.is_none() && Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(50));

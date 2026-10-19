@@ -125,7 +125,7 @@ cp "$work/ffmpeg-src/LICENSE.md" "$out/licenses/FFmpeg-LICENSE.md"
     --enable-decoder='flac,pcm_*,adpcm_ms,adpcm_ima_wav,mp3,mp3float,aac,aac_latm,opus,vorbis,alac,ac3,eac3' \
     --enable-encoder=flac,pcm_s16le \
     --enable-parser=aac,aac_latm,ac3,flac,mpegaudio,opus,vorbis \
-    --enable-filter=aresample,aformat,anull,atrim,astats,ametadata,apad,highpass,lowpass,sine \
+    --enable-filter=aresample,aformat,anull,atrim,astats,ametadata,apad,highpass,lowpass,sine,channelsplit \
     --enable-indev=lavfi \
     --extra-ldflags="$static_ldflags" > "$work/ffmpeg-configure.log"
   make -j "$jobs" > "$work/ffmpeg-build.log"

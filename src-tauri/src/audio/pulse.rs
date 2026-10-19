@@ -4,6 +4,7 @@ use crate::{err, process, Result};
 use serde_json::{json, Value};
 use std::{
     ffi::OsString,
+    io::Write,
     path::Path,
     process::{Child, Stdio},
 };
@@ -120,6 +121,22 @@ pub fn spawn(
             "FFmpeg capture could not start. Install FFmpeg with PulseAudio input support."
                 .to_string()
         })
+}
+
+/// Asks FFmpeg to finish its files; `audio.rs` waits for it to exit.
+pub fn finish(child: &mut Child) {
+    if let Some(mut input) = child.stdin.take() {
+        let _ = input.write_all(b"q\n");
+    }
+}
+
+/// Nothing to report while recording: FFmpeg ends if a source fails.
+pub fn warning(_child: &Child) -> Option<String> {
+    None
+}
+
+pub fn open_microphone_settings() -> Result<()> {
+    Err("Microphone settings open from VoxLoom only on Windows.".into())
 }
 
 #[cfg(test)]
