@@ -32,9 +32,9 @@ Current build: functional development preview on Ubuntu 24.04 x86_64. Real Whisp
 
 ## Install or run the preview
 
-Released versions come with ready-made builds on this repository's GitHub Releases page: the Linux `.deb` and a Windows 11 preview zip (no recording yet; unzip it and open `voxloom.exe`).
+Released versions come with ready-made builds on this repository's GitHub Releases page: the Linux `.deb` and a Windows 11 preview zip (unzip it and open `voxloom.exe`; recording there is new and not yet tried on many laptops).
 
-Install `release/voxloom_0.1.15_amd64.deb` to add VoxLoom to the applications menu. On this prepared Ubuntu computer, you can also open `release/VoxLoom-0.1.15/voxloom` directly; keep its `usr/` folder beside it. Both run the compiled native app without a development server.
+Install `release/voxloom_0.1.16_amd64.deb` to add VoxLoom to the applications menu. On this prepared Ubuntu computer, you can also open `release/VoxLoom-0.1.16/voxloom` directly; keep its `usr/` folder beside it. Both run the compiled native app without a development server.
 
 The downloaded development models and setup data have been removed for a fresh first-run test. Choose **Download & set up** when the app opens. Models are separate from the package and download only when requested. This preview has passed native launch, compact/expand and Quit checks; physical devices and business recordings still need manual testing.
 
@@ -60,10 +60,10 @@ You need an Ubuntu 24.04 (or newer) x86_64 computer, an internet connection for 
 3. **Install.** The script prints the exact command at the end, for example:
 
    ```bash
-   sudo apt install ./release/voxloom_0.1.15_amd64.deb
+   sudo apt install ./release/voxloom_0.1.16_amd64.deb
    ```
 
-   Or run it without installing: `release/VoxLoom-0.1.15/voxloom`.
+   Or run it without installing: `release/VoxLoom-0.1.16/voxloom`.
 4. **First run.** Open VoxLoom from the applications menu and choose **Download & set up** to fetch the AI models (about 3.6 GB with the default summary model). Models are never part of the build.
 
 To build again after pulling changes, run `bash scripts/build-app.sh`. Later builds take a few minutes. Upgrading keeps your recordings, models and settings.

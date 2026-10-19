@@ -18,6 +18,20 @@ Meaningful unit checks cover pause-aligned chunk planning, skipped-speech retrie
 
 Version 0.1.1 added a first-run 1B/E2B summary selector. Six browser tests pass, including the request payload, displayed estimate and locked selection during setup for 1B, E2B and no summaries. These use an explicitly mocked bridge, without downloading models. A separate Rust regression executes the real offline provisioning script with tiny SHA-256-checked fixture files and a stubbed runtime readiness probe. It verifies core plus only the chosen summary model, saved E2B selection after success, core-only setup, missing-summary failure without changing the saved selection, and rejection of an unknown profile. Native checks on the final 0.1.1 package also passed launch, compact/expand and Quit, with all three observed processes released. The setup action remains fully visible at 900×720 in the browser checks. No user library or installed app data is reset during updates.
 
+## Version 0.1.16: recording on Windows (Windows phase 3)
+
+Tested on a 4-core cloud VM (Ubuntu 24.04, FFmpeg 6.1.1, no audio devices) and on GitHub's Windows Server 2025 machines (bundled FFmpeg 7.1.5, no audio devices).
+
+Validation:
+- Fast set here: 45 Python checks, 28 Rust unit checks plus the offline setup integration check, 14 browser checks, TypeScript/privacy/version, desktop clippy, and clippy for the Windows target (the WASAPI backend and its tests) with warnings denied.
+- Timeline (`audio/pcm.rs`): packets jittered by up to ±4 ms join without a gap; a source that hears nothing until 1.0 s is silent until then and its sound lands at exactly 1.0 s; a device that comes back after 500 ms starts where the clock says; audio that arrives after its place was written out is kept, right after it, not dropped.
+- FFmpeg graph, run for real: 3.5 s of two-channel PCM on stdin (a tone on the microphone, silence then a tone on the system channel) becomes one `-mic-` and one `-system-` segment of 56,000 samples each (±64), and both sources print level lines. Passed with FFmpeg 6.1.1 here and with the bundled FFmpeg 7.1.5 on Windows CI.
+- Windows CI: device listing works without audio hardware; a device that no longer exists is refused with a plain message before FFmpeg starts, leaving no files and no registered capture; 33 Rust checks in all; the runtime smoke check; the UI check in Edge; launch and close with every process released.
+- UI: a start refused by Windows' microphone switch shows the message with "Open microphone settings", which calls `open_microphone_settings`; a device notice during recording shows in the studio and goes when the backend stops reporting it.
+- Linux launch test (`native-smoke.py`, Xvfb) on the debug build: three of four runs passed (launch, compact/expand, Quit with exit 0, every observed process released). In the first run, straight after the build, the test's Quit click came before the window had restored and the app was still open after 10 s; no capture was involved.
+
+Not yet tested: real microphones, loopback of real playback, headset switching, the privacy switch and long recordings on Windows. They need a Windows 11 laptop.
+
 ## Version 0.1.15: fix from the review of 0.1.14 (issue #6)
 
 Tested on the same 4-core cloud VM (Ubuntu 24.04, FFmpeg 6.1.1, no audio devices, no models, no LiteRT).
