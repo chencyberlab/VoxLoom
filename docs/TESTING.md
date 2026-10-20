@@ -36,6 +36,7 @@ Validation:
   - Model setup opened from Settings shows the saved Accurate choice as Ready.
 - The setup window was checked in light and dark with the visual tour.
 - `scripts/installer-smoke-windows.py` adds an upgrade before the first uninstall in each mode: the old uninstaller run in place (`/S /DELETEDATA _?=<folder>`, as a newer installer runs it), then a fresh silent install. It fails if any model, cache, browser data, library, recording, shortcut, remembered location or microphone record is gone.
+  - Result (Apps run on ee699e4): the upgrade kept everything in both modes, and all four uninstall cases were clean.
 - Fast set: 45 Python checks, 29 Rust unit checks plus the offline setup integration check, 16 browser checks, TypeScript/privacy/version, and clippy for desktop and the Windows target (with tests).
 
 ## Version 0.1.19: Windows installer (Windows phase 4)
