@@ -67,7 +67,7 @@ for(const choice of ['e2b','e4b','none'] as const){
     await page.setViewportSize({width:900,height:720});
     await expect(dialog.getByRole('button',{name:'Download & set up',exact:true})).toBeInViewport({ratio:1});
     await dialog.getByRole('button',{name:'Download & set up',exact:true}).click();
-    await expect.poll(()=>page.evaluate(()=>(window as unknown as {__setupCalls:unknown[]}).__setupCalls)).toEqual([{mode:'recommended',core_only:choice==='none',summary_profile:choice==='none'?'e2b':choice,path:null}]);
+    await expect.poll(()=>page.evaluate(()=>(window as unknown as {__setupCalls:unknown[]}).__setupCalls)).toEqual([{mode:'recommended',core_only:choice==='none',summary_profile:choice==='none'?'e2b':choice,transcription_profile:'standard',path:null}]);
     if(choice!=='none')await expect(model).toBeDisabled();
     expect(await dialog.evaluate(element=>element.scrollWidth<=element.clientWidth)).toBeTruthy();
     if(choice==='e2b')await page.screenshot({path:'test-results/setup-summary-model.png',fullPage:true});
@@ -101,6 +101,51 @@ test('summary style defaults to counselling and custom instructions are saved',a
   await page.setViewportSize({width:900,height:720});await page.screenshot({path:'test-results/summary-style.png',fullPage:true});
   await page.getByRole('button',{name:'Save settings',exact:true}).click();
   await expect.poll(()=>page.evaluate(()=>(window as unknown as {__calls:Record<string,unknown>[]}).__calls.at(-1))).toMatchObject({summary_style:'custom',summary_prompt:'List the goals the client named.'});
+});
+
+test('first-run setup offers Standard or Accurate transcription',async({page})=>{
+  await page.addInitScript(()=>{
+    const models=[{id:'whisper',bytes:147964211,present:false},{id:'whisper_accurate',bytes:264477561,present:false,optional:true,manual_only:true},{id:'embedding',bytes:484622336,present:false},{id:'summary_e2b',bytes:2841481184,present:false,optional:true},{id:'summary_e4b',bytes:4590807392,present:false,optional:true,manual_only:true}];
+    Object.assign(window,{isTauri:true,__setupCalls:[],__TAURI_INTERNALS__:{transformCallback:()=>1,invoke:async(command:string,args:{action?:string;payload?:unknown})=>{
+      if(command.startsWith('plugin:event'))return 1;
+      switch(args?.action){case 'library':case 'jobs':case 'devices':return [];case 'status':return null;case 'runtime_status':return {inference:true,whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models};case 'settings':return {summary_profile:'e2b'};case 'setup':(window as unknown as {__setupCalls:unknown[]}).__setupCalls.push(args.payload);return null;default:return null;}
+    }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
+  });
+  await page.goto('/');
+  const dialog=page.getByRole('dialog');
+  const choice=dialog.getByLabel('Transcription model',{exact:true});
+  await expect(choice).toHaveValue('standard');
+  await expect(choice.locator('option')).toHaveText([/Standard · Fast default/,/Accurate · Fewer misheard words · \+264 MB/]);
+  await expect(dialog.getByText('About 3.6 GB in total',{exact:false})).toBeVisible();
+  await choice.selectOption('accurate');
+  await expect(dialog.getByText('About three times the processor time',{exact:false})).toBeVisible();
+  await expect(dialog.getByText('About 3.9 GB in total',{exact:false})).toBeVisible();
+  await expect(dialog.locator('.welcome-model',{has:page.getByLabel('Transcription model',{exact:true})}).locator('.welcome-size')).toHaveText('412 MB');
+  await page.setViewportSize({width:900,height:720});
+  await page.setViewportSize({width:900,height:720});
+  await expect(dialog.getByRole('button',{name:'Download & set up',exact:true})).toBeInViewport({ratio:1});
+  await dialog.getByRole('button',{name:'Download & set up',exact:true}).click();
+  await expect.poll(()=>page.evaluate(()=>(window as unknown as {__setupCalls:unknown[]}).__setupCalls)).toEqual([{mode:'recommended',core_only:false,summary_profile:'e2b',transcription_profile:'accurate',path:null}]);
+  await expect(choice).toBeDisabled();
+  expect(await dialog.evaluate(element=>element.scrollWidth<=element.clientWidth)).toBeTruthy();
+  await page.screenshot({path:'test-results/setup-transcription-model.png',fullPage:true});
+});
+
+test('model setup shows the saved transcription choice',async({page})=>{
+  await page.addInitScript(()=>{
+    const models=[{id:'whisper',bytes:147964211,present:true},{id:'whisper_accurate',bytes:264477561,present:true,optional:true,manual_only:true},{id:'embedding',bytes:484622336,present:true},{id:'summary_e2b',bytes:2841481184,present:true,optional:true}];
+    Object.assign(window,{isTauri:true,__TAURI_INTERNALS__:{transformCallback:()=>1,invoke:async(command:string,args:{action?:string;payload?:unknown})=>{
+      if(command.startsWith('plugin:event'))return 1;
+      switch(args?.action){case 'library':case 'jobs':case 'devices':return [];case 'status':return null;case 'runtime_status':return {inference:true,whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models};case 'settings':return {summary_profile:'e2b',transcription_profile:'accurate'};default:return null;}
+    }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
+  });
+  await page.goto('/');
+  await expect(page.getByRole('dialog')).toBeHidden();
+  await page.getByRole('button',{name:'Settings',exact:true}).click();
+  await page.getByRole('button',{name:'Model setup',exact:true}).click();
+  const dialog=page.getByRole('dialog');
+  await expect(dialog.getByLabel('Transcription model',{exact:true})).toHaveValue('accurate');
+  await expect(dialog.locator('.welcome-model',{has:page.getByLabel('Transcription model',{exact:true})}).locator('.welcome-size')).toHaveText('Ready');
 });
 
 test('accurate transcription is an explicit download and setting',async({page})=>{

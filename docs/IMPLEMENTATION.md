@@ -211,3 +211,11 @@ Verified: see TESTING.md, "Version 0.1.19".
 Release result: built by the Apps workflow when this version reaches main: voxloom_0.1.19_amd64.deb, VoxLoom-0.1.19-windows-x64-setup.exe, VoxLoom-0.1.19-windows-x64-preview.zip and VoxLoom-0.1.19-windows-x64-programs-SHA256.txt on the draft release v0.1.19, with their SHA-256 in its notes and SHA256SUMS.txt.
 Known limitations: not code-signed, so SmartScreen warns and managed laptops may block it. Uninstalling a per-machine install cleans only the data of the account that runs it. A models folder chosen under Advanced settings is never deleted. Checked on GitHub's Windows Server machines, not yet on a Windows 11 laptop.
 Next: user installs 0.1.19 on a Windows 11 laptop (per user and per machine), records, and uninstalls.
+
+
+Version 0.1.20: transcription choice in setup, upgrades keep models
+Implemented: first-run setup (and Model setup from Settings) offers Standard or Accurate transcription next to the Transcription row, as it offers the summary model. Standard is always installed as the fallback; Accurate adds Whisper Small English (264 MB) and is saved as the transcription choice once it is installed, so users no longer need Settings for it. Windows: a newer installer's default "Uninstall before installing" runs the old uninstaller in place, and 0.1.19's clean-up hooks then deleted the downloaded models, cache and browser data on every upgrade (recordings were kept). The hooks now treat an uninstaller run in place as an update and remove nothing.
+Verified: see TESTING.md, "Version 0.1.20".
+Release result: built by the Apps workflow when this version reaches main: voxloom_0.1.20_amd64.deb, VoxLoom-0.1.20-windows-x64-setup.exe, VoxLoom-0.1.20-windows-x64-preview.zip and VoxLoom-0.1.20-windows-x64-programs-SHA256.txt on the draft release v0.1.20, with their SHA-256 in its notes and SHA256SUMS.txt.
+Known limitations: upgrading from 0.1.19 runs 0.1.19's uninstaller, which still deletes the models unless "Do not uninstall" is chosen. During an interactive upgrade Tauri's installer still shows the old uninstaller's window.
+Next: user tests first-run setup with Accurate, and an upgrade over an installed copy on Windows.

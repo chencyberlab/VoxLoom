@@ -1765,6 +1765,12 @@ impl Service {
                 "e4b" => "summary_e4b",
                 _ => return Err("Choose a supported summary model: E2B or E4B.".into()),
             };
+            // Standard is always installed; it is the fallback Accurate needs.
+            // Without a choice (older callers) the saved one stays.
+            let transcription = p["transcription_profile"].as_str();
+            if transcription.is_some_and(|t| !["standard", "accurate"].contains(&t)) {
+                return Err("Choose Standard or Accurate transcription.".into());
+            }
             let python = self.python();
             let ready = process::python(&python)
                 .args([
@@ -1808,6 +1814,16 @@ impl Service {
             models.as_object_mut().unwrap().remove("model");
             models["core_only"] = json!(true);
             self.provision(model_mode, &models)?;
+            if let Some(profile) = transcription {
+                if profile == "accurate" {
+                    models["model"] = json!("whisper_accurate");
+                    self.provision(model_mode, &models)?;
+                }
+                self.db
+                    .lock()
+                    .unwrap()
+                    .set_setting("transcription_profile", profile)?;
+            }
             if p["core_only"] != true {
                 models["model"] = json!(summary_model);
                 self.provision(model_mode, &models)?;

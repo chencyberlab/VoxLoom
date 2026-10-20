@@ -11,19 +11,33 @@ use std::{
 use voxloom_core::service::Service;
 
 #[test]
-fn offline_setup_installs_only_selected_summary_and_saves_successful_choice() {
+fn offline_setup_installs_only_selected_models_and_saves_successful_choices() {
     // Tiny integrity-checked files exercise real provisioning, not inference.
     // /bin/true explicitly stubs the runtime readiness probe so no dependencies
     // or model weights are downloaded by this orchestration regression test.
-    for (profile, core_only, missing_summary, expected) in [
-        ("e2b", false, false, Some("summary_e2b")),
-        ("e4b", false, false, Some("summary_e4b")),
-        ("e2b", true, false, None),
-        ("e2b", false, true, None),
-        ("unknown", false, false, None),
+    // Transcription: no choice keeps the saved one; Accurate adds its model to
+    // Standard and is saved only once that model is installed.
+    for (profile, core_only, missing, transcription, before) in [
+        ("e2b", false, None, None, "standard"),
+        ("e4b", false, None, None, "accurate"),
+        ("e2b", true, None, None, "standard"),
+        ("e2b", false, Some("summary_e2b"), None, "standard"),
+        ("unknown", false, None, None, "standard"),
         // Gemma 3 1B was removed in 0.1.8.
-        ("1b", false, false, None),
+        ("1b", false, None, None, "standard"),
+        ("e2b", true, None, Some("accurate"), "standard"),
+        ("e4b", false, None, Some("accurate"), "standard"),
+        ("e2b", false, None, Some("standard"), "accurate"),
+        ("e2b", false, Some("whisper_accurate"), Some("accurate"), "standard"),
+        ("e2b", false, None, Some("best"), "standard"),
     ] {
+        let valid = ["e2b", "e4b"].contains(&profile)
+            && transcription.is_none_or(|t| ["standard", "accurate"].contains(&t));
+        let accurate = transcription == Some("accurate");
+        let transcribed = valid && !(accurate && missing == Some("whisper_accurate"));
+        let summary = format!("summary_{profile}");
+        let summarised = transcribed && !core_only && missing != Some(summary.as_str());
+        let expected = summarised.then_some(summary.as_str());
         let temp = tempfile::tempdir().unwrap();
         let resources = temp.path().join("resources");
         let bundle = temp.path().join("offline café folder");
@@ -40,12 +54,13 @@ fn offline_setup_installs_only_selected_summary_and_saves_successful_choice() {
             ("embedding", "embeddinggemma-2-740m.litertlm", false),
             ("summary_e2b", "gemma-4-E2B-it-Q4_0.gguf", true),
             ("summary_e4b", "gemma-4-E4B-it-Q4_0.gguf", true),
+            ("whisper_accurate", "ggml-small.en-q8_0.bin", true),
         ];
         let manifest: Vec<_> = files.iter().map(|(id, filename, optional)| {
-            if !missing_summary || *id != "summary_e2b" {
+            if missing != Some(*id) {
                 fs::write(bundle.join("models").join(filename), b"abc").unwrap();
             }
-            json!({"id":id,"name":id,"filename":filename,"bytes":3,"sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad","optional":optional,"manual_only":*id=="summary_e4b"})
+            json!({"id":id,"name":id,"filename":filename,"bytes":3,"sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad","optional":optional,"manual_only":(["summary_e4b","whisper_accurate"].contains(id))})
         }).collect();
         fs::write(
             resources.join("models/manifest.json"),
@@ -65,10 +80,14 @@ fn offline_setup_installs_only_selected_summary_and_saves_successful_choice() {
         service
             .dispatch(
                 "save_settings",
-                json!({"python":"/bin/true","summary_profile":"e2b"}),
+                json!({"python":"/bin/true","summary_profile":"e2b","transcription_profile":before}),
             )
             .unwrap();
-        service.dispatch("setup", json!({"mode":"offline_bundle","path":bundle,"summary_profile":profile,"core_only":core_only})).unwrap();
+        let mut request = json!({"mode":"offline_bundle","path":bundle,"summary_profile":profile,"core_only":core_only});
+        if let Some(choice) = transcription {
+            request["transcription_profile"] = json!(choice);
+        }
+        service.dispatch("setup", request).unwrap();
         let deadline = Instant::now() + Duration::from_secs(10);
         let done = loop {
             if let Some(event) = events
@@ -85,25 +104,23 @@ fn offline_setup_installs_only_selected_summary_and_saves_successful_choice() {
         };
         assert_eq!(
             done["error"].is_null(),
-            !missing_summary && !["unknown", "1b"].contains(&profile),
+            transcribed && (core_only || summarised),
             "{done}"
         );
         for (id, filename, _) in files {
-            let installed = if id == "whisper" || id == "embedding" {
-                !["unknown", "1b"].contains(&profile)
-            } else {
-                expected == Some(id)
+            let installed = match id {
+                "whisper" | "embedding" => valid,
+                "whisper_accurate" => transcribed && accurate,
+                _ => expected == Some(id),
             };
-            assert_eq!(data.join("models").join(filename).exists(), installed, "profile={profile}, core_only={core_only}, missing_summary={missing_summary}, model={id}");
+            assert_eq!(data.join("models").join(filename).exists(), installed, "profile={profile}, core_only={core_only}, missing={missing:?}, transcription={transcription:?}, model={id}");
         }
         let settings = service.dispatch("settings", json!({})).unwrap();
+        assert_eq!(settings["summary_profile"], if summarised { profile } else { "e2b" });
         assert_eq!(
-            settings["summary_profile"],
-            match expected {
-                Some("summary_e2b") => "e2b",
-                Some("summary_e4b") => "e4b",
-                _ => "e2b",
-            }
+            settings["transcription_profile"],
+            if transcribed { transcription.unwrap_or(before) } else { before },
+            "profile={profile}, transcription={transcription:?}"
         );
         service.shutdown();
     }

@@ -50,7 +50,9 @@ In the package, the runtime sits next to the app (`resources/engines`, `resource
 
 ## Installing and uninstalling
 
-`VoxLoom-<version>-windows-x64-setup.exe` asks whether to install for the current user only (`%LOCALAPPDATA%\Programs\VoxLoom`, Windows' folder for per-user programs; no administrator rights) or for everyone on the computer (`C:\Program Files\VoxLoom`, needs an administrator). It adds a Start menu shortcut and an entry in Settings → Apps. The package holds the program, its Python with LiteRT, FFmpeg, the engines and the licences of everything bundled (`licenses/`); models are downloaded by first-run setup. Installing a newer version over an older one keeps everything the user made.
+`VoxLoom-<version>-windows-x64-setup.exe` asks whether to install for the current user only (`%LOCALAPPDATA%\Programs\VoxLoom`, Windows' folder for per-user programs; no administrator rights) or for everyone on the computer (`C:\Program Files\VoxLoom`, needs an administrator). It adds a Start menu shortcut and an entry in Settings → Apps. The package holds the program, its Python with LiteRT, FFmpeg, the engines and the licences of everything bundled (`licenses/`); models are downloaded by first-run setup.
+
+To upgrade, run the newer setup. Its first page offers "Uninstall before installing" (the default) or "Do not uninstall"; both keep the recordings, transcripts, settings and downloaded models. The default runs the old uninstaller in place (`_?=`), which a real uninstall never does (it always runs from a copy in a temporary folder), so VoxLoom's uninstaller treats it as an update and removes only the old program files, even if its delete box is ticked. Tauri's installer still shows that uninstaller's window, where the user clicks Uninstall; it replaces only the program. 0.1.19's uninstaller did not know this: upgrading from 0.1.19, choose "Do not uninstall" (or run the new setup with `/S`), or the models have to be downloaded again. Silent upgrades (`setup.exe /S`) skip that page and install over the old version.
 
 Uninstalling (Settings → Apps → VoxLoom → Uninstall, or `uninstall.exe` in the program folder) removes:
 

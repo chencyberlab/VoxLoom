@@ -18,6 +18,26 @@ Meaningful unit checks cover pause-aligned chunk planning, skipped-speech retrie
 
 Version 0.1.1 added a first-run 1B/E2B summary selector. Six browser tests pass, including the request payload, displayed estimate and locked selection during setup for 1B, E2B and no summaries. These use an explicitly mocked bridge, without downloading models. A separate Rust regression executes the real offline provisioning script with tiny SHA-256-checked fixture files and a stubbed runtime readiness probe. It verifies core plus only the chosen summary model, saved E2B selection after success, core-only setup, missing-summary failure without changing the saved selection, and rejection of an unknown profile. Native checks on the final 0.1.1 package also passed launch, compact/expand and Quit, with all three observed processes released. The setup action remains fully visible at 900×720 in the browser checks. No user library or installed app data is reset during updates.
 
+## Version 0.1.20: transcription choice in setup, upgrades keep models
+
+Tested on a 4-core cloud VM (Ubuntu 24.04, FFmpeg 6.1.1, no audio devices) and on GitHub's Windows Server 2025 machines.
+
+Validation:
+- The offline setup integration test (real `provision.py`, tiny SHA-256-checked files) now also covers transcription:
+  - Accurate with or without summaries installs Standard and Accurate and saves Accurate.
+  - Standard saves Standard over a saved Accurate.
+  - No choice keeps the saved one.
+  - Accurate missing from the offline folder fails, keeps the saved choice and installs no summary model.
+  - An unknown choice installs nothing.
+- On the 0.1.19 backend the new test fails at the first Accurate case: the Accurate model is not installed.
+- Browser checks:
+  - First-run setup shows Standard selected, Accurate adds 264 MB to the total (3.6 → 3.9 GB) and to the Transcription row (412 MB), and the request carries `transcription_profile`.
+  - The Download button stays fully visible at 900 × 720 with the longer Accurate text.
+  - Model setup opened from Settings shows the saved Accurate choice as Ready.
+- The setup window was checked in light and dark with the visual tour.
+- `scripts/installer-smoke-windows.py` adds an upgrade before the first uninstall in each mode: the old uninstaller run in place (`/S /DELETEDATA _?=<folder>`, as a newer installer runs it), then a fresh silent install. It fails if any model, cache, browser data, library, recording, shortcut, remembered location or microphone record is gone.
+- Fast set: 45 Python checks, 29 Rust unit checks plus the offline setup integration check, 16 browser checks, TypeScript/privacy/version, and clippy for desktop and the Windows target (with tests).
+
 ## Version 0.1.19: Windows installer (Windows phase 4)
 
 Tested on a 4-core cloud VM (Ubuntu 24.04, FFmpeg 6.1.1, no audio devices) and on GitHub's Windows Server 2025 machines.

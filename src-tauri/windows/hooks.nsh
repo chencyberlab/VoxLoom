@@ -7,12 +7,20 @@
 ; cache, the window's browser data and Windows' record of microphone use.
 ; The user's recordings and library (transcripts, notes, settings) go only
 ; when the box on the confirm page is ticked, or with uninstall.exe /S
-; /DELETEDATA. An update runs the old uninstaller with /UPDATE, and then
-; nothing here runs.
+; /DELETEDATA. Upgrading runs the old uninstaller first; then only the old
+; program files go.
 
 Var VoxLoomOwnFolder
 
 !macro NSIS_HOOK_PREUNINSTALL
+  ; A newer installer runs this uninstaller in place (_?=) before installing,
+  ; by default ("Uninstall before installing") and without /UPDATE. Every
+  ; real uninstall runs from a copy in a temporary folder instead. Treat the
+  ; in-place run as the update it is, so upgrading keeps models, shortcuts
+  ; and data even if the box was ticked.
+  ${If} $EXEDIR == $INSTDIR
+    StrCpy $UpdateMode 1
+  ${EndIf}
   ${GetOptions} $CMDLINE "/DELETEDATA" $R0
   ${IfNot} ${Errors}
     StrCpy $DeleteAppDataCheckboxState 1

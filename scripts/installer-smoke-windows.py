@@ -6,8 +6,10 @@ For each mode it installs silently and checks the files, shortcut and
 uninstall entry. It launches the installed app (throwaway data) and runs the
 bundled runtime from the install folder, which leaves Python caches there.
 It then puts what a user's data folder holds in place (models, a recording,
-the library, caches, browser data, Windows' microphone record) and
-uninstalls: once keeping recordings, once with /DELETEDATA. Changes the
+the library, caches, browser data, Windows' microphone record). It upgrades
+as a newer installer does (the old uninstaller run in place, then a fresh
+install), which must keep all of it, and uninstalls: once keeping
+recordings, once with /DELETEDATA. Changes the
 machine's VoxLoom install and data folder: run it on a disposable Windows
 machine (CI), as an administrator.
 Run python scripts/installer-smoke-windows.py <setup.exe> [programs list].
@@ -64,18 +66,22 @@ def run(*argv, timeout=600):
     assert result.returncode == 0, f"{argv[0]} exited {result.returncode}"
 
 
+def install(case, mode, folder, root, start_menu):
+    run(setup, "/S", mode)
+    assert key_exists(root, UNINSTALL), f"{case}: no uninstall entry"
+    with winreg.OpenKey(root, UNINSTALL) as key:
+        location = winreg.QueryValueEx(key, "InstallLocation")[0].strip('"')
+    assert Path(location) == folder, f"{case}: installed into {location}, not {folder}"
+    missing = [part for part in INSTALLED if not (folder / part).is_file()]
+    assert not missing, f"{case}: missing after install: {missing}"
+    assert (start_menu / "VoxLoom.lnk").is_file(), f"{case}: no Start menu shortcut"
+
+
 results = {}
 for mode, folder, root, start_menu in MODES:
     for delete_data in (False, True):
         case = f"{mode} {'/DELETEDATA' if delete_data else 'keeping recordings'}"
-        run(setup, "/S", mode)
-        assert key_exists(root, UNINSTALL), f"{case}: no uninstall entry"
-        with winreg.OpenKey(root, UNINSTALL) as key:
-            location = winreg.QueryValueEx(key, "InstallLocation")[0].strip('"')
-        assert Path(location) == folder, f"{case}: installed into {location}, not {folder}"
-        missing = [part for part in INSTALLED if not (folder / part).is_file()]
-        assert not missing, f"{case}: missing after install: {missing}"
-        assert (start_menu / "VoxLoom.lnk").is_file(), f"{case}: no Start menu shortcut"
+        install(case, mode, folder, root, start_menu)
         if programs and not programs.exists():
             files = sorted(p for p in folder.rglob("*") if p.suffix.lower() in {".exe", ".dll", ".pyd"})
             programs.write_text(
@@ -91,6 +97,19 @@ for mode, folder, root, start_menu in MODES:
             (data / part).write_bytes(b"VoxLoom test")
         microphone = MICROPHONE + "\\" + str(app).replace("\\", "#")
         winreg.CloseKey(winreg.CreateKey(winreg.HKEY_CURRENT_USER, microphone))
+        if not delete_data:
+            # A newer installer's default "Uninstall before installing" runs
+            # the old uninstaller in place, with _?= unquoted and last, and
+            # waits for it. Even with the box ticked, nothing may go.
+            result = subprocess.run(f'"{folder / "uninstall.exe"}" /S /DELETEDATA _?={folder}', timeout=300)
+            assert result.returncode == 0, f"{case}: in-place uninstall exited {result.returncode}"
+            gone = [part for part in KEPT + REMOVED if not (data / part).is_file()]
+            gone += [name for name, (hive, key) in {"remembered location": (root, REMEMBERED),
+                                                     "microphone record": (winreg.HKEY_CURRENT_USER, microphone)}.items()
+                     if not key_exists(hive, key)]
+            gone += [] if (start_menu / "VoxLoom.lnk").exists() else ["Start menu shortcut"]
+            assert not gone, f"{case}: upgrading removed {gone}"
+            install(f"{case}, upgrade", mode, folder, root, start_menu)
         run(folder / "uninstall.exe", "/S", *(["/DELETEDATA"] if delete_data else []), timeout=300)
 
         def left():
