@@ -15,7 +15,7 @@ Library and cache: `%LOCALAPPDATA%\org.voxloom.desktop` and its `cache` folder. 
 | 1 | Platform seams; the app compiles, launches and passes the fast tests on Windows | Done |
 | 2 | Bundled runtime (engines, FFmpeg, Python with LiteRT, all pinned); Job Objects so a crash leaves nothing running; import → transcribe → index → search → summary → export → delete with the real engines on Windows | Done; verified on GitHub's Windows machines (numbers in `docs/TESTING.md`) |
 | 3 | Live capture with WASAPI: microphones and loopback of an output device, same FLAC segments as Linux | Built; checked on GitHub's Windows machines, which have no audio devices. Needs a real Windows 11 laptop |
-| 4 | NSIS installer (per-user and per-machine), models-only first-run setup, third-party notices, list of every bundled executable with SHA-256 for IT allow-listing | Built (0.1.19); installed, launched and uninstalled in both modes on GitHub's Windows machines. Not code-signed yet |
+| 4 | NSIS installer (per-user and per-machine), models-only first-run setup, third-party notices, list of every bundled executable with SHA-256 for IT allow-listing | Built (0.1.19); installed, launched and uninstalled in both modes on GitHub's Windows machines. 0.1.20 fixes upgrades deleting downloaded models. Not code-signed yet |
 | 5 | Measurements on a real Windows 11 laptop, transcription quality checks, docs | |
 
 Recording on Windows has not yet run on real audio hardware; that is the next check.
