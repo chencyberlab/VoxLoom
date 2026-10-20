@@ -40,8 +40,8 @@ MODES = [
      Path(os.environ["ProgramData"]) / r"Microsoft\Windows\Start Menu\Programs"),
 ]
 INSTALLED = ["voxloom.exe", "uninstall.exe", "engines/whisper-cli.exe", "engines/llama-completion.exe", "engines/ffmpeg.exe",
-             "python/python.exe", "worker/engine.py", "worker/notes.py", "models/manifest.json", "licenses/README.txt",
-             "licenses/VERSIONS.txt", "LICENSE.txt"]
+             "python/python.exe", "worker/engine.py", "worker/notes.py", "worker/updates.py", "models/manifest.json",
+             "licenses/README.txt", "licenses/VERSIONS.txt", "LICENSE.txt"]
 KEPT = ["library.db", "recordings/r1/s0000-mic-000000.flac"]
 REMOVED = ["models/ggml-base.en.bin", "cache/job/request.json", "EBWebView/Default/Preferences"]
 

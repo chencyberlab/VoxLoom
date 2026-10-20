@@ -18,6 +18,25 @@ Meaningful unit checks cover pause-aligned chunk planning, skipped-speech retrie
 
 Version 0.1.1 added a first-run 1B/E2B summary selector. Six browser tests pass, including the request payload, displayed estimate and locked selection during setup for 1B, E2B and no summaries. These use an explicitly mocked bridge, without downloading models. A separate Rust regression executes the real offline provisioning script with tiny SHA-256-checked fixture files and a stubbed runtime readiness probe. It verifies core plus only the chosen summary model, saved E2B selection after success, core-only setup, missing-summary failure without changing the saved selection, and rejection of an unknown profile. Native checks on the final 0.1.1 package also passed launch, compact/expand and Quit, with all three observed processes released. The setup action remains fully visible at 900×720 in the browser checks. No user library or installed app data is reset during updates.
 
+## Version 0.1.21: Check for updates
+
+Tested on a 4-core cloud VM (Ubuntu 24.04, FFmpeg 6.1.1, no audio devices) and on GitHub's Windows Server 2025 machines.
+
+Validation:
+- `tests/test_updates.py`, with GitHub replaced by fixed answers:
+  - Only a strictly newer published version is offered, and versions compare as numbers (0.1.10 is newer than 0.1.9).
+  - The one request is a GET to `api.github.com/repos/chencyberlab/VoxLoom/releases/latest` with no body, and with only `Accept` and `User-Agent: VoxLoom/<version>` headers.
+  - 404, 403/429, other HTTP errors, no connection, a timeout, unreadable JSON and unexpected tags each give a plain message.
+- Live, from this VM: `updates.py` reported 0.1.20 as newer for 0.1.19 and as up to date for 0.1.20 and 0.2.0. The `check_updates` action through the real service returned `{"current":"0.1.20","latest":"0.1.20","newer":false}`.
+- `release_page` accepts only `N.N.N`. Empty, two-part, four-part, prefixed, non-numeric, path and argument-like versions are refused, so only this repository's release page can reach the browser.
+- `privacy-check.py` fails when `updates.py` names any other address (checked by changing it to another URL) and passes with the real one.
+- Browser check:
+  - Settings makes no update request on load.
+  - Check for updates shows "VoxLoom 0.9.0 is available", and Get VoxLoom 0.9.0 asks the host to open that release only.
+  - The next check says up to date and hides the button; an offline answer shows its message and the button can be pressed again.
+- Settings checked in light and dark with the visual tour. `worker/updates.py` is in the package resources, and the Windows installer check now expects it in the install folder.
+- Fast set: 48 Python checks, 30 Rust unit checks plus the offline setup integration check, 17 browser checks, TypeScript/privacy/version, and clippy for desktop and the Windows target (with tests).
+
 ## Version 0.1.20: transcription choice in setup, upgrades keep models
 
 Tested on a 4-core cloud VM (Ubuntu 24.04, FFmpeg 6.1.1, no audio devices) and on GitHub's Windows Server 2025 machines.

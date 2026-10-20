@@ -187,6 +187,17 @@ mod tests {
     }
 
     #[test]
+    fn only_this_repositorys_page_for_a_plain_version_opens() {
+        assert_eq!(
+            release_page("0.1.21").unwrap(),
+            "https://github.com/chencyberlab/VoxLoom/releases/tag/v0.1.21"
+        );
+        for bad in ["", "0.1", "0.1.21.1", "v0.1.21", "0.1.x", "0.1.21/../../evil", "0..1", "0.1.21 --new-window"] {
+            assert!(release_page(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
     fn summary_profiles_pick_their_pinned_model() {
         let temp = tempfile::tempdir().unwrap();
         let service = Service::open(
@@ -580,6 +591,15 @@ mod tests {
 fn text<'a>(v: &'a Value, key: &str) -> Result<&'a str> {
     v[key].as_str().ok_or_else(|| format!("Missing {key}"))
 }
+/// The release page of a version the update check reported. Only this
+/// repository's page for a plain version number ever reaches the browser.
+fn release_page(version: &str) -> Result<String> {
+    let parts: Vec<_> = version.split('.').collect();
+    if parts.len() != 3 || !parts.iter().all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())) {
+        return Err("Unknown version".into());
+    }
+    Ok(format!("https://github.com/chencyberlab/VoxLoom/releases/tag/v{version}"))
+}
 /// The chosen summary model. Gemma 3 1B was removed in 0.1.8; libraries
 /// that still name it use E2B, the new default.
 fn summary_profile(db: &Db) -> String {
@@ -749,6 +769,25 @@ impl Service {
     /// library. Linux uses the system python3, which also creates the LiteRT
     /// venv; the Windows package bundles one interpreter for everything.
     /// Takes the locked library: callers already hold it.
+    /// Asks GitHub for the latest published release, only because the user
+    /// clicked Check for updates. The worker sends nothing but the version.
+    fn check_updates(&self) -> Result<Value> {
+        let python = self.helper_python(&self.db.lock().unwrap());
+        let output = process::python(python)
+            .arg(self.resources.join("worker/updates.py"))
+            .arg("--current")
+            .arg(env!("CARGO_PKG_VERSION"))
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .map_err(|_| "The update check could not start.".to_string())?;
+        let found: Value = serde_json::from_slice(&output.stdout)
+            .map_err(|_| "The update check failed. Try again later.".to_string())?;
+        if let Some(error) = found["error"].as_str() {
+            return Err(error.into());
+        }
+        Ok(json!({"current":env!("CARGO_PKG_VERSION"),"latest":found["latest"],"newer":found["newer"] == true}))
+    }
     fn helper_python(&self, db: &Db) -> String {
         if cfg!(windows) {
             self.tool(db, "python")
@@ -1317,6 +1356,12 @@ impl Service {
             "jobs" => self.db.lock().unwrap().jobs(),
             "devices" => audio::devices(),
             "open_microphone_settings" => audio::open_microphone_settings().map(|_| Value::Null),
+            "check_updates" => self.check_updates(),
+            "open_release" => {
+                platform::open_in_browser(&release_page(text(&p, "version")?)?)
+                    .map(|_| Value::Null)
+                    .map_err(|e| format!("{e} The download is at github.com/chencyberlab/VoxLoom/releases."))
+            }
             "status" => Ok(self
                 .capture
                 .lock()

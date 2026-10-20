@@ -148,6 +148,40 @@ test('model setup shows the saved transcription choice',async({page})=>{
   await expect(dialog.locator('.welcome-model',{has:page.getByLabel('Transcription model',{exact:true})}).locator('.welcome-size')).toHaveText('Ready');
 });
 
+test('updates are checked only when asked, and only the release page opens',async({page})=>{
+  await page.addInitScript(()=>{
+    const models=[{id:'whisper',bytes:147964211,present:true},{id:'embedding',bytes:484622336,present:true},{id:'summary_e2b',bytes:2841481184,present:true,optional:true}];
+    // Newer, then up to date, then offline.
+    const answers:unknown[]=[{current:'0.1.20',latest:'0.9.0',newer:true},{current:'0.1.20',latest:'0.1.20',newer:false},"Couldn't reach GitHub. Check your internet connection and try again."];
+    Object.assign(window,{isTauri:true,__calls:[],__TAURI_INTERNALS__:{transformCallback:()=>1,invoke:async(command:string,args:{action?:string;payload?:unknown})=>{
+      if(command.startsWith('plugin:event'))return 1;
+      if(args?.action==='check_updates'||args?.action==='open_release')(window as unknown as {__calls:unknown[]}).__calls.push({action:args.action,payload:args.payload});
+      switch(args?.action){case 'library':case 'jobs':case 'devices':return [];case 'status':return null;case 'runtime_status':return {inference:true,whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models};case 'settings':return {summary_profile:'e2b'};
+        case 'check_updates':{const answer=answers.shift();if(typeof answer==='string')throw answer;return answer;}
+        default:return null;}
+    }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
+  });
+  const calls=()=>page.evaluate(()=>(window as unknown as {__calls:{action:string;payload:unknown}[]}).__calls);
+  await page.goto('/');
+  await page.getByRole('button',{name:'Settings',exact:true}).click();
+  const status=page.locator('.setting-row',{hasText:'Updates'}).locator('small[aria-live="polite"]');
+  await expect(status).toContainText('Checking asks GitHub once; nothing from your library is sent.');
+  await page.waitForTimeout(500);
+  expect(await calls()).toEqual([]);
+  const check=page.getByRole('button',{name:'Check for updates',exact:true});
+  await check.click();
+  await expect(status).toHaveText('VoxLoom 0.9.0 is available. Download it and install it over this version; your recordings, models and settings stay.');
+  await page.getByRole('button',{name:'Get VoxLoom 0.9.0',exact:true}).click();
+  await expect.poll(calls).toEqual([{action:'check_updates',payload:{}},{action:'open_release',payload:{version:'0.9.0'}}]);
+  await check.click();
+  await expect(status).toHaveText(/^You have the latest version, \d+\.\d+\.\d+\.$/);
+  await expect(page.getByRole('button',{name:/Get VoxLoom/})).toBeHidden();
+  await check.click();
+  await expect(status).toHaveText("Couldn't reach GitHub. Check your internet connection and try again.");
+  await expect(page.getByRole('button',{name:/Get VoxLoom/})).toBeHidden();
+  await expect(check).toBeEnabled();
+});
+
 test('accurate transcription is an explicit download and setting',async({page})=>{
   await page.addInitScript(()=>{
     const models=[{id:'whisper',bytes:147964211,present:true},{id:'whisper_accurate',bytes:264477561,present:false,optional:true,manual_only:true},{id:'embedding',bytes:484622336,present:true},{id:'summary_e2b',bytes:2841481184,present:true,optional:true}];

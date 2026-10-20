@@ -38,7 +38,7 @@ Current build: a functional development preview on both platforms. Real Whisper,
 
 ## Install a release
 
-Ready-made builds are attached to the [GitHub Releases page](https://github.com/chencyberlab/VoxLoom/releases). The application never downloads anything until you choose **Download & set up**.
+Ready-made builds are attached to the [GitHub Releases page](https://github.com/chencyberlab/VoxLoom/releases). The application never downloads anything until you choose **Download & set up**, and contacts GitHub only when you click **Check for updates**.
 
 ### Ubuntu 24.04+ (x86_64)
 
@@ -66,6 +66,10 @@ The installer and preview zip are not code-signed yet, so Windows SmartScreen ma
 To try VoxLoom without installing, download `VoxLoom-<version>-windows-x64-preview.zip`, unzip it into a folder of your choice and open `voxloom.exe`. It uses the same library as an installed copy.
 
 Upgrading keeps recordings, transcripts, models and settings. One exception: when upgrading from 0.1.19, choose **Do not uninstall** in the newer setup, or its older clean-up deletes the downloaded models; [VoxLoom on Windows](docs/WINDOWS.md) explains why. Uninstalling removes the program, the bundled runtime, downloaded models and caches, and keeps your recordings and transcripts unless you tick “Also delete my recordings, transcripts and settings”. Silent install and uninstall switches, per-machine clean-up limits and other IT details are in the same document.
+
+### Updates
+
+In **Settings → Updates**, **Check for updates** asks GitHub once whether a newer release has been published. VoxLoom never checks by itself, and the request carries only the app's version number, nothing from your recordings. If there is a newer one, **Get VoxLoom** opens its release page in your browser. Download the file for your computer and install it over the current version, as above: on Ubuntu `sudo apt install ./voxloom_<version>_amd64.deb`, on Windows run the new setup. Your recordings, transcripts, models and settings stay.
 
 ## Build the app yourself (step by step)
 

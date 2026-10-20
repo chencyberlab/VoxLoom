@@ -39,6 +39,7 @@
       "../worker/notes.py": "worker/notes.py",
       "../worker/export_docx.py": "worker/export_docx.py",
       "../worker/provision.py": "worker/provision.py",
+      "../worker/updates.py": "worker/updates.py",
       "../worker/requirements.txt": "worker/requirements.txt",
       "../worker/requirements.lock.txt": "worker/requirements.lock.txt",
       "../models/manifest.json": "models/manifest.json",

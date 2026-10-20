@@ -4,13 +4,14 @@ use std::{
     ffi::OsString,
     fs,
     path::{Path, PathBuf},
+    process::Stdio,
 };
 
 /// The library and cache folders. VOXLOOM_DATA_DIR / VOXLOOM_CACHE_DIR win.
 /// Windows uses Local AppData (Roaming can be synced to a server on company
 /// networks) under the app's identifier: the per-user installer puts the
-/// program in %LOCALAPPDATA%\voxloom, and its uninstaller removes this
-/// folder only when the user ticks "Delete the application data".
+/// program in %LOCALAPPDATA%\Programs\VoxLoom, and its uninstaller keeps the
+/// library and recordings here unless the user asks (windows/hooks.nsh).
 pub fn data_dirs() -> Result<(PathBuf, PathBuf)> {
     let var = |name: &str| std::env::var_os(name).map(PathBuf::from);
     #[cfg(unix)]
@@ -179,6 +180,25 @@ pub fn use_bundled_tools(resources: &Path) {
     }
     #[cfg(not(windows))]
     let _ = resources;
+}
+
+/// Opens a web page in the user's browser. Windows: Explorer hands the page
+/// to the running shell, so the browser does not start inside the app's Job
+/// Object and close with VoxLoom. Linux: xdg-open runs without the process
+/// group and parent-death signal of supervised children, for the same reason.
+pub fn open_in_browser(url: &str) -> Result<()> {
+    let mut child = crate::process::hidden(if cfg!(windows) { "explorer" } else { "xdg-open" })
+        .arg(url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| "Your web browser could not be opened.".to_string())?;
+    // xdg-open can wait for the browser; reap it without holding up the app.
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
 }
 
 /// Whether `program` can be started by name from PATH.

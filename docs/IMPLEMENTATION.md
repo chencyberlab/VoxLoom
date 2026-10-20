@@ -219,3 +219,11 @@ Verified: see TESTING.md, "Version 0.1.20".
 Release result: built by the Apps workflow when this version reaches main: voxloom_0.1.20_amd64.deb, VoxLoom-0.1.20-windows-x64-setup.exe, VoxLoom-0.1.20-windows-x64-preview.zip and VoxLoom-0.1.20-windows-x64-programs-SHA256.txt on the draft release v0.1.20, with their SHA-256 in its notes and SHA256SUMS.txt.
 Known limitations: upgrading from 0.1.19 runs 0.1.19's uninstaller, which still deletes the models unless "Do not uninstall" is chosen. During an interactive upgrade Tauri's installer still shows the old uninstaller's window.
 Next: user tests first-run setup with Accurate, and an upgrade over an installed copy on Windows.
+
+
+Version 0.1.21: Check for updates
+Implemented: Settings → Updates → Check for updates. Each click runs `worker/updates.py`, which asks GitHub's API once for this repository's latest published release (drafts and pre-releases are never seen) and compares it with the running version. The request carries only the version, in its User-Agent. If the release is newer, "Get VoxLoom X" opens its release page in the default browser, through Explorer on Windows and xdg-open on Linux, so the browser stays outside the app's process supervision. The user downloads and installs it as usual. Nothing checks at startup or in the background, and nothing is downloaded or installed automatically. AGENTS.md ground rule 2 and `privacy-check.py` now allow this one request: `updates.py` may name no other address.
+Verified: see TESTING.md, "Version 0.1.21".
+Release result: built by the Apps workflow when this version reaches main: voxloom_0.1.21_amd64.deb, VoxLoom-0.1.21-windows-x64-setup.exe, VoxLoom-0.1.21-windows-x64-preview.zip and VoxLoom-0.1.21-windows-x64-programs-SHA256.txt on the draft release v0.1.21, with their SHA-256 in its notes and SHA256SUMS.txt.
+Known limitations: GitHub allows 60 unauthenticated API requests an hour per network address, so a busy shared office address can get "GitHub is busy". The browser opening was checked on neither a Windows 11 nor an Ubuntu desktop session here (the VM has no desktop); the URL handed to it is checked by a unit test.
+Next: user clicks Check for updates in 0.1.21 on both systems, then publishes a later release to see it offered.

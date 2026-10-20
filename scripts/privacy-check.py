@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Fail on remote assets, runtime networking, permissive IPC or update plugins."""
+"""Fail on remote assets, runtime networking, permissive IPC or update plugins.
+
+Two worker modules may use the network, both only when the user clicks:
+provision.py (model downloads) and updates.py (Check for updates), which may
+contact nothing but GitHub's latest-release API for this repository.
+"""
 import json
 from pathlib import Path
 import re
@@ -14,9 +19,13 @@ for required in ["connect-src ipc: http://ipc.localhost", "object-src 'none'", "
         errors.append(f"Missing CSP restriction: {required}")
 if config["app"]["security"]["assetProtocol"]["scope"]:
     errors.append("Media scope must start empty and allow host-owned exact files only")
+UPDATE_CHECK = ["https://api.github.com/repos/chencyberlab/VoxLoom/releases/latest"]
+updates = (root / "worker/updates.py").read_text()
+if re.findall(r'https?://[^\s"\']+', updates) != UPDATE_CHECK:
+    errors.append("worker/updates.py may contact only GitHub's latest-release API for VoxLoom")
 for folder in ["src", "worker", "src-tauri/src"]:
     for path in (root / folder).rglob("*"):
-        if not path.is_file() or path.suffix not in [".ts", ".tsx", ".css", ".py", ".rs"] or path.name == "provision.py":
+        if not path.is_file() or path.suffix not in [".ts", ".tsx", ".css", ".py", ".rs"] or path.name in ["provision.py", "updates.py"]:
             continue
         text = path.read_text()
         if re.search(r'\b(fetch\s*\(|XMLHttpRequest|WebSocket\s*\(|requests\.(get|post)|urllib\.request|TcpListener|0\.0\.0\.0)', text):

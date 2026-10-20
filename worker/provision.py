@@ -1,4 +1,5 @@
-"""The only network-capable application module. Never invoked at startup.
+"""Downloads and imports models; with updates.py, one of the two network-capable
+application modules. Never invoked at startup.
 
 No third party Python packages required. Verified imports are atomic; --check is
 strictly offline. Resume uses Range + Content-Range validation, never append a

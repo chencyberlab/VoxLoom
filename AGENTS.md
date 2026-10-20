@@ -18,9 +18,11 @@ A private Linux desktop app (Ubuntu 24.04, x86_64) that records microphone and/o
 ## Ground rules (do not break these)
 
 1. **Losing transcript content is unacceptable.** See "Transcription invariants" below. A transcript that is late or has extra words is acceptable; a missing one is not.
-2. **Local only.** The app makes no network requests at runtime. Model/runtime downloads happen only after the user clicks Download in setup.
-   - No telemetry, CDN, fonts or update plugins.
-   - `scripts/privacy-check.py` (part of `npm run check`) enforces this.
+2. **Local only.** The app makes no network requests at runtime, except when the user clicks for one:
+   - Model/runtime downloads happen only after the user clicks Download in setup (`worker/provision.py`).
+   - Settings → Updates → Check for updates asks GitHub's latest-release API for this repository once per click (`worker/updates.py`). The request carries only the app version. It never runs at startup or in the background, and it never downloads or installs anything: "Get VoxLoom X" opens the release page in the browser.
+   - No telemetry, CDN, fonts, update plugins or automatic update checks.
+   - `scripts/privacy-check.py` (part of `npm run check`) enforces this: only those two modules may use the network, and `updates.py` may name no other address.
 3. **Private data stays out of command lines and logs.** Transcript text, audio and file names are never put on a command line, in a shell string or in routine logs. Pass them through files or stdin. This is why Whisper gets no `--prompt`.
 4. **Models are never in Git or the package.** `models/manifest.json` pins repository, revision, size and SHA-256 for each model. Downloads verify hashes before use.
 5. **Summaries run only when the user asks.** Recording and import never trigger one.
@@ -44,6 +46,7 @@ A private Linux desktop app (Ubuntu 24.04, x86_64) that records microphone and/o
 | `src-tauri/tests/` | Integration tests. The real-engine and real-capture tests are `#[ignore]`d and opt-in. |
 | `worker/engine.py` | Transcription, indexing, summaries, Q&A. Uses only the Python standard library, except LiteRT for embeddings. |
 | `worker/provision.py`, `worker/setup_runtime.py` | Model download/import with hash checks; private Python venv for LiteRT. |
+| `worker/updates.py` | Check for updates: one request to GitHub's latest published release, compared with the running version. The host opens only `release_page(version)` in the browser (`platform::open_in_browser`). |
 | `models/manifest.json` | Pinned model sources. Changes must keep the SHA-256 and revision pinning. |
 | `VERSION` | The app version, the only place to change it. `scripts/version.py set X.Y.Z` writes the copies npm and Cargo need; the UI reads `VERSION`, `tauri.conf.json` reads `package.json`. |
 | `scripts/` | Build, run and test tools (listed below). |
