@@ -170,10 +170,15 @@ fn real_offline_import_transcribe_index_search_restart_export_delete() {
         )
         .unwrap();
     assert!(!exact.as_array().unwrap().is_empty());
+    // Nothing is summarised until asked. The person's own note goes to the
+    // real model as the NOTES block and must stay exactly as typed.
     assert_eq!(
-        s.dispatch("detail", json!({"id":id})).unwrap()["meeting"]["summary"],
+        s.dispatch("detail", json!({"id":id})).unwrap()["meeting"]["notes"],
         ""
     );
+    let typed = "- ask who signs off the budget";
+    s.dispatch("update", json!({"id":id,"notes":typed,"notes_base":""}))
+        .unwrap();
     s.dispatch("enqueue", json!({"id":id,"kind":"summarize"}))
         .unwrap();
     await_jobs(&s);
@@ -181,12 +186,14 @@ fn real_offline_import_transcribe_index_search_restart_export_delete() {
     if let Ok(path) = std::env::var("VOXLOOM_TEST_REPORT") {
         std::fs::write(path, serde_json::to_string_pretty(&measured).unwrap()).unwrap();
     }
-    let summary = s.dispatch("detail", json!({"id":id})).unwrap();
-    assert!(summary["meeting"]["summary"]
+    let notes = s.dispatch("detail", json!({"id":id})).unwrap()["meeting"]["notes"]
         .as_str()
         .unwrap()
-        .to_lowercase()
-        .contains("budget"));
+        .to_string();
+    let added = notes
+        .strip_prefix(&format!("{typed}\n\n# Summary\n\n"))
+        .unwrap_or_else(|| panic!("The summary did not go below the notes: {notes:?}"));
+    assert!(added.to_lowercase().contains("budget"), "{added}");
     let answer=s.dispatch("answer",json!({"query":"What was approved?","evidence":hits.as_array().unwrap().iter().take(2).collect::<Vec<_>>()})).unwrap();
     assert!(answer
         .as_array()

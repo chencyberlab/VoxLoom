@@ -10,7 +10,10 @@ test('meeting notes render normally and copy as rich text or Markdown',async({pa
       switch(args?.action){case 'library':return [meeting];case 'jobs':case 'devices':return [];case 'status':return null;case 'runtime_status':return {inference:true,whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models:[{id:'whisper',present:true},{id:'embedding',present:true},{id:'summary_e2b',present:true}]};case 'settings':return {summary_profile:'1b',summary_style:'meeting'};case 'detail':return {meeting,tracks:[],segments:[{id:1,meeting_id:'notes',start_ms:3000,end_ms:6000,source:'system',text:'The workshop covers privacy.'}]};case 'export':(window as unknown as {__exports:unknown[]}).__exports.push(args.payload);return null;default:return null;}
     }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
   });
-  await page.goto('/');await page.getByRole('button',{name:'Workshop planning',exact:false}).click();
+  await page.goto('/');
+  // The library marks a recording whose notes hold a summary.
+  await expect(page.getByRole('button',{name:'Workshop planning',exact:false}).locator('.tag')).toHaveText('Summary');
+  await page.getByRole('button',{name:'Workshop planning',exact:false}).click();
   // A recording opens on its notes: the person's own lines as typed, then the summary.
   await expect(page.getByRole('heading',{name:'Meeting notes.',exact:true})).toBeVisible();
   await expect(page.locator('.meeting-notes p').first()).toHaveText('Ask about the venue.10:30:00 room booked');
@@ -143,7 +146,8 @@ test('typing into empty notes keeps the editor open, and the page shows they are
         default:return null;}
     }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
   });
-  await page.goto('/');await page.getByRole('button',{name:'Quiet check-in',exact:false}).click();
+  await page.goto('/');await expect(page.getByRole('button',{name:'Quiet check-in',exact:false}).locator('.tag')).toHaveCount(0);
+  await page.getByRole('button',{name:'Quiet check-in',exact:false}).click();
   const editor=page.getByLabel('Notes',{exact:true});
   await editor.click();await editor.pressSequentially('First line');
   // Past the save: the person is still typing in the same field.
