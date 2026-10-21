@@ -138,24 +138,6 @@ impl Capture {
         }
         Ok(files)
     }
-    /// The file each source is still writing. It is never registered as a
-    /// track; live transcription reads it up to its last complete frame.
-    pub fn open_tracks(&self) -> Result<Vec<(PathBuf, String, i64)>> {
-        if self.paused || self.child.is_none() {
-            return Ok(vec![]);
-        }
-        let files = self.session_files()?;
-        Ok(files
-            .iter()
-            .filter(|(path, source, index)| {
-                !self.registered.contains(path)
-                    && !files.iter().any(|(_, s, i)| s == source && i > index)
-            })
-            .map(|(path, source, index)| {
-                (path.clone(), source.clone(), self.elapsed_ms + index * 30000)
-            })
-            .collect())
-    }
     pub fn closed_tracks(&mut self) -> Result<Vec<(PathBuf, String, i64)>> {
         let files = self.session_files()?;
         let mut ready = vec![];

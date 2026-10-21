@@ -83,8 +83,8 @@ pub fn ffmpeg_args(
                 "segment",
                 "-segment_time",
                 "30",
-                // Write each FLAC frame as it is encoded, so live transcription
-                // can read the file still being recorded seconds behind capture.
+                // Write each FLAC frame as it is encoded: a crash or power cut
+                // then loses at most the frame being written, not ~16 s of audio.
                 "-segment_format_options",
                 "flush_packets=1",
                 "-reset_timestamps",
@@ -143,8 +143,8 @@ pub fn open_microphone_settings() -> Result<()> {
 mod tests {
     use super::*;
 
-    /// The capture command line is what live transcription depends on
-    /// (segment names, flush_packets, levels). It must not drift.
+    /// The capture command line is what transcription and crash recovery
+    /// depend on (segment names, flush_packets, levels). It must not drift.
     #[test]
     fn capture_arguments_are_unchanged() {
         let folder = Path::new("/data/recordings/id");

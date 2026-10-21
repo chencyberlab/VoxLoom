@@ -118,7 +118,7 @@ test('first-run setup offers Standard or Accurate transcription',async({page})=>
   await expect(choice.locator('option')).toHaveText([/Standard · Fast default/,/Accurate · Fewer misheard words · \+264 MB/]);
   await expect(dialog.getByText('About 3.6 GB in total',{exact:false})).toBeVisible();
   await choice.selectOption('accurate');
-  await expect(dialog.getByText('About three times the processor time',{exact:false})).toBeVisible();
+  await expect(dialog.getByText('Writing each transcript takes about three times as long.',{exact:false})).toBeVisible();
   await expect(dialog.getByText('About 3.9 GB in total',{exact:false})).toBeVisible();
   await expect(dialog.locator('.welcome-model',{has:page.getByLabel('Transcription model',{exact:true})}).locator('.welcome-size')).toHaveText('412 MB');
   await page.setViewportSize({width:900,height:720});
@@ -242,28 +242,42 @@ test('progress stays visible at the top while scrolling a long transcript',async
   await expect.poll(calls).toEqual([{action:'cancel',payload:{id:'idx'}},{action:'enqueue',payload:{id:'long',kind:'transcribe'}},{action:'cancel',payload:{id:'bad'}}]);
 });
 
-test('recording shows a steady live transcription indicator',async({page})=>{
+test('nothing is transcribed while recording; the transcript is written after Stop',async({page})=>{
   await page.addInitScript(()=>{
     const meetings=[{id:'rec',title:'Team call',created_at:2,duration_ms:0,status:'recording',notes:'',summary:''},{id:'old',title:'Older meeting',created_at:1,duration_ms:60000,status:'ready',notes:'',summary:''}];
-    Object.assign(window,{isTauri:true,__capture:{meeting_id:'rec',elapsed_ms:60000,paused:false,failed:false,levels:[0,0]},__whisper:sessionStorage.getItem('no-whisper')!=='1',__TAURI_INTERNALS__:{transformCallback:()=>1,invoke:async(command:string,args:{action?:string})=>{
+    Object.assign(window,{isTauri:true,__capture:{meeting_id:'rec',elapsed_ms:60000,paused:false,failed:false,levels:[0,0]},
+      __jobs:[{id:'t',meeting_id:'old',kind:'transcribe',status:'pending',progress:0,error:null},{id:'sum',meeting_id:'old',kind:'summarize',status:'pending',progress:0,error:null}],
+      __TAURI_INTERNALS__:{transformCallback:()=>1,invoke:async(command:string,args:{action?:string})=>{
       if(command.startsWith('plugin:event'))return 1;
-      const w=window as unknown as {__capture:unknown;__whisper:boolean};
-      switch(args?.action){case 'library':return meetings;case 'jobs':return [{id:'live',meeting_id:'rec',kind:'transcribe_live',status:'running',progress:0.4,error:null},{id:'sum',meeting_id:'old',kind:'summarize',status:'pending',progress:0,error:null}];case 'devices':return [];case 'status':return w.__capture;case 'runtime_status':return {inference:true,whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models:[{id:'whisper',present:w.__whisper},{id:'embedding',present:true}]};case 'settings':return {};default:return null;}
+      const w=window as unknown as {__capture:unknown;__jobs:unknown[]};
+      switch(args?.action){case 'library':return meetings;case 'jobs':return w.__jobs;case 'devices':return [];case 'status':return w.__capture;case 'runtime_status':return {inference:true,whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models:[{id:'whisper',present:true},{id:'embedding',present:true}]};case 'settings':return {};
+        case 'detail':return {meeting:meetings[0],tracks:[],segments:[]};default:return null;}
     }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
   });
   await page.goto('/');
+  // Queued work waits for the recording: no spinner, no progress, no claim that anything runs.
   const chip=page.locator('.activity-chip');
-  await expect(chip).toHaveText('Transcribing live+1 more');await expect(chip.locator('.activity-pulse')).toBeVisible();
+  await expect(chip).toHaveText('Waits until you stop recording+1 more');
+  await expect(chip.locator('.spin')).toHaveCount(0);await expect(chip.locator('progress')).toHaveCount(0);
   await chip.click();const panel=page.getByRole('region',{name:'Local processing'});
-  await expect(panel).toContainText('Team call · Words appear a few seconds after each pause');
-  await expect(panel).toContainText('Older meeting · Waiting');await expect(panel).toContainText('Indexing and summaries wait until recording stops.');
-  await page.screenshot({path:'test-results/live-activity.png'});
+  await expect(panel).toContainText('Nothing runs while you record, so your computer stays quiet. Transcription starts when you stop.');
+  await expect(panel).toContainText('Older meeting · After you stop recording');
   await page.keyboard.press('Escape');
-  await page.evaluate(()=>{(window as unknown as {__capture:{paused:boolean}}).__capture.paused=true;});
-  await expect(chip).toContainText('Transcribing live · 40%');
-  // Without a transcription model the host runs no live passes, so the indicator must not claim one.
-  await page.evaluate(()=>sessionStorage.setItem('no-whisper','1'));await page.reload();
-  await expect(chip).toHaveText('Creating summary · Waiting');
+  await page.getByRole('navigation').getByRole('button',{name:'New recording',exact:true}).click();
+  await expect(page.getByText('Recording. The transcript is written when you stop.')).toBeVisible();
+  await expect(page.locator('.transcript-panel .transcript-list')).toHaveCount(0);
+  await page.screenshot({path:'test-results/recording-waits.png'});
+  // A new object, as every status reply is: the same one changed in place would not re-render.
+  await page.evaluate(()=>{const w=window as unknown as {__capture:object};w.__capture={...w.__capture,paused:true};});
+  await expect(page.getByText('Paused. The transcript is written when you stop.')).toBeVisible();
+  // After Stop the recording's own pass runs, and its page shows how far it is.
+  await page.evaluate(()=>{const w=window as unknown as {__capture:unknown;__jobs:unknown[]};w.__capture=null;w.__jobs=[{id:'r',meeting_id:'rec',kind:'transcribe',status:'running',progress:0.4,error:null}];});
+  await expect(chip).toHaveText('Transcribing · 40%');
+  await page.getByRole('button',{name:/All recordings/}).click();
+  await page.getByText('Team call').first().click();
+  await expect(page.getByText('Writing the transcript… 40%. Rows appear as each part is finished.')).toBeVisible();
+  await expect(page.getByLabel('Transcription progress')).toHaveAttribute('value','0.4');
+  await expect(page.getByRole('button',{name:'Transcribe this recording'})).toHaveCount(0);
 });
 
 test('a blocked microphone points to its Windows setting, and device changes show while recording',async({page})=>{

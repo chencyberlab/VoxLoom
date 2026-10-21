@@ -226,10 +226,16 @@ def speech_audio(spans, total):
     return samples
 
 
-class LiveTranscription(unittest.TestCase):
+class Stopped(Exception):
+    """A pass ended half-way, as when a recording starts or the app quits."""
+
+
+class Transcription(unittest.TestCase):
     """Real chunk planner and sentence assembly with fixture audio and Whisper."""
 
-    def run_live(self, spans, total, step=2500, skip_tail_once=False, endings=None, room=-120.0, decode=None):
+    def run_pass(self, spans, total, skip_tail_once=False, endings=None, room=-120.0, decode=None, stop_after=None):
+        """One pass over the finished recording. With stop_after, the pass is
+        stopped after that many commits and started again from its checkpoint."""
         audio = speech_audio(spans, total)
         progress, rows, chunks, calls = {}, [], [], []
         endings = endings or {}
@@ -259,24 +265,27 @@ class LiveTranscription(unittest.TestCase):
                 chunks.append((previous, event['covered_ms']))
                 progress[event['stream']] = {'covered_ms': event['covered_ms'], 'overlap_text': event['overlap_text']}
                 rows.extend(event['segments'])
+                if len(chunks) == stop_after:
+                    raise Stopped
 
         with tempfile.TemporaryDirectory() as directory, \
                 patch.object(engine, 'ensure_model', return_value='fixture'), \
                 patch.object(engine, 'stream_samples', side_effect=lambda stream, a, b: audio[a * 16:b * 16]), \
                 patch.object(engine, 'voice_levels', side_effect=levels), \
                 patch.object(engine, 'whisper_pieces', side_effect=decode or whisper):
-            clock = 0
-            while clock < total:
-                clock = min(total, clock + step)
-                track = {'id': 't', 'path': '/fixture/s0000-mic-000000.flac', 'source': 'mic', 'offset_ms': 0, 'duration_ms': clock}
-                engine.transcribe({'kind': 'transcribe_live', 'models': {'whisper': 'fixture'}, 'whisper_cli': 'fixture', 'threads': 2,
-                                   'tracks': [track], 'context_tracks': [track], 'asr_progress': json.loads(json.dumps(progress)),
-                                   'finalize': clock == total}, receive, Path(directory))
+            track = {'id': 't', 'path': '/fixture/s0000-mic-000000.flac', 'source': 'mic', 'offset_ms': 0, 'duration_ms': total}
+            for _ in range(2):
+                try:
+                    engine.transcribe({'kind': 'transcribe', 'models': {'whisper': 'fixture'}, 'whisper_cli': 'fixture', 'threads': 2,
+                                       'tracks': [track], 'asr_progress': json.loads(json.dumps(progress))}, receive, Path(directory))
+                    break
+                except Stopped:
+                    pass
         return rows, chunks, calls
 
     def test_every_millisecond_is_decoded_once_and_utterances_stay_whole(self):
         spans = [(1000, 6000), (7500, 12000), (13500, 50000), (52000, 55000)]
-        rows, chunks, _ = self.run_live(spans, 60000)
+        rows, chunks, _ = self.run_pass(spans, 60000)
         self.assertEqual(chunks[0][0], 0)
         self.assertEqual(chunks[-1][1], 60000)
         for (_, end), (start, _) in zip(chunks, chunks[1:]):
@@ -291,14 +300,22 @@ class LiveTranscription(unittest.TestCase):
             self.assertIn(f"Speech at {start // 1000}s.", texts)
         self.assertEqual(len(texts), len(set(texts)))  # Nothing transcribed twice.
 
-    def test_live_text_appears_after_a_pause_not_after_a_storage_file(self):
-        rows, _, _ = self.run_live([(1000, 9000), (11000, 14000)], 30000)
+    def test_a_pass_stopped_half_way_resumes_exactly(self):
+        spans = [(1000, 6000), (7500, 12000), (13500, 50000), (52000, 55000), (61000, 90000)]
+        whole = self.run_pass(spans, 100000, endings={13: ' and then'})
+        for stop_after in (1, 2, 3):
+            rows, chunks, _ = self.run_pass(spans, 100000, endings={13: ' and then'}, stop_after=stop_after)
+            self.assertEqual(chunks, whole[1], stop_after)
+            self.assertEqual(rows, whole[0], stop_after)
+
+    def test_rows_end_where_speech_ends_not_at_storage_files(self):
+        rows, _, _ = self.run_pass([(1000, 9000), (11000, 14000)], 30000)
         first = next(r for r in rows if r['text'] == 'Speech at 1s.')
         self.assertLessEqual(first['end_ms'], 9000)
         self.assertEqual(rows[-1]['source'], 'mic')
 
     def test_whisper_skipping_trailing_speech_is_retried(self):
-        rows, _, calls = self.run_live([(1000, 4000), (6000, 9000)], 12000, step=12000, skip_tail_once=True)
+        rows, _, calls = self.run_pass([(1000, 4000), (6000, 9000)], 12000, skip_tail_once=True)
         self.assertEqual([r['text'] for r in rows], ['Speech at 1s.', 'Speech at 6s.'])
         self.assertGreater(len(calls), 1)
 
@@ -322,7 +339,7 @@ class LiveTranscription(unittest.TestCase):
                 pieces = [(a, a + 800, 'attending skills.'), *pieces]  # The re-read starts early on purpose.
             return [{'text': t, 'start_ms': s - a, 'end_ms': e - a} for s, e, t in pieces]
 
-        rows, chunks, _ = self.run_live([(0, 60000)], 60000, decode=whisper)
+        rows, chunks, _ = self.run_pass([(0, 60000)], 60000, decode=whisper)
         return [r['text'] for r in rows], chunks, windows
 
     def test_speech_after_a_music_bed_is_reread_not_lost(self):
@@ -338,34 +355,35 @@ class LiveTranscription(unittest.TestCase):
         texts, _, _ = self.music_bed(repeat_at_join=True)
         self.assertEqual(texts, ['This video shows a session about attending skills.', 'Yeah, I guess I have to.', 'Then more words.', 'And the rest.'])
 
-    def test_unfinished_sentence_waits_for_its_ending_then_flushes_at_stop(self):
-        rows, _, _ = self.run_live([(1000, 12000), (13500, 16000)], 18000, endings={1: ' and then', 13: ''})
-        self.assertEqual([r['text'] for r in rows], ['Speech at 1s and then Speech at 13s'])
+    def test_unfinished_sentence_is_finished_by_the_next_chunk_then_flushed_at_the_end(self):
+        rows, chunks, _ = self.run_pass([(1000, 25000), (26500, 30000)], 40000, endings={1: ' and then', 26: ''})
+        self.assertGreater(len(chunks), 1)
+        self.assertEqual([r['text'] for r in rows], ['Speech at 1s and then Speech at 26s'])
         self.assertEqual(rows[0]['start_ms'], 1000)
 
     def test_silence_is_skipped_without_calling_whisper(self):
-        rows, chunks, calls = self.run_live([], 40000)
+        rows, chunks, calls = self.run_pass([], 40000)
         self.assertEqual(rows, [])
         self.assertEqual(calls, [])
         self.assertEqual(chunks[-1][1], 40000)
 
     def test_pauses_in_a_noisy_room_still_divide_speech(self):
-        rows, chunks, _ = self.run_live([(1000, 6000), (7500, 12000), (13500, 20000)], 30000, room=-50.0)
+        rows, chunks, _ = self.run_pass([(1000, 6000), (7500, 12000), (13500, 20000)], 30000, room=-50.0)
         self.assertEqual([r['text'] for r in rows], ['Speech at 1s.', 'Speech at 7s.', 'Speech at 13s.'])
 
     def test_audio_without_contrast_is_never_skipped(self):
         # Nothing stands out from the background: it is still transcribed,
         # in window-sized chunks, rather than discarded as silence.
-        rows, chunks, calls = self.run_live([], 60000, room=-40.0)
+        rows, chunks, calls = self.run_pass([], 60000, room=-40.0)
         self.assertEqual(sum(calls), 60000)
         self.assertTrue(all(b - a <= engine.MAX_CHUNK_MS for a, b in chunks))
 
     def test_noisy_room_pauses_are_found_relative_to_its_floor(self):
-        levels = ([-52.0] * 25 + [-30.0] * 150 + [-51.0] * 40 + [-31.0] * 200) * 2
+        levels = ([-52.0] * 25 + [-30.0] * 150 + [-51.0] * 40 + [-31.0] * 200) * 4
         floor = engine.noise_floor(levels)
         self.assertLess(floor, -45)
-        cut = engine.plan_chunk(levels, len(levels) * engine.FRAME_MS, floor + engine.VOICE_MARGIN_DB, final=False)
-        self.assertIsNotNone(cut)
+        cut = engine.plan_chunk(levels, len(levels) * engine.FRAME_MS, floor + engine.VOICE_MARGIN_DB)
+        self.assertLess(cut, engine.MAX_CHUNK_MS)
         self.assertLess(levels[cut // engine.FRAME_MS], floor + engine.VOICE_MARGIN_DB)
         # Muted audio: digital silence is a pause, never a reason to hide speech.
         muted = [-120.0] * 40 + [-25.0] * 200 + [-120.0] * 40 + [-25.0] * 200
@@ -386,27 +404,6 @@ class LiveTranscription(unittest.TestCase):
     def test_old_checkpoint_text_is_not_reused_as_state(self):
         self.assertEqual(engine.carry_state('previous overlap words'), {})
         self.assertEqual(engine.carry_state('{"floor_db": -50}'), {'floor_db': -50})
-
-    @unittest.skipUnless(shutil.which('ffmpeg'), 'SKIPPED: FFmpeg not installed')
-    def test_file_still_being_recorded_is_read_up_to_its_last_whole_frame(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            source, complete = root / 'source.wav', root / 'complete.flac'
-            samples = b''.join(((n * 37) % 6000 - 3000).to_bytes(2, 'little', signed=True) for n in range(48000))
-            with wave.open(str(source), 'wb') as output:
-                output.setparams((1, 2, 16000, 0, 'NONE', 'not compressed'))
-                output.writeframes(samples)
-            engine.run(['ffmpeg', '-nostdin', '-v', 'error', '-i', str(source), '-c:a', 'flac', str(complete)])
-            growing = root / 's0000-mic-000000.flac'
-            data = complete.read_bytes()
-            growing.write_bytes(data[:len(data) * 2 // 3])  # Cut mid-frame.
-            partial = engine.decode_pcm(growing, growing=True)
-            self.assertGreater(len(partial), 0)
-            self.assertEqual(partial, samples[:len(partial)])
-            growing.write_bytes(b'')
-            self.assertEqual(engine.decode_pcm(growing, growing=True), b'')
-            stream = engine.audio_streams([{'id': 'g', 'path': str(growing), 'source': 'mic', 'offset_ms': 0, 'growing': True}], lambda **e: None)
-            self.assertEqual(stream[0]['length'], 0)
 
     @unittest.skipUnless(shutil.which('ffmpeg'), 'SKIPPED: FFmpeg not installed')
     def test_recovery_pass_transcribes_the_segments_before_a_crash_stub(self):
@@ -430,9 +427,8 @@ class LiveTranscription(unittest.TestCase):
             tracks = [{'id': 'a', 'path': str(whole), 'source': 'mic', 'offset_ms': 0},
                       {'id': 'b', 'path': str(stub), 'source': 'mic', 'offset_ms': 30000}]
             events = []
-            engine.transcribe({'kind': 'transcribe_live', 'models': {'whisper': 'fixture'}, 'whisper_cli': 'fixture', 'threads': 2,
-                               'tracks': tracks, 'context_tracks': tracks, 'asr_progress': {}, 'finalize': True},
-                              lambda **event: events.append(event), root)
+            engine.transcribe({'kind': 'transcribe', 'models': {'whisper': 'fixture'}, 'whisper_cli': 'fixture', 'threads': 2,
+                               'tracks': tracks, 'asr_progress': {}}, lambda **event: events.append(event), root)
             batches = [e for e in events if e['type'] == 'asr_batch']
             self.assertEqual(batches[-1]['covered_ms'], 2000)
             self.assertEqual([r['text'] for b in batches for r in b['segments']], ['Before the crash.'])

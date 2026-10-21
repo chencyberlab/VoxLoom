@@ -156,6 +156,23 @@ jobs:
           cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --test workflow real_offline_import -- --ignored --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Get-Content "$env:RUNNER_TEMP\windows-engine-metrics.json"
+      # A recording is transcribed after Stop, from its 30-second files; this
+      # pass is stopped after its first chunk and resumed from the checkpoint.
+      - name: A recording's pass after Stop, stopped half-way and resumed
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          $recording = "$env:RUNNER_TEMP\recording Zoë"
+          New-Item -ItemType Directory -Path $recording | Out-Null
+          $env:Path = "$env:GITHUB_WORKSPACE\src-tauri\engines;$env:Path"
+          ffmpeg -nostdin -v error -i fixtures\voxloom-long.wav -ar 16000 -ac 1 -c:a flac -f segment -segment_time 30 -reset_timestamps 1 "$recording\s0000-mic-%06d.flac"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/transcribe-recording.py --recording $recording --model models-cache\ggml-base.en.bin --whisper-cli src-tauri\engines\whisper-cli.exe --out "$env:RUNNER_TEMP\rows.json" --stop-after 1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -c "import json,sys; rows=json.load(open(sys.argv[1],encoding='utf-8'))['rows']; text=' '.join(r['text'] for r in rows); print(text); assert text.lower().count('budget')>=3, text" "$env:RUNNER_TEMP\rows.json"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        env:
+          PYTHONUTF8: "1"
       - uses: actions/upload-artifact@v7
         if: ${{ !cancelled() }}
         with:

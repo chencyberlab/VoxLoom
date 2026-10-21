@@ -71,19 +71,16 @@ with (nullcontext(str(args.artifacts)) if args.artifacts else tempfile.Temporary
                 shutil.copyfile(scratch/'asr.wav', scratch/f'pass-{len(calls)}.wav')
         return result
     engine.run = traced_run
-    for i, track in enumerate(tracks):
-        context = [dict(t, **({"duration_ms": lengths[t["id"]]} if t["id"] in lengths else {})) for t in tracks[:i + 1]]
-        engine.transcribe({"kind": "transcribe_live", "models": {"whisper": str(whisper)}, "tracks": [track], "context_tracks": context, "asr_progress": dict(checkpoints), "finalize": i == len(tracks) - 1, "whisper_cli": args.whisper_cli, "threads": 2}, receive, scratch)
-        assert checkpoints["system:s0000"]["covered_ms"] <= sum(lengths.values())
-        if i == len(tracks) - 1:
-            assert checkpoints["system:s0000"]["covered_ms"] == sum(lengths.values())
+    # The pass after Stop: every 30-second file at once, sentences crossing their edges.
+    engine.transcribe({"kind": "transcribe", "models": {"whisper": str(whisper)}, "tracks": tracks, "asr_progress": {}, "whisper_cli": args.whisper_cli, "threads": 2}, receive, scratch)
+    assert checkpoints["system:s0000"]["covered_ms"] == sum(lengths.values())
     transcript = " ".join(segment["text"] for segment in segments)
     if args.artifacts:
         (scratch/'segments.json').write_text(json.dumps(segments,indent=2))
     for word in ["committee", "approved", "community", "budget", "invoice", "Friday", "emergency", "inspection", "Tuesday", "safety", "report"]:
         assert word.lower() in transcript.lower(), (word, transcript)
     assert all(s["start_ms"] <= s["end_ms"] for s in segments)
-    print(json.dumps({"continuous_live_asr": "PASS", "seconds": time.monotonic() - started, "audio_ms": sum(lengths.values()), "covered_ms": checkpoints["system:s0000"]["covered_ms"], "synthetic_transcript": transcript}, indent=2), flush=True)
+    print(json.dumps({"continuous_asr": "PASS", "seconds": time.monotonic() - started, "audio_ms": sum(lengths.values()), "covered_ms": checkpoints["system:s0000"]["covered_ms"], "synthetic_transcript": transcript}, indent=2), flush=True)
     if args.summaries:
         for name in ["gemma-4-E2B-it-Q4_0.gguf"]:
             model = args.models / name

@@ -30,11 +30,8 @@ pub struct Service {
     quit: AtomicBool,
     setup_active: AtomicBool,
     setup_cancel: AtomicBool,
-    live_poll: Mutex<Instant>,
     pub notify: Arc<dyn Fn(Value) + Send + Sync>,
 }
-/// How often a recording's newest audio is offered to live transcription.
-const LIVE_POLL: Duration = Duration::from_millis(2500);
 /// Name of a recording started without a title; Summarise may replace it.
 const DEFAULT_TITLE: &str = "Untitled recording";
 /// Recording refuses to start below this much free space on the data volume.
@@ -390,10 +387,9 @@ mod tests {
         invalid["covered_ms"] = json!(50000);
         invalid["segments"] = json!([{"start_ms":5000,"end_ms":6000,"text":"Must roll back","source":"system"},{"start_ms":9000,"end_ms":8000,"text":"Invalid range","source":"system"}]);
         assert!(service.ingest("meeting", &invalid).is_err());
-        let request = service.request("transcribe_live", Some("meeting")).unwrap();
+        let request = service.request("transcribe", Some("meeting")).unwrap();
         assert_eq!(request["asr_progress"]["system:s0000"]["covered_ms"], 28000);
-        assert_eq!(request["finalize"], true);
-        assert_eq!(request["context_tracks"].as_array().unwrap().len(), 1);
+        assert_eq!(request["tracks"].as_array().unwrap().len(), 1);
         assert_eq!(request["segments"].as_array().unwrap().len(), 3);
         let segments = request["segments"].to_string();
         assert!(segments.contains("My correction"));
@@ -409,7 +405,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             reopened
-                .request("transcribe_live", Some("meeting"))
+                .request("transcribe", Some("meeting"))
                 .unwrap()["asr_progress"]["system:s0000"]["covered_ms"],
             28000
         );
@@ -429,9 +425,9 @@ mod tests {
         reopened.shutdown();
     }
 
-    fn live_jobs(service: &Service, meeting: &str, status: Option<&str>) -> i64 {
+    fn transcriptions(service: &Service, meeting: &str, status: Option<&str>) -> i64 {
         service.db.lock().unwrap().conn.query_row(
-            "SELECT count(*) FROM jobs WHERE meeting_id=? AND kind='transcribe_live' AND (?2 IS NULL OR status=?2)",
+            "SELECT count(*) FROM jobs WHERE meeting_id=? AND kind='transcribe' AND (?2 IS NULL OR status=?2)",
             params![meeting, status],
             |r| r.get(0),
         )
@@ -439,7 +435,7 @@ mod tests {
     }
 
     #[test]
-    fn live_request_registers_segments_closed_since_the_last_tick() {
+    fn nothing_is_transcribed_while_recording_and_stop_queues_one_pass() {
         let temp = tempfile::tempdir().unwrap();
         let service = Service::open(
             temp.path().join("data"),
@@ -448,9 +444,7 @@ mod tests {
             Arc::new(|_| {}),
         )
         .unwrap();
-        // Stop the scheduler so only request() can register the segment.
-        service.quit.store(true, Ordering::SeqCst);
-        std::thread::sleep(Duration::from_millis(400));
+        fs::write(temp.path().join("data/models/ggml-base.en.bin"), b"base").unwrap();
         let folder = temp.path().join("data/recordings/meeting");
         fs::create_dir_all(&folder).unwrap();
         for name in ["s0000-mic-000000.flac", "s0000-mic-000001.flac"] {
@@ -459,28 +453,41 @@ mod tests {
         service.db.lock().unwrap().create("meeting", DEFAULT_TITLE, 0, "recording").unwrap();
         *service.capture.lock().unwrap() =
             Some(Capture::new("meeting".into(), folder.clone(), Some("mic".into()), None));
-        let request = service.request("transcribe_live", Some("meeting")).unwrap();
-        assert_eq!(request["finalize"], false);
-        let paths = |key: &str| {
-            request[key]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|t| t["path"].as_str().unwrap().to_string())
-                .collect::<Vec<_>>()
+        // An earlier recording still waiting for its transcription.
+        {
+            let db = service.db.lock().unwrap();
+            db.create("earlier", DEFAULT_TITLE, 5000, "ready").unwrap();
+            db.add_track("earlier", &temp.path().join("earlier.flac"), "mic", 0).unwrap();
+            db.enqueue("earlier", "transcribe").unwrap();
+        }
+        // The scheduler ticks every 250 ms: it registers the closed segment
+        // and starts nothing, neither for this recording nor the earlier one.
+        let jobs = || -> i64 {
+            service.db.lock().unwrap().conn.query_row("SELECT count(*) FROM jobs WHERE meeting_id='meeting'", [], |r| r.get(0)).unwrap()
         };
-        assert_eq!(paths("context_tracks").len(), 1);
-        assert!(paths("context_tracks")[0].ends_with("s0000-mic-000000.flac"));
-        assert_eq!(paths("tracks"), paths("context_tracks"));
-        assert_eq!(request["context_tracks"][0]["offset_ms"], 0);
-        // A second request finds the segment registered, not registered twice.
-        service.request("transcribe_live", Some("meeting")).unwrap();
+        std::thread::sleep(Duration::from_millis(1200));
         assert_eq!(service.db.lock().unwrap().tracks("meeting").unwrap().len(), 1);
-        *service.capture.lock().unwrap() = None;
+        assert_eq!(jobs(), 0);
+        assert_eq!(transcriptions(&service, "earlier", Some("pending")), 1);
+        service.finish_capture(false).unwrap();
+        assert!(service.capture.lock().unwrap().as_ref().unwrap().paused);
+        std::thread::sleep(Duration::from_millis(600));
+        assert_eq!(jobs(), 0);
+        assert_eq!(transcriptions(&service, "earlier", Some("pending")), 1);
+        // Holding the inference lock keeps the scheduler from running the jobs.
+        let _busy = service.inference.lock().unwrap();
+        service.finish_capture(true).unwrap();
+        assert!(service.capture.lock().unwrap().is_none());
+        assert_eq!((jobs(), transcriptions(&service, "meeting", Some("pending"))), (1, 1));
+        let request = service.request("transcribe", Some("meeting")).unwrap();
+        assert_eq!(request["tracks"].as_array().unwrap().len(), 2);
+        assert_eq!(request["asr_progress"], json!({}));
+        drop(_busy);
+        service.shutdown();
     }
 
     #[test]
-    fn pause_and_stop_both_queue_the_final_live_pass() {
+    fn transcribe_starts_over_and_retry_resumes() {
         let temp = tempfile::tempdir().unwrap();
         let service = Service::open(
             temp.path().join("data"),
@@ -489,26 +496,25 @@ mod tests {
             Arc::new(|_| {}),
         )
         .unwrap();
-        // Holding the inference lock keeps the scheduler from running the job.
         let _busy = service.inference.lock().unwrap();
-        fs::write(temp.path().join("data/models/ggml-base.en.bin"), b"base").unwrap();
-        let folder = temp.path().join("data/recordings/meeting");
-        fs::create_dir_all(&folder).unwrap();
-        fs::write(folder.join("s0000-system-000000.flac"), b"").unwrap();
-        service.db.lock().unwrap().create("meeting", DEFAULT_TITLE, 0, "recording").unwrap();
-        *service.capture.lock().unwrap() =
-            Some(Capture::new("meeting".into(), folder, None, Some("monitor".into())));
-        service.finish_capture(false).unwrap();
-        assert!(service.capture.lock().unwrap().as_ref().unwrap().paused);
-        assert_eq!(service.db.lock().unwrap().tracks("meeting").unwrap().len(), 1);
-        assert_eq!(live_jobs(&service, "meeting", Some("pending")), 1);
-        // The pass after Pause finalises: nothing is read as a growing file.
-        let request = service.request("transcribe_live", Some("meeting")).unwrap();
-        assert_eq!(request["finalize"], true);
-        assert!(request["growing"].as_array().unwrap().is_empty());
-        service.finish_capture(true).unwrap();
-        assert!(service.capture.lock().unwrap().is_none());
-        assert_eq!(live_jobs(&service, "meeting", None), 1);
+        {
+            let db = service.db.lock().unwrap();
+            db.create("meeting", "Fixture", 60000, "ready").unwrap();
+            db.add_track("meeting", &temp.path().join("s0000-mic-000000.flac"), "mic", 0).unwrap();
+            db.conn.execute("INSERT INTO transcript_segments(meeting_id,start_ms,end_ms,text,source,edited) VALUES('meeting',0,1000,'Model words.','mic',0),('meeting',2000,3000,'My correction.','mic',1)",[]).unwrap();
+            db.conn.execute("INSERT INTO asr_progress(meeting_id,stream,covered_ms,overlap_text) VALUES('meeting','mic:s0000',28000,'')", []).unwrap();
+        }
+        let progress = |service: &Arc<Service>| service.request("transcribe", Some("meeting")).unwrap()["asr_progress"].clone();
+        let texts = |service: &Arc<Service>| service.db.lock().unwrap().segments("meeting").unwrap().iter().map(|s| s.text.clone()).collect::<Vec<_>>();
+        // Retry (no restart) keeps what the failed pass wrote and resumes.
+        let job = service.dispatch("enqueue", json!({"id":"meeting","kind":"transcribe"})).unwrap();
+        assert_eq!(progress(&service)["mic:s0000"]["covered_ms"], 28000);
+        assert_eq!(texts(&service), ["Model words.", "My correction."]);
+        service.dispatch("cancel", json!({"id":job})).unwrap();
+        // Transcribe starts over and keeps only the user's edits.
+        service.dispatch("enqueue", json!({"id":"meeting","kind":"transcribe","restart":true})).unwrap();
+        assert_eq!(progress(&service), json!({}));
+        assert_eq!(texts(&service), ["My correction."]);
         drop(_busy);
         service.shutdown();
     }
@@ -571,10 +577,10 @@ mod tests {
         assert_eq!(tracks[1].offset_ms, 30000);
         // Queued at start-up; the scheduler may already have tried it, so any
         // status counts. A new library with nothing to recover queues nothing.
-        assert_eq!(live_jobs(&service, "lost", None), 1);
-        assert_eq!(live_jobs(&service, "half", None), 1);
-        assert_eq!(live_jobs(&service, "clean", None), 0);
-        assert_eq!(live_jobs(&service, "done", None), 0);
+        assert_eq!(transcriptions(&service, "lost", None), 1);
+        assert_eq!(transcriptions(&service, "half", None), 1);
+        assert_eq!(transcriptions(&service, "clean", None), 0);
+        assert_eq!(transcriptions(&service, "done", None), 0);
         let duration = |id: &str| -> i64 {
             service.db.lock().unwrap().conn.query_row("SELECT duration_ms FROM meetings WHERE id=?", [id], |r| r.get(0)).unwrap()
         };
@@ -662,7 +668,6 @@ impl Service {
             quit: AtomicBool::new(false),
             setup_active: AtomicBool::new(false),
             setup_cancel: AtomicBool::new(false),
-            live_poll: Mutex::new(Instant::now()),
             notify,
         });
         s.recover_tracks()?;
@@ -732,10 +737,9 @@ impl Service {
                     },
                 )?;
             }
-            // Audio that no live pass has read yet (including the file that
-            // was still being written), or a sentence left unfinished by the
-            // last pass, still needs a final pass or its words never reach
-            // the transcript.
+            // The recording never reached Stop, so it was never transcribed;
+            // or a pass ended with a sentence it had not written yet. Either
+            // way its words reach the transcript only through this pass.
             let owed: i64 = db
                 .conn
                 .query_row(
@@ -745,13 +749,13 @@ impl Service {
                 )
                 .map_err(err)?;
             if owed > 0 && self.whisper_model(&db).is_file() {
-                let _ = db.enqueue(&meeting.id, "transcribe_live");
+                let _ = db.enqueue(&meeting.id, "transcribe");
             }
         }
         Ok(())
     }
     /// The selected transcription model. Accurate falls back to the standard
-    /// model until it is downloaded, so live transcription never stops.
+    /// model until it is downloaded, so a recording is always transcribed.
     fn whisper_model(&self, db: &Db) -> PathBuf {
         let models =
             PathBuf::from(db.setting("models_dir", &self.data.join("models").to_string_lossy()));
@@ -877,22 +881,7 @@ impl Service {
         fallback.into()
     }
     fn request(&self, kind: &str, meeting: Option<&str>) -> Result<Value> {
-        // The capture and the library are read under the same locks. A
-        // segment that closed since `tick` registered the last one would
-        // otherwise be neither a registered track nor the growing file, and
-        // the live pass would see a gap in the stream and lose its words.
-        let mut capture = self.capture.lock().unwrap();
         let db = self.db.lock().unwrap();
-        let (finalize, growing) = match capture.as_mut() {
-            Some(c) if Some(c.meeting.as_str()) == meeting && !c.paused => {
-                for (path, source, offset) in c.closed_tracks().unwrap_or_default() {
-                    let _ = db.add_track(&c.meeting, &path, &source, offset);
-                }
-                (false, c.open_tracks().unwrap_or_default())
-            }
-            _ => (true, vec![]),
-        };
-        drop(capture);
         let models =
             PathBuf::from(db.setting("models_dir", &self.data.join("models").to_string_lossy()));
         let mut v = json!({"kind":kind,"cache_dir":self.cache,"models":{"whisper":self.whisper_model(&db),"embedding":models.join("embeddinggemma-2-740m.litertlm"),"summary":""},"threads":db.setting("threads","2").parse::<u32>().unwrap_or(2).clamp(1,8),"language":db.setting("language","en"),"whisper_cli":self.tool(&db,"whisper_cli"),"llama_cli":self.tool(&db,"llama_cli")});
@@ -927,13 +916,9 @@ impl Service {
                     track["duration_ms"] = json!(duration);
                 }
             }
-            if kind == "transcribe_live" {
-                v["context_tracks"] = tracks.clone();
-                v["finalize"] = json!(finalize);
-                v["growing"] = json!(growing
-                    .iter()
-                    .map(|(path, source, offset)| json!({"path":path,"source":source,"offset_ms":offset}))
-                    .collect::<Vec<_>>());
+            // A pass resumes where the last one committed; starting over
+            // clears this first (the "enqueue" action with "restart").
+            if kind == "transcribe" {
                 let mut progress = serde_json::Map::new();
                 let mut query = db
                     .conn
@@ -956,16 +941,6 @@ impl Service {
                     );
                 }
                 v["asr_progress"] = json!(progress);
-                tracks.as_array_mut().unwrap().retain(|t| {
-                    db.conn
-                        .query_row(
-                            "SELECT transcribed FROM audio_tracks WHERE id=?",
-                            [t["id"].as_str().unwrap()],
-                            |r| r.get::<_, i64>(0),
-                        )
-                        .unwrap_or(0)
-                        == 0
-                });
             }
             v["tracks"] = json!(tracks);
             v["segments"] = json!(db.segments(m)?);
@@ -996,24 +971,21 @@ impl Service {
             if let Some(c) = capture.as_mut() {
                 recording = true;
                 let tracks = c.closed_tracks().unwrap_or_default();
-                let mut poll = self.live_poll.lock().unwrap();
-                // Live passes read the file still being written, so words can
-                // appear seconds after a pause instead of when a chunk closes.
-                if !tracks.is_empty() || (!c.paused && poll.elapsed() >= LIVE_POLL) {
-                    *poll = Instant::now();
-                    let db = self.db.lock().unwrap();
-                    for (path, source, offset) in tracks {
-                        let _ = db.add_track(&c.meeting, &path, &source, offset);
-                    }
-                    if self.whisper_model(&db).is_file() {
-                        let _ = db.enqueue(&c.meeting, "transcribe_live");
-                    }
+                let db = self.db.lock().unwrap();
+                for (path, source, offset) in tracks {
+                    let _ = db.add_track(&c.meeting, &path, &source, offset);
                 }
             }
         }
+        // Nothing runs while a recording is open, paused included: the
+        // laptop stays quiet (its fan is in the microphone) and the call
+        // keeps the processor. Each recording is transcribed after Stop.
+        if recording {
+            return;
+        }
         let next: Option<(String, String, String)> = {
             let db = self.db.lock().unwrap();
-            db.conn.query_row("SELECT id,meeting_id,kind FROM jobs WHERE status='pending' AND (?=0 OR kind='transcribe_live') ORDER BY CASE kind WHEN 'transcribe_live' THEN 0 WHEN 'transcribe' THEN 1 WHEN 'index' THEN 2 ELSE 3 END,created_at,rowid LIMIT 1",[recording as i64],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().ok().flatten()
+            db.conn.query_row("SELECT id,meeting_id,kind FROM jobs WHERE status='pending' ORDER BY CASE kind WHEN 'transcribe' THEN 0 WHEN 'index' THEN 1 ELSE 2 END,created_at,rowid LIMIT 1",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().ok().flatten()
         };
         let Some((job, meeting, kind)) = next else {
             return;
@@ -1027,11 +999,9 @@ impl Service {
             .unwrap()
             .job_status(&job, "running", 0., None);
         (self.notify)(json!({"type":"jobs"}));
-        let mut provisional = false;
         let result = self.request(&kind, Some(&meeting)).and_then(|req| {
-            provisional = req["finalize"] == false;
             let result = self.run_worker(&job, &req, Some((&meeting, &kind)));
-            if result.is_ok() && (kind == "transcribe" || kind == "transcribe_live") {
+            if result.is_ok() && kind == "transcribe" {
                 let db = self.db.lock().unwrap();
                 for t in req["tracks"].as_array().unwrap() {
                     let _ = db.conn.execute(
@@ -1042,11 +1012,7 @@ impl Service {
             }
             result
         });
-        let (recording, capturing_meeting) = {
-            let capture = self.capture.lock().unwrap();
-            let active = capture.as_ref().is_some_and(|c| c.meeting == meeting && !c.paused);
-            (capture.is_some(), active)
-        };
+        let recording = self.capture.lock().unwrap().is_some();
         let db = self.db.lock().unwrap();
         let status: String = db
             .conn
@@ -1055,26 +1021,20 @@ impl Service {
         if status != "cancelled" {
             match result {
                 Ok(_) => {
-                    if kind == "transcribe_live" {
-                        // Frequent live passes carry no state of their own:
-                        // progress lives in asr_progress. Keep the job list small.
-                        let _ = db.conn.execute("DELETE FROM jobs WHERE id=?", [&job]);
-                    } else {
-                        let _ = db.job_status(&job, "completed", 1., None);
-                    }
-                    let remaining: i64 = if kind == "transcribe_live" {
+                    let _ = db.job_status(&job, "completed", 1., None);
+                    let remaining: i64 = if kind == "transcribe" {
                         db.conn.query_row("SELECT count(*) FROM audio_tracks WHERE meeting_id=? AND transcribed=0",[&meeting],|r|r.get(0)).unwrap_or(0)
                     } else {
                         0
                     };
-                    // A pass that started before Stop/Pause may have left the
-                    // tail waiting for a pause: run a final pass to flush it.
-                    if remaining > 0 || (provisional && !capturing_meeting) {
-                        let _ = db.enqueue(&meeting, "transcribe_live");
+                    // Audio registered after this pass read the recording
+                    // (start-up recovery) still needs its own pass.
+                    if remaining > 0 {
+                        let _ = db.enqueue(&meeting, "transcribe");
                     }
                     if !recording
                         && remaining == 0
-                        && (kind == "transcribe" || kind == "transcribe_live")
+                        && kind == "transcribe"
                         && PathBuf::from(
                             db.setting("models_dir", &self.data.join("models").to_string_lossy()),
                         )
@@ -1085,23 +1045,17 @@ impl Service {
                     }
                 }
                 Err(e) => {
-                    if (recording && kind != "transcribe_live") || self.quit.load(Ordering::SeqCst)
-                    {
+                    // Stopped for a new recording or Quit: a transcription
+                    // resumes from its last checkpoint when it runs again.
+                    if recording || self.quit.load(Ordering::SeqCst) {
                         let _ = db.job_status(
                             &job,
                             "pending",
                             0.,
-                            Some("Deferred while recording / closing"),
+                            Some("Waiting until the recording ends / the app starts again"),
                         );
                     } else {
                         let _ = db.job_status(&job, "failed", 0., Some(&e));
-                        if kind == "transcribe_live" {
-                            // Live passes repeat every few seconds: keep one
-                            // failure visible and back off before retrying.
-                            let _ = db.conn.execute("DELETE FROM jobs WHERE meeting_id=? AND kind='transcribe_live' AND status='failed' AND id<>?", params![meeting, job]);
-                            *self.live_poll.lock().unwrap() =
-                                Instant::now() + Duration::from_secs(30);
-                        }
                     }
                 }
             }
@@ -1124,7 +1078,7 @@ impl Service {
         let output = folder.join("output.jsonl");
         fs::write(&input, serde_json::to_vec(request).map_err(err)?).map_err(err)?;
         let capture_guard = self.capture.lock().unwrap();
-        if capture_guard.is_some() && request["kind"] != "transcribe_live" {
+        if capture_guard.is_some() {
             return Err("Inference deferred while recording".into());
         }
         let mut child = process::spawn(
@@ -1169,21 +1123,6 @@ impl Service {
         let mut answers = vec![];
         let mut failure = None;
         let mut peak_tree = 0;
-        if let Some((meeting, "transcribe")) = ingest {
-            let db = self.db.lock().unwrap();
-            db.conn
-                .execute(
-                    "DELETE FROM transcript_segments WHERE meeting_id=? AND edited=0",
-                    [meeting],
-                )
-                .map_err(err)?;
-            db.conn
-                .execute("DELETE FROM embedding_items WHERE meeting_id=?", [meeting])
-                .map_err(err)?;
-            db.conn
-                .execute("DELETE FROM asr_progress WHERE meeting_id=?", [meeting])
-                .map_err(err)?;
-        }
         let mut exited = false;
         let processing = (|| -> Result<()> {
             loop {
@@ -1404,11 +1343,26 @@ impl Service {
                     .map_err(err)?;
                 Ok(Value::Null)
             }
-            "enqueue" => Ok(json!(self
-                .db
-                .lock()
-                .unwrap()
-                .enqueue(text(&p, "id")?, text(&p, "kind")?)?)),
+            "enqueue" => {
+                let db = self.db.lock().unwrap();
+                let (id, kind) = (text(&p, "id")?, text(&p, "kind")?);
+                let job = db.enqueue(id, kind)?;
+                // Transcribe on a recording's page starts over: the rows it
+                // wrote go (the user's edits stay), with the search index
+                // and the checkpoint. Retry leaves them, so it resumes.
+                // Under the same lock, so the pass cannot start in between.
+                if kind == "transcribe" && p["restart"] == true {
+                    for sql in [
+                        "DELETE FROM transcript_segments WHERE meeting_id=? AND edited=0",
+                        "DELETE FROM embedding_items WHERE meeting_id=?",
+                        "DELETE FROM asr_progress WHERE meeting_id=?",
+                        "UPDATE audio_tracks SET transcribed=0 WHERE meeting_id=?",
+                    ] {
+                        db.conn.execute(sql, [id]).map_err(err)?;
+                    }
+                }
+                Ok(json!(job))
+            }
             "rebuild_index" => {
                 let db = self.db.lock().unwrap();
                 let id = text(&p, "id")?;
@@ -1604,7 +1558,7 @@ impl Service {
                     .map(|name| json!({"name":name,"available":platform::on_path(name)}))
                     .collect::<Vec<_>>();
                 Ok(
-                    json!({"tools":tools,"audio":audio::devices().ok(),"data":self.data,"network":"No runtime networking. Only explicit model setup can download.","last_metrics":fs::read_to_string(self.cache.join("last-inference-metrics.json")).ok().and_then(|s|serde_json::from_str::<Value>(&s).ok())}),
+                    json!({"tools":tools,"audio":audio::devices().ok(),"data":self.data,"network":"Only what you click: model setup downloads, and Check for updates asks GitHub for the latest version.","last_metrics":fs::read_to_string(self.cache.join("last-inference-metrics.json")).ok().and_then(|s|serde_json::from_str::<Value>(&s).ok())}),
                 )
             }
             "record" => self.record(p),
@@ -2036,10 +1990,11 @@ impl Service {
             "recording",
         )?;
         *capture = Some(c);
-        // Recording outranks indexing, summaries and questions, so a worker
-        // in progress is stopped; its job is re-queued or fails cleanly.
-        // Setup is left alone: killing pip or a model download half-way can
-        // leave a broken venv, and live passes simply wait for it to finish.
+        // Recording outranks every other job, so a worker in progress is
+        // stopped; its job waits for the recording to end, and a
+        // transcription resumes from its last checkpoint. Setup is left
+        // alone: killing pip or a model download half-way can leave a broken
+        // venv.
         if let Some((job, pid)) = self.running.lock().unwrap().as_ref() {
             if job != "setup" {
                 process::kill_tree(*pid);
@@ -2065,12 +2020,10 @@ impl Service {
                 ],
             )
             .map_err(err)?;
-        // Pause closes the segment files like Stop does, and an unfinished
-        // sentence is only flushed by a final pass. Without this a pause
-        // taken while no pass was running left the last words unseen until
-        // the recording resumed.
-        if self.whisper_model(&db).is_file() {
-            let _ = db.enqueue(&c.meeting, "transcribe_live");
+        // One pass over the whole recording, after Stop. Pause starts none:
+        // the recording usually resumes, and nothing runs until it ends.
+        if stop && self.whisper_model(&db).is_file() {
+            let _ = db.enqueue(&c.meeting, "transcribe");
         }
         if stop {
             *guard = None;

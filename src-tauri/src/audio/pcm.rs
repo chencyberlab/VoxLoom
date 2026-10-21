@@ -148,8 +148,8 @@ pub fn ffmpeg_args(
             "segment",
             "-segment_time",
             "30",
-            // Write each FLAC frame as it is encoded, so live transcription
-            // can read the file still being recorded seconds behind capture.
+            // Write each FLAC frame as it is encoded: a crash or power cut
+            // then loses at most the frame being written, not ~16 s of audio.
             "-segment_format_options",
             "flush_packets=1",
             "-reset_timestamps",

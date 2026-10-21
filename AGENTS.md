@@ -4,7 +4,7 @@ This is the single source of truth for every coding agent (Codex, Claude, others
 
 ## What VoxLoom is
 
-A private Linux desktop app (Ubuntu 24.04, x86_64) that records microphone and/or system audio, transcribes it live, and offers local search and on-demand summaries. Everything runs on the user's own CPU; nothing is sent anywhere.
+A private Linux desktop app (Ubuntu 24.04, x86_64) that records microphone and/or system audio, transcribes it after each recording, and offers local search and on-demand summaries. Everything runs on the user's own CPU; nothing is sent anywhere.
 
 - **Desktop shell:** Tauri 2 hosting a React/TypeScript UI in the system WebKitGTK.
 - **Rust host** (`src-tauri/src`): capture, SQLite library, job queue, worker supervision.
@@ -26,7 +26,7 @@ A private Linux desktop app (Ubuntu 24.04, x86_64) that records microphone and/o
 3. **Private data stays out of command lines and logs.** Transcript text, audio and file names are never put on a command line, in a shell string or in routine logs. Pass them through files or stdin. This is why Whisper gets no `--prompt`.
 4. **Models are never in Git or the package.** `models/manifest.json` pins repository, revision, size and SHA-256 for each model. Downloads verify hashes before use.
 5. **Summaries run only when the user asks.** Recording and import never trigger one.
-6. **Recording comes first.** Only one heavy job runs at a time, and live transcription outranks indexing and summaries. Each worker exits when its job ends; no model stays loaded.
+6. **Recording comes first.** Nothing heavy runs while a recording is open, paused included; each recording is transcribed after Stop. Only one heavy job runs at a time, and transcription outranks indexing and summaries. Each worker exits when its job ends; no model stays loaded.
 7. **Several agents share this checkout.**
    - Run `git status` before you start.
    - Never delete build caches (`.runtimes/`, `src-tauri/target/`, `.toolchain/`, `.local-data/`) or `release/` contents without saying so to the user.
@@ -38,7 +38,7 @@ A private Linux desktop app (Ubuntu 24.04, x86_64) that records microphone and/o
 | Path | What it is |
 |---|---|
 | `src/` | React UI. `App.tsx` holds most of it; `api.ts` sends every call through one Tauri command, `dispatch(action, payload)`. |
-| `src-tauri/src/service.rs` | All `dispatch` actions, the job queue (`tick`), worker launch (`run_worker`), result ingestion and the live-transcription scheduler. |
+| `src-tauri/src/service.rs` | All `dispatch` actions, the job queue (`tick`), worker launch (`run_worker`), result ingestion and the scheduler that holds every job while a recording is open. |
 | `src-tauri/src/audio.rs` | Capture sessions, 30-second FLAC segment bookkeeping (`sNNNN-mic-NNNNNN.flac`, `sNNNN-system-NNNNNN.flac`), durations and export. The platform backends find devices, start capture and end it: `audio/pulse.rs` (Linux: FFmpeg reads Pulse/PipeWire) and `audio/wasapi.rs` (Windows: WASAPI microphones and output loopback, fed to FFmpeg on stdin through `audio/pcm.rs`, which keeps the sources on one clock and writes silence where a source heard nothing). |
 | `src-tauri/src/process.rs`, `src-tauri/src/platform.rs` | Everything else that differs by OS. `process`: build commands (`command` supervised, `hidden` for quick probes, `python` adds UTF-8 mode on Windows), `spawn` children `kill_tree` may have to end, `finished` once one has been waited for, and `contain_children` (Windows: the app's own kill-on-close Job Object, so a crash still ends every worker and engine). `platform`: data folders, private permissions, free disk space, CPU features, executable and venv names, bundled tools on PATH, PATH lookup. |
 | `src-tauri/src/db.rs`, `src-tauri/migrations/` | SQLite (WAL, FTS5). Migrations are idempotent SQL files applied in order on every open. |
@@ -52,7 +52,7 @@ A private Linux desktop app (Ubuntu 24.04, x86_64) that records microphone and/o
 | `scripts/` | Build, run and test tools (listed below). |
 | `tests/` | Python unit tests (`test_worker.py`, `test_notes.py`) and Playwright UI tests (`tests/ui`). |
 | `docs/` | `ARCHITECTURE.md` (how it works), `TESTING.md` (what was verified, with numbers), `IMPLEMENTATION.md` (per-version log), `PERFORMANCE.md`, `MODEL_SOURCES.md`, `WINDOWS.md` (Windows port status and plan), `reports/` (JSON measurement reports). |
-| `.github/workflows/ci.yml` | Every push that changes more than documentation (`*.md`, `docs/`): Windows and Linux run the fast checks; Windows also checks the bundled runtime, the Job Objects, a debug build and its launch; a Windows real-engine job runs the whole import-to-delete workflow with cached pinned models. Pull requests run it only from forks (this repository's branches are checked by their pushes). |
+| `.github/workflows/ci.yml` | Every push that changes more than documentation (`*.md`, `docs/`): Windows and Linux run the fast checks; Windows also checks the bundled runtime, the Job Objects, a debug build and its launch; a Windows real-engine job runs the whole import-to-delete workflow with cached pinned models, and transcribes a recording's 30-second files the way Stop does, stopped after one chunk and resumed (`scripts/transcribe-recording.py`). Pull requests run it only from forks (this repository's branches are checked by their pushes). |
 | `.github/workflows/windows-runtime.yml` | Shared by CI and Apps: cross-builds the Windows runtime on Linux, caches it until its recipe changes, and makes the speech fixtures when asked. |
 | `src-tauri/tauri.windows.conf.json`, `src-tauri/windows/` | Windows packaging: the NSIS installer (per-user `%LOCALAPPDATA%\Programs\VoxLoom` or per-machine `C:\Program Files\VoxLoom`, chosen at install) and what it bundles. `hooks.nsh` makes the uninstaller remove everything VoxLoom put on the computer except the user's recordings and library, which go only when asked, and makes an upgrade remove nothing (a newer installer runs the old uninstaller in place, `_?=`, which every real uninstall never does); `English.nsh` is Tauri's English text with VoxLoom's wording for that choice. |
 | `.github/workflows/apps.yml`, `scripts/package-windows-preview.py`, `scripts/installer-smoke-windows.py` | Apps: builds the Linux `.deb`, the Windows installer and the Windows preview zip (runs without installing) from main, launches each, installs and uninstalls the Windows installer in both modes checking nothing is left behind, and attaches them to a draft GitHub release for the version. Runs only when a push to main changes `VERSION` or this recipe, or from Actions → Apps → Run workflow. |
@@ -142,8 +142,8 @@ Real-engine checks are opt-in. They need models and fixtures, and they never dow
 | Check | Command |
 |---|---|
 | Speech fixtures | `bash scripts/make-fixtures.sh` |
-| Live transcription, sentences across 30 s file boundaries | `python3 scripts/test-transcript-continuity.py --models <models> --whisper-cli <whisper-cli>` |
-| **Replay a real recording exactly as captured** (closed files + growing file, one live pass per 2.5 s); prints coverage, lag and rows | `python3 scripts/replay-live-asr.py --recording ~/.local/share/voxloom/recordings/<id> --model <models>/ggml-base.en.bin --whisper-cli <whisper-cli> --out /tmp/rows.json` |
+| Transcription, sentences across 30 s file boundaries | `python3 scripts/test-transcript-continuity.py --models <models> --whisper-cli <whisper-cli>` |
+| **Transcribe a real recording exactly as the app does after Stop** (every session and source; `--stop-after N` stops it after N chunks and resumes from the checkpoint); prints coverage, speed and rows | `python3 scripts/transcribe-recording.py --recording ~/.local/share/voxloom/recordings/<id> --model <models>/ggml-base.en.bin --whisper-cli <whisper-cli> --out /tmp/rows.json` |
 | Real capture through a temporary PipeWire test sink (removed afterwards; defaults unchanged) | `VOXLOOM_TEST_MODELS=<models> VOXLOOM_TEST_WHISPER_CLI=<whisper-cli> python3 scripts/test-capture.py` |
 | Full import → transcribe → index → search → summary → export → delete | see `docs/TESTING.md`, "Real local engines and full workflow" |
 | Packaged app launches, floats/expands and quits cleanly (hidden Xvfb display, throwaway data) | `xvfb-run -a python3 scripts/native-smoke.py <path>/usr/bin/voxloom` |
@@ -175,7 +175,9 @@ When releasing a new version:
 
 ## Transcription invariants
 
-The live path: `service.rs::tick` polls every 2.5 s → `request("transcribe_live")` → `engine.py::transcribe`. Rules:
+A recording is transcribed once, after Stop. 0.1.22 removed live transcription: running Whisper beside the recording made laptops loud (the fan reached the microphone) and slowed calls, and cuts made at the edge of a file still being written misheard more than a pass over the finished recording. The path: Stop (`finish_capture`) → one `transcribe` job → `request("transcribe")` → `engine.py::transcribe` over every track of the recording. Imports and the Transcribe button use the same job. Rules:
+
+- **Nothing runs while a recording is open, paused included.** `tick` only registers closed segments, then returns; `run_worker` refuses; starting a recording stops a running worker and its job waits. Pause queues nothing. Never schedule work during capture again without the user's agreement.
 
 - **Every millisecond belongs to exactly one chunk.** Chunks never overlap and never leave gaps. Each chunk is at most 28 s, one Whisper window.
 - **Cuts happen only inside pauses** found by `plan_chunk`. Pauses are speech-band (250–3800 Hz) levels relative to an adaptive noise floor (`noise_floor`). Never use a fixed dB threshold: real microphones sit around −32 dBFS and system audio around −55 dBFS. Only nonstop speech longer than a window is cut, at its quietest moment.
@@ -183,13 +185,13 @@ The live path: `service.rs::tick` polls every 2.5 s → `request("transcribe_liv
 - **Never drop Whisper text because of timestamps.** Timestamps only place rows on the timeline.
 - **Whisper can silently skip trailing speech** ("single timestamp ending"). `transcribe_chunk` re-decodes voiced stretches that returned no words. Keep that safety net.
 - **Whisper stretches a segment over a music bed** and skips the speech after the music (`stretched`). When a cut has no pause near it and the chunk's last segment runs to its end at under 8 characters a second, `transcribe` keeps that segment, ends the chunk where its words must have ended (18 characters a second), and decodes the rest again with the following audio. Words heard twice at that join are dropped with `drop_repeated_start`. Committed chunks still never overlap.
-- **Rows are sentences.** An unfinished sentence is carried in the checkpoint and finished by the next chunk, or flushed after silence, at 300 characters / 30 s, or at Stop/Pause.
+- **Rows are sentences.** An unfinished sentence is carried in the checkpoint and finished by the next chunk, or flushed after silence, at 300 characters / 30 s, or at the end of the stream.
 - **Checkpoints are atomic.** Coverage (`covered_ms`), rows and carry state commit in one transaction. The state is stored as JSON in `asr_progress.overlap_text`; the column name is historical.
-- **The file still being recorded** is read up to its last CRC-valid frame (`decode_pcm(growing=True)`). It is never registered or cached. This depends on FFmpeg's `-segment_format_options flush_packets=1` in `audio.rs`; without it the newest file is unreadable for about 16 s.
-- **A provisional (non-final) pass that ends after Stop/Pause** must trigger a final pass. `tick` does this. Stop and Pause both queue one themselves (`finish_capture`), and start-up queues one for an interrupted recording that still has unread files or an unfinished sentence (`recover_tracks`).
+- **A pass stopped half-way resumes exactly there.** A new recording, Quit or a crash ends a pass between checkpoints; the job runs again from `asr_progress`, and so does Retry. Only Transcribe (`enqueue` with `restart`) starts over: it clears unedited rows, the search index and the checkpoint under the same lock as the enqueue, so no pass can start in between. The user's edited rows always stay.
+- **Capture writes each FLAC frame as it is encoded** (`-segment_format_options flush_packets=1` in the audio backends), so a crash loses at most the frame being written. Start-up registers the files of an interrupted recording and queues its transcription if any file is unread or a sentence unfinished (`recover_tracks`).
 - **A capture segment FFmpeg cannot open holds no audio.** A crash inside the first fraction of a second of a new segment leaves a file with no complete frame; a file with one complete frame decodes however it was cut. `stored_length` counts such a segment as empty so the pass over the earlier segments still runs, and never caches that 0. Because that 0 is never cached, every job that measures a recording's files must use `track_lengths` / `stored_length`, never `duration` directly (indexing did, and failed on every retry). Imported files that cannot be read still fail loudly.
-- **A live pass registers closed segments itself.** `request()` calls `closed_tracks()` under the capture and library locks before it reads the growing file, so a segment that closed since `tick`'s last poll is never missing from the stream. Keep registration and both reads under the same locks.
-- **Before claiming a transcription improvement,** run the unit tests (`LiveTranscription` in `tests/test_worker.py`), the continuity script and a replay of a real recording.
+- **A transcription is never turned away** by the eight-job queue cap, and a recording has at most one queued.
+- **Before claiming a transcription improvement,** run the unit tests (`Transcription` in `tests/test_worker.py`), the continuity script and `scripts/transcribe-recording.py` on a real recording.
 
 Summary style: Settings → Summary style (`summary_style`: `counselling` (default), `service`, `meeting`, `custom` with `summary_prompt`, at most 2,000 characters). The prompts live in `engine.py::STYLES`; the Meeting prompt is the pre-0.1.7 text unchanged. Custom instructions are wrapped in the same safety rules and reach the worker in the request file, never on a command line. Saved notes mark section titles with `## `; `notes.py::heading_text` also reads older plain titles. The final summarising pass also returns a title, which replaces only the default name "Untitled recording".
 

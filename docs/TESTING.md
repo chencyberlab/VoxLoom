@@ -18,6 +18,24 @@ Meaningful unit checks cover pause-aligned chunk planning, skipped-speech retrie
 
 Version 0.1.1 added a first-run 1B/E2B summary selector. Six browser tests pass, including the request payload, displayed estimate and locked selection during setup for 1B, E2B and no summaries. These use an explicitly mocked bridge, without downloading models. A separate Rust regression executes the real offline provisioning script with tiny SHA-256-checked fixture files and a stubbed runtime readiness probe. It verifies core plus only the chosen summary model, saved E2B selection after success, core-only setup, missing-summary failure without changing the saved selection, and rejection of an unknown profile. Native checks on the final 0.1.1 package also passed launch, compact/expand and Quit, with all three observed processes released. The setup action remains fully visible at 900×720 in the browser checks. No user library or installed app data is reset during updates.
 
+## Version 0.1.22: recordings are transcribed after Stop
+
+Tested on a 4-core cloud VM (Ubuntu 24.04, FFmpeg 6.1.1, no audio devices) and on GitHub's Windows Server 2025 machines.
+
+Validation:
+- Worker (`Transcription` in `tests/test_worker.py`, fixture Whisper, real chunk planner and sentence assembly): every former live-path test now runs as one pass over the finished recording. Every millisecond is decoded once with cuts only in pauses; skipped trailing speech is re-read; speech after a music bed is re-read and the words heard twice are dropped; an unfinished sentence is finished by the next chunk; silence is skipped; audio without contrast is never skipped.
+- New: a pass stopped after its first, second or third chunk and started again from its checkpoint gives exactly the same cuts and rows as an uninterrupted pass.
+- Host:
+  - While a recording is open (and while it is paused), the scheduler registers closed segments and starts nothing: no job is queued for it, and an earlier recording's queued transcription stays pending. Stop queues one transcription, which reads every track of the recording from an empty checkpoint.
+  - Transcribe (`restart`) clears unedited rows and the checkpoint and keeps the user's edits; Retry keeps both, so it resumes.
+  - Migration 003 turns a queued pass of the old live kind into an ordinary transcription, keeps one per recording, drops old failures, and the library opens at version 3.
+  - Recovery of interrupted recordings, atomic checkpoints and the queue cap (transcriptions never turned away) keep their tests.
+- `scripts/transcribe-recording.py` with a stand-in Whisper on a 70 s FFmpeg-made recording in three 30-second files: every millisecond covered; stopped after 2 chunks and resumed, the rows were identical to an uninterrupted run.
+- CI's Windows real-engine job now also runs `transcribe-recording.py` with the real engine and model on `voxloom-long.wav` cut into 30-second files, stopped after one chunk and resumed. A local run with the real engine was not possible: this environment's network policy refused the whisper.cpp source download (403).
+- Browser check: while recording, the top bar says "Waits until you stop recording" with no spinner or progress, and the studio says the transcript is written when you stop (also when paused). After Stop, the recording's pass shows "Transcribing · 40%", and its page shows "Writing the transcript… 40%" with a progress bar instead of the Transcribe button.
+- The opt-in real-capture test (`real_pulse_dual_capture_transcribed_after_stop_pause_resume_shutdown`) now checks that no rows or jobs appear while recording and that the fixture's words arrive after Stop. It needs PipeWire and was not run here.
+- Fast set: 48 Python checks, 31 Rust unit checks plus the offline setup integration check, 17 browser checks, TypeScript/privacy/version, and clippy for desktop and the Windows target (with tests).
+
 ## Version 0.1.21: Check for updates
 
 Tested on a 4-core cloud VM (Ubuntu 24.04, FFmpeg 6.1.1, no audio devices) and on GitHub's Windows Server 2025 machines.

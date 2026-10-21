@@ -148,7 +148,7 @@ def ensure_model(path):
 def verify_pinned(path, model, provision):
     """Hashing the 2.8 GB summary model takes seconds of disk and CPU on a
     laptop, and every worker is a fresh process, so it used to happen before
-    each summary batch and each live pass. A file whose size and modification
+    each summary batch and each transcription. A file whose size and modification
     time have not changed since it last passed is trusted; any change, a
     different pinned hash, or a missing cache hashes it again."""
     resolved = str(path.resolve())
@@ -210,9 +210,7 @@ def audio_streams(tracks, emit):
     """Storage files are not ASR utterances. Join each source/session logically.
 
     Actual sample durations, not nominal 30s file labels, define continuity.
-    Cached immutable-file durations avoid decoding all old audio every live pass.
-    The newest capture file may still be growing; it is read up to its last
-    complete frame and never cached.
+    Cached durations avoid decoding every file again when a pass resumes.
     """
     groups = {}
     for track in sorted(tracks, key=lambda t: (t["source"], t["offset_ms"], t["path"])):
@@ -221,18 +219,13 @@ def audio_streams(tracks, emit):
         if key not in groups:
             groups[key] = {"key": key, "source": track["source"], "base": track["offset_ms"], "length": 0, "tracks": []}
         group = groups[key]
-        if track.get("growing"):
-            length = len(decode_pcm(track["path"], growing=True)) // 32
-            if not length:
-                continue
-        else:
-            length = track.get("duration_ms") or stored_length(track["path"])
-            if not length:
-                # Not cached: a cached length is trusted for good, and this
-                # one costs a single failed open to measure again.
-                continue
-            if not track.get("duration_ms"):
-                emit(type="track_duration", track_id=track["id"], duration_ms=length)
+        length = track.get("duration_ms") or stored_length(track["path"])
+        if not length:
+            # Not cached: a cached length is trusted for good, and this one
+            # costs a single failed open to measure again.
+            continue
+        if not track.get("duration_ms"):
+            emit(type="track_duration", track_id=track["id"], duration_ms=length)
         group["tracks"].append((track, group["length"], length))
         group["length"] += length
     return list(groups.values())
@@ -267,13 +260,9 @@ def track_lengths(tracks):
     return [t.get("duration_ms") or stored_length(t["path"]) for t in tracks]
 
 
-def decode_pcm(path, start=0, length=None, growing=False):
+def decode_pcm(path, start=0, length=None):
     """Decode part of one stored file to 16 kHz mono s16le bytes."""
     argv = ["ffmpeg", "-nostdin", "-v", "error"]
-    if growing:
-        # The capture writes whole FLAC frames; CRC checks reject any frame
-        # caught half-written, which is then read on the next pass.
-        argv += ["-err_detect", "crccheck"]
     # Native seeking in segmented FLAC with inherited frame offsets can skip
     # the requested tail. Decode these small storage files before seeking.
     if SEGMENTED.match(Path(path).name) or not start:
@@ -283,12 +272,7 @@ def decode_pcm(path, start=0, length=None, growing=False):
     if length is not None:
         argv += ["-t", str(length / 1000)]
     argv += ["-vn", "-ar", "16000", "-ac", "1", "-f", "s16le", "pipe:1"]
-    try:
-        data = run(argv)
-    except RuntimeError:
-        if growing:
-            return b""
-        raise
+    data = run(argv)
     return data[:len(data) // 2 * 2]
 
 
@@ -299,7 +283,7 @@ def stream_samples(stream, start, end):
         a, b = max(start, offset), min(end, offset + length)
         if b <= a:
             continue
-        part = decode_pcm(track["path"], a - offset, b - offset, growing=track.get("growing", False))
+        part = decode_pcm(track["path"], a - offset, b - offset)
         wanted = (b - a) * 32
         # Keep every later sample on the stream clock even if a decoder rounds.
         samples.frombytes(part[:wanted] + b"\0" * max(0, wanted - len(part)))
@@ -380,28 +364,27 @@ def quiet_runs(levels, threshold, length):
     return runs
 
 
-def plan_chunk(levels, available, threshold, final):
-    """End of the next chunk in ms from the cursor, or None to wait for audio.
+def plan_chunk(levels, available, threshold):
+    """End of the next chunk in ms from the cursor.
 
-    Boundaries are placed inside real pauses, never by storage files or a clock.
-    Only nonstop speech with no usable pause for a full window is divided at its
-    quietest moment.
+    The whole recording is there, so the rest is one chunk once it fits a
+    window. Otherwise the cut is placed inside a real pause, never by storage
+    files or a clock. Only nonstop speech with no usable pause for a full
+    window is divided at its quietest moment.
     """
-    if final and available <= MAX_CHUNK_MS:
+    if available <= MAX_CHUNK_MS:
         return available
-    window = min(available, MAX_CHUNK_MS)
+    window = MAX_CHUNK_MS
     ends, gaps = [], []
     for start, end in quiet_runs(levels, threshold, available):
         if start >= window:
             break
-        gap, ongoing = end - start, end >= available and not final
+        gap = end - start
         if start == 0:
             # Already inside a pause: skip ahead to just before the next voice.
-            if end - EDGE_MS >= 1000 and (not ongoing or gap >= TURN_GAP_MS):
+            if end - EDGE_MS >= 1000:
                 return min(window, end - EDGE_MS)
             continue
-        if ongoing and gap < END_GAP_MS:
-            continue  # The speaker may only be between words.
         cut = start + EDGE_MS if gap >= 2 * EDGE_MS + 200 else start + gap // 2
         if cut > window:
             continue
@@ -410,12 +393,9 @@ def plan_chunk(levels, available, threshold, final):
             ends.append(cut)
     if ends:
         return max(ends)
-    if available >= MIN_PHRASE_MS + 4000:
-        phrases = [cut for gap, cut in gaps if gap >= PHRASE_GAP_MS and cut >= MIN_PHRASE_MS]
-        if phrases:
-            return max(phrases)
-    if available < MAX_CHUNK_MS:
-        return None
+    phrases = [cut for gap, cut in gaps if gap >= PHRASE_GAP_MS and cut >= MIN_PHRASE_MS]
+    if phrases:
+        return max(phrases)
     later = [(gap, cut) for gap, cut in gaps if gap >= SHORT_GAP_MS and cut >= 8000]
     if later:
         return max(later)[1]
@@ -599,25 +579,22 @@ def carry_state(saved):
 def transcribe(request, emit, scratch):
     """Pause-aligned chunks of at most one Whisper window, each decoded once.
 
-    Every millisecond of a stream belongs to exactly one chunk, and every word
-    Whisper returns is kept. The checkpoint, the rows and any unfinished
-    sentence are committed together, so an interrupted pass resumes exactly.
+    A recording is transcribed after it stops (an import when it arrives), so
+    each stream is complete and every cut can wait for the best pause. Every
+    millisecond belongs to exactly one chunk, and every word Whisper returns
+    is kept. The checkpoint, the rows and any unfinished sentence are
+    committed together, so a pass stopped half-way (a new recording, Quit)
+    resumes exactly where it was.
     """
     model = ensure_model(request["models"]["whisper"])
-    live = request["kind"] == "transcribe_live"
-    growing = [dict(t, id="growing:" + Path(t["path"]).name, growing=True) for t in request.get("growing", [])] if live else []
-    streams = audio_streams([*request.get("context_tracks", request["tracks"]), *growing], emit)
-    if not live:
-        targets = {t["id"] for t in request["tracks"]}
-        streams = [s for s in streams if any(t["id"] in targets for t, _, _ in s["tracks"])]
-    progress = request.get("asr_progress", {}) if live else {}
+    streams = audio_streams(request["tracks"], emit)
+    progress = request.get("asr_progress", {})
     total = sum(max(0, s["length"] - progress.get(s["key"], {}).get("covered_ms", 0)) for s in streams)
     done = 0
     for stream in streams:
         saved = progress.get(stream["key"], {})
         cursor = min(saved.get("covered_ms", 0), stream["length"])
         state = carry_state(saved.get("overlap_text", ""))
-        final = not live or request.get("finalize", True) or any(s["source"] == stream["source"] and s["base"] > stream["base"] for s in streams)
         here = lambda ms: stream["base"] + ms
 
         def commit(covered, rows):
@@ -634,9 +611,7 @@ def transcribe(request, emit, scratch):
             reliable = has_contrast(levels, floor)
             threshold = floor + VOICE_MARGIN_DB if reliable else -math.inf
             ahead = levels[(cursor - start) // FRAME_MS:]
-            cut = plan_chunk(ahead, available, threshold, final)
-            if cut is None:
-                break
+            cut = plan_chunk(ahead, available, threshold)
             frames = ahead[:-(-cut // FRAME_MS)]
             voiced = FRAME_MS * sum(level >= floor + QUIET_MARGIN_DB for level in frames)
             idle = max(frames, default=-math.inf) < DIGITAL_SILENCE_DB or (reliable and voiced < MIN_VOICE_MS)
@@ -663,7 +638,7 @@ def transcribe(request, emit, scratch):
                         last["end_ms"] = cut = spoken
                         state["seam"] = last["text"]
                 pieces += [dict(p, start_ms=here(cursor + p["start_ms"]), end_ms=here(cursor + p["end_ms"])) for p in found]
-            reached_end = final and cursor + cut >= stream["length"]
+            reached_end = cursor + cut >= stream["length"]
             stale = pieces and (here(cursor + cut) - pieces[0]["start_ms"] > PENDING_MS)
             rows, pending = sentences(pieces, flush=reached_end or idle or bool(stale))
             if pending and len(pending["text"]) <= PENDING_CHARS:
@@ -674,7 +649,7 @@ def transcribe(request, emit, scratch):
             done += cut
             commit(cursor, rows)
             emit(type="progress", progress=min(.99, done / max(1, total)))
-        if final and cursor >= stream["length"] and state.get("pending"):
+        if state.get("pending"):
             commit(cursor, [state.pop("pending")])
 
 
@@ -924,7 +899,7 @@ def summarize(request, emit, scratch):
 
 def execute(request, emit, scratch):
     kind = request["kind"]
-    if kind in ("transcribe", "transcribe_live"):
+    if kind == "transcribe":
         transcribe(request, emit, scratch)
     elif kind == "index":
         index(request, emit, scratch)

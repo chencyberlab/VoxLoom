@@ -251,7 +251,7 @@ fn real_offline_import_transcribe_index_search_restart_export_delete() {
 #[cfg(target_os = "linux")]
 #[test]
 #[ignore = "requires explicit synthetic PipeWire fixture setup"]
-fn real_pulse_dual_capture_live_transcription_pause_resume_shutdown() {
+fn real_pulse_dual_capture_transcribed_after_stop_pause_resume_shutdown() {
     let (Ok(root), Ok(mic), Ok(system)) = (
         std::env::var("VOXLOOM_TEST_ROOT"),
         std::env::var("VOXLOOM_TEST_MIC"),
@@ -275,7 +275,6 @@ fn real_pulse_dual_capture_live_transcription_pause_resume_shutdown() {
         .map(PathBuf::from)
         .unwrap_or_else(|| root.join(".runtimes/whisper-build/bin/whisper-cli"));
     s.dispatch("save_settings",json!({"python":root.join(".venv/bin/python"),"whisper_cli":whisper,"models_dir":PathBuf::from(std::env::var_os("VOXLOOM_TEST_MODELS").unwrap_or_else(|| root.join(".local-data/models").into_os_string()))})).unwrap();
-    let started = Instant::now();
     let result = s
         .dispatch(
             "record",
@@ -287,30 +286,15 @@ fn real_pulse_dual_capture_live_transcription_pause_resume_shutdown() {
         .args(["--device=voxloom_fixture", "/tmp/voxloom-long.wav"])
         .spawn()
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(50);
-    loop {
+    // Nothing is transcribed while recording: no job and no rows until Stop.
+    let until = Instant::now() + Duration::from_secs(35);
+    while Instant::now() < until && playback.try_wait().unwrap().is_none() {
         let d = s.dispatch("detail", json!({"id":id})).unwrap();
-        if d["segments"].as_array().unwrap().iter().any(|v| {
-            v["text"]
-                .as_str()
-                .unwrap()
-                .to_lowercase()
-                .contains("budget")
-        }) {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "Live transcript did not arrive: {}",
-            s.dispatch("jobs", json!({})).unwrap()
-        );
+        assert!(d["segments"].as_array().unwrap().is_empty(), "transcribed while recording");
+        let jobs = s.dispatch("jobs", json!({})).unwrap();
+        assert!(jobs.as_array().unwrap().is_empty(), "a job was queued while recording: {jobs}");
         std::thread::sleep(Duration::from_millis(250));
     }
-    // Live passes read the file still being written: text must not wait for
-    // the first 30-second storage file to close.
-    let first_text = started.elapsed();
-    eprintln!("first live transcript after {first_text:?}");
-    assert!(first_text < Duration::from_secs(30), "live text waited for a closed file");
     assert!(!s.dispatch("status", json!({})).unwrap().is_null());
     s.dispatch("pause", json!({})).unwrap();
     let paused = s.dispatch("status", json!({})).unwrap();
@@ -325,6 +309,12 @@ fn real_pulse_dual_capture_live_transcription_pause_resume_shutdown() {
     std::thread::sleep(Duration::from_secs(1));
     s.dispatch("stop", json!({})).unwrap();
     await_jobs(&s);
+    let d = s.dispatch("detail", json!({"id":id})).unwrap();
+    assert!(
+        d["segments"].as_array().unwrap().iter().any(|v| v["text"].as_str().unwrap().to_lowercase().contains("budget")),
+        "transcript after Stop: {}",
+        d["segments"]
+    );
     assert_eq!(
         s.db.lock()
             .unwrap()

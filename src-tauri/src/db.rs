@@ -57,12 +57,14 @@ impl Db {
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .map_err(err)?;
-        if version > 2 {
+        if version > 3 {
             return Err("This library was created by a newer VoxLoom version".into());
         }
         conn.execute_batch(include_str!("../migrations/001.sql"))
             .map_err(err)?;
         conn.execute_batch(include_str!("../migrations/002.sql"))
+            .map_err(err)?;
+        conn.execute_batch(include_str!("../migrations/003.sql"))
             .map_err(err)?;
         conn.execute_batch("PRAGMA secure_delete=ON;")
             .map_err(err)?;
@@ -157,7 +159,7 @@ impl Db {
         Ok(json!(items))
     }
     pub fn enqueue(&self, meeting: &str, kind: &str) -> Result<String> {
-        if !["transcribe", "transcribe_live", "index", "summarize"].contains(&kind) {
+        if !["transcribe", "index", "summarize"].contains(&kind) {
             return Err("Unknown inference job".into());
         }
         let count: i64 = self
@@ -169,17 +171,16 @@ impl Db {
             )
             .map_err(err)?;
         // The cap keeps the user from piling up summaries and re-indexes. A
-        // live pass is how a recording's words reach the transcript, so it
-        // is never turned away: at most one is pending per recording anyway.
-        if count >= 8 && kind != "transcribe_live" {
+        // transcription is how a recording's words reach the transcript, so
+        // it is never turned away: at most one is pending per recording.
+        if count >= 8 && kind != "transcribe" {
             return Err("Inference queue is full (8 jobs). Wait or cancel a job.".into());
         }
         let dup:i64=self.conn.query_row("SELECT count(*) FROM jobs WHERE meeting_id=? AND kind=? AND status IN ('pending','running')",params![meeting,kind],|r|r.get(0)).map_err(err)?;
         if dup > 0 {
             return Err("This job is already queued".into());
         }
-        // A live pass can read the first file while it is still being written.
-        if kind != "transcribe_live" && self.tracks(meeting)?.is_empty() {
+        if self.tracks(meeting)?.is_empty() {
             return Err("Recording has no audio tracks".into());
         }
         let job = id();
@@ -258,7 +259,32 @@ mod tests {
     }
 
     #[test]
-    fn full_queue_never_turns_away_a_live_pass() {
+    fn a_queued_live_pass_from_an_older_version_becomes_a_transcription() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.db");
+        {
+            let db = Db::open(&path).unwrap();
+            for id in ["a", "b", "c"] {
+                db.create(id, "Meeting", 10000, "ready").unwrap();
+            }
+            for (id, meeting, kind, status) in [("1", "a", "transcribe_live", "pending"), ("2", "b", "transcribe_live", "running"),
+                                                ("3", "b", "transcribe", "pending"), ("4", "c", "transcribe_live", "failed")] {
+                db.conn.execute("INSERT INTO jobs(id,meeting_id,kind,status,created_at) VALUES(?,?,?,?,0)", params![id, meeting, kind, status]).unwrap();
+            }
+            db.conn.execute_batch("PRAGMA user_version = 2;").unwrap();
+        }
+        let db = Db::open(&path).unwrap();
+        let jobs = db.conn.prepare("SELECT id,kind,status FROM jobs ORDER BY id").unwrap()
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))).unwrap()
+            .collect::<std::result::Result<Vec<_>, _>>().unwrap();
+        // One pending transcription per recording; the old failure is gone.
+        assert_eq!(jobs, [("1".into(), "transcribe".into(), "pending".into()), ("3".into(), "transcribe".into(), "pending".into())]);
+        assert_eq!(db.conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 3);
+        assert!(db.enqueue("a", "transcribe_live").is_err());
+    }
+
+    #[test]
+    fn full_queue_never_turns_away_a_transcription() {
         let dir = tempfile::tempdir().unwrap();
         let db = Db::open(&dir.path().join("library.db")).unwrap();
         for i in 0..9 {
@@ -271,8 +297,8 @@ mod tests {
         }
         assert!(db.enqueue("m8", "summarize").is_err());
         assert!(db.enqueue("m8", "index").is_err());
-        db.enqueue("m8", "transcribe_live").unwrap();
+        db.enqueue("m8", "transcribe").unwrap();
         // Still one per recording: the second is the duplicate, not the cap.
-        assert!(db.enqueue("m8", "transcribe_live").unwrap_err().contains("already queued"));
+        assert!(db.enqueue("m8", "transcribe").unwrap_err().contains("already queued"));
     }
 }
