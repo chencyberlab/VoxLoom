@@ -34,6 +34,9 @@ pub struct Service {
 }
 /// Name of a recording started without a title; Summarise may replace it.
 const DEFAULT_TITLE: &str = "Untitled recording";
+/// The title above each summary added to a recording's notes. The worker's
+/// `notes.py::own_notes` leaves these sections out of the notes it is given.
+const SUMMARY_TITLE: &str = "# Summary";
 /// Recording refuses to start below this much free space on the data volume.
 const MIN_RECORD_FREE_BYTES: u64 = 256 * 1024 * 1024;
 /// A worker never runs longer than this, or twice the recording's length
@@ -180,6 +183,52 @@ mod tests {
         };
         assert_eq!(title("untitled"), "Privacy workshop planning");
         assert_eq!(title("named"), "Board meeting");
+        service.shutdown();
+    }
+
+    #[test]
+    fn a_summary_is_added_below_the_notes_and_a_save_keeps_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = Service::open(
+            temp.path().join("data"),
+            temp.path().join("cache"),
+            temp.path().into(),
+            Arc::new(|_| {}),
+        )
+        .unwrap();
+        {
+            let db = service.db.lock().unwrap();
+            db.create("blank", "Blank", 1000, "ready").unwrap();
+            db.create("noted", "Noted", 1000, "ready").unwrap();
+            db.conn.execute("UPDATE meetings SET notes='- worried about school\n- call mum ' WHERE id='noted'", []).unwrap();
+        }
+        let notes = |id: &str| -> String {
+            service.db.lock().unwrap().conn.query_row("SELECT notes FROM meetings WHERE id=?", [id], |r| r.get(0)).unwrap()
+        };
+        // The summary request carries the person's notes for the worker.
+        assert_eq!(service.request("summarize", Some("noted")).unwrap()["notes"], "- worried about school\n- call mum ");
+        let summary = |text: &str| json!({"type":"summary","text":text,"title":""});
+        service.ingest("blank", &summary("## Overview\nA first talk.\n")).unwrap();
+        assert_eq!(notes("blank"), "# Summary\n\n## Overview\nA first talk.");
+        // Nothing the person wrote is trimmed or replaced; a second summary goes below the first.
+        service.ingest("noted", &summary("## Overview\nSchool worries.")).unwrap();
+        service.ingest("noted", &summary("## Overview\nAgain.")).unwrap();
+        assert_eq!(notes("noted"), "- worried about school\n- call mum \n\n# Summary\n\n## Overview\nSchool worries.\n\n# Summary\n\n## Overview\nAgain.");
+        // An empty reply adds no bare title.
+        assert!(service.ingest("noted", &summary(" \n")).is_err());
+        assert!(notes("noted").ends_with("Again."));
+        // A page that loaded the notes before a summary arrived saves its edit and keeps the summary.
+        // That summary had no line before it; it still starts on a line of its own.
+        service.dispatch("update", json!({"id":"blank","notes":"My own line.","notes_base":""})).unwrap();
+        assert_eq!(notes("blank"), "My own line.\n\n# Summary\n\n## Overview\nA first talk.");
+        let base = notes("blank");
+        service.ingest("blank", &summary("## Overview\nLater.")).unwrap();
+        let saved = service.dispatch("update", json!({"id":"blank","notes":"Edited.","notes_base":base})).unwrap();
+        assert_eq!(saved["notes"], "Edited.\n\n# Summary\n\n## Overview\nLater.");
+        // Without a newer summary the edit is saved as it is, deletions included.
+        let base = notes("blank");
+        service.dispatch("update", json!({"id":"blank","notes":"","notes_base":base})).unwrap();
+        assert_eq!(notes("blank"), "");
         service.shutdown();
     }
 
@@ -511,11 +560,25 @@ mod tests {
         assert_eq!(progress(&service)["mic:s0000"]["covered_ms"], 28000);
         assert_eq!(texts(&service), ["Model words.", "My correction."]);
         service.dispatch("cancel", json!({"id":job})).unwrap();
-        // Transcribe starts over and keeps only the user's edits.
-        service.dispatch("enqueue", json!({"id":"meeting","kind":"transcribe","restart":true})).unwrap();
+        // Transcribe cancelled before it started: the transcript is untouched.
+        let job = service.dispatch("enqueue", json!({"id":"meeting","kind":"transcribe","restart":true})).unwrap();
+        assert_eq!(progress(&service)["mic:s0000"]["covered_ms"], 28000);
+        assert_eq!(texts(&service), ["Model words.", "My correction."]);
+        service.dispatch("cancel", json!({"id":job})).unwrap();
+        // Transcribe that starts clears the rows and checkpoint first, keeping only the edits.
+        // (The worker cannot start here, so the job then fails; Retry would resume from the clear.)
+        let job = service.dispatch("enqueue", json!({"id":"meeting","kind":"transcribe","restart":true})).unwrap();
+        drop(_busy);
+        let status = || -> String {
+            service.db.lock().unwrap().conn.query_row("SELECT status FROM jobs WHERE id=?", [job.as_str().unwrap()], |r| r.get(0)).unwrap()
+        };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while status() == "pending" || status() == "running" {
+            assert!(Instant::now() < deadline, "the job did not run");
+            std::thread::sleep(Duration::from_millis(50));
+        }
         assert_eq!(progress(&service), json!({}));
         assert_eq!(texts(&service), ["My correction."]);
-        drop(_busy);
         service.shutdown();
     }
 
@@ -568,6 +631,18 @@ mod tests {
             db.add_track("clean", &temp.path().join("clean.flac"), "mic", 0).unwrap();
             db.conn.execute("UPDATE audio_tracks SET transcribed=1 WHERE meeting_id='clean'", []).unwrap();
             db.conn.execute(r#"INSERT INTO asr_progress(meeting_id,stream,covered_ms,overlap_text) VALUES('clean','mic:s0000',28000,'{"floor_db":-50.0}')"#, []).unwrap();
+            // Stopped recordings whose pass began but did not finish. "stranded"
+            // lost its failed live pass in the 0.1.22 upgrade; "cancelled" was
+            // stopped by the person, who can transcribe it when they choose.
+            for id in ["stranded", "cancelled"] {
+                db.create(id, DEFAULT_TITLE, 60000, "ready").unwrap();
+                db.add_track(id, &temp.path().join(format!("{id}-0.flac")), "mic", 0).unwrap();
+                db.add_track(id, &temp.path().join(format!("{id}-1.flac")), "mic", 30000).unwrap();
+                db.conn.execute(&format!("UPDATE audio_tracks SET transcribed=1 WHERE meeting_id='{id}' AND offset_ms=0"), []).unwrap();
+                db.conn.execute(&format!(r#"INSERT INTO asr_progress(meeting_id,stream,covered_ms,overlap_text) VALUES('{id}','mic:s0000',28000,'{{"pending":{{"start_ms":27000,"end_ms":28000,"text":"and so we"}}}}')"#), []).unwrap();
+            }
+            let job = db.enqueue("cancelled", "transcribe").unwrap();
+            db.job_status(&job, "cancelled", 0., None).unwrap();
         }
         service.shutdown();
         drop(service);
@@ -581,6 +656,10 @@ mod tests {
         assert_eq!(transcriptions(&service, "half", None), 1);
         assert_eq!(transcriptions(&service, "clean", None), 0);
         assert_eq!(transcriptions(&service, "done", None), 0);
+        assert_eq!(transcriptions(&service, "stranded", None), 1);
+        assert_eq!(transcriptions(&service, "cancelled", None), 1);
+        // It resumes: the checkpoint and its unfinished sentence are still there.
+        assert_eq!(service.request("transcribe", Some("stranded")).unwrap()["asr_progress"]["mic:s0000"]["covered_ms"], 28000);
         let duration = |id: &str| -> i64 {
             service.db.lock().unwrap().conn.query_row("SELECT duration_ms FROM meetings WHERE id=?", [id], |r| r.get(0)).unwrap()
         };
@@ -752,6 +831,26 @@ impl Service {
                 let _ = db.enqueue(&meeting.id, "transcribe");
             }
         }
+        // A finished recording whose pass began but never completed, with no
+        // transcription left to finish it: the 0.1.22 upgrade removed failed
+        // live passes, the only way back to those words. A queued, failed or
+        // cancelled transcription stays the person's to retry, and a recording
+        // never transcribed (no checkpoint) waits for Transcribe as before.
+        let stranded = db
+            .conn
+            .prepare("SELECT id FROM meetings m WHERE status<>'interrupted' AND EXISTS(SELECT 1 FROM asr_progress WHERE meeting_id=m.id)
+             AND (EXISTS(SELECT 1 FROM audio_tracks WHERE meeting_id=m.id AND transcribed=0) OR EXISTS(SELECT 1 FROM asr_progress WHERE meeting_id=m.id AND overlap_text LIKE '%\"pending\"%'))
+             AND NOT EXISTS(SELECT 1 FROM jobs WHERE meeting_id=m.id AND kind='transcribe' AND status IN ('pending','running','failed','cancelled'))")
+            .map_err(err)?
+            .query_map([], |r| r.get::<_, String>(0))
+            .map_err(err)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(err)?;
+        if self.whisper_model(&db).is_file() {
+            for id in stranded {
+                let _ = db.enqueue(&id, "transcribe");
+            }
+        }
         Ok(())
     }
     /// The selected transcription model. Accurate falls back to the standard
@@ -888,6 +987,14 @@ impl Service {
         if kind == "summarize" {
             v["summary_style"] = json!(db.setting("summary_style", "counselling"));
             v["summary_prompt"] = json!(db.setting("summary_prompt", ""));
+            if let Some(m) = meeting {
+                // The person's own notes steer the summary; the worker keeps
+                // them out of every command line, like the transcript.
+                v["notes"] = json!(db
+                    .conn
+                    .query_row("SELECT notes FROM meetings WHERE id=?", [m], |r| r.get::<_, String>(0))
+                    .unwrap_or_default());
+            }
         }
         v["models"]["summary"] = json!(match summary_profile(&db).as_str() {
             "e4b" => models
@@ -993,11 +1100,15 @@ impl Service {
         let Ok(_guard) = self.inference.try_lock() else {
             return;
         };
-        let _ = self
-            .db
-            .lock()
-            .unwrap()
-            .job_status(&job, "running", 0., None);
+        {
+            // Starting over happens with the start, under the same lock, so
+            // the request below reads the cleared checkpoint.
+            let mut db = self.db.lock().unwrap();
+            let _ = db.job_status(&job, "running", 0., None);
+            if kind == "transcribe" {
+                let _ = db.start_over(&job, &meeting);
+            }
+        }
         (self.notify)(json!({"type":"jobs"}));
         let result = self.request(&kind, Some(&meeting)).and_then(|req| {
             let result = self.run_worker(&job, &req, Some((&meeting, &kind)));
@@ -1263,10 +1374,19 @@ impl Service {
                 tx.commit().map_err(err)?;
             }
             "summary" => {
+                // Added below the notes, never in their place: what the
+                // person wrote, and earlier summaries they may have edited,
+                // stay exactly as they are. Nothing is trimmed, so a page
+                // saving older notes can tell what was added (`update`).
+                let text = v["text"].as_str().unwrap_or("").trim();
+                if text.is_empty() {
+                    return Err("The summary came back empty. Try Summarise again.".into());
+                }
+                let block = format!("{SUMMARY_TITLE}\n\n{text}");
                 db.conn
                     .execute(
-                        "UPDATE meetings SET summary=? WHERE id=?",
-                        params![v["text"].as_str(), meeting],
+                        "UPDATE meetings SET notes=notes||CASE WHEN notes='' THEN '' ELSE char(10)||char(10) END||? WHERE id=?",
+                        params![block, meeting],
                     )
                     .map_err(err)?;
                 // The suggested title only replaces the default name, never
@@ -1324,9 +1444,30 @@ impl Service {
                         .map_err(err)?;
                 }
                 if let Some(n) = p["notes"].as_str() {
+                    // The page saves the notes it was editing, which it
+                    // loaded as `notes_base`. A summary finished since then
+                    // was added after that text: keep it below the edit.
+                    let mut notes = n.to_string();
+                    if let Some(base) = p["notes_base"].as_str() {
+                        let current: String = db
+                            .conn
+                            .query_row("SELECT notes FROM meetings WHERE id=?", [id], |r| r.get(0))
+                            .map_err(err)?;
+                        if current != base && current.starts_with(base) {
+                            // Added to empty notes, a summary has no blank line
+                            // before its title: give it one below the edit.
+                            let added = &current[base.len()..];
+                            if !added.starts_with('\n') && !notes.trim().is_empty() {
+                                let tail = notes.len() - notes.trim_end_matches('\n').len();
+                                notes.push_str(&"\n\n"[tail.min(2)..]);
+                            }
+                            notes.push_str(added);
+                        }
+                    }
                     db.conn
-                        .execute("UPDATE meetings SET notes=? WHERE id=?", params![n, id])
+                        .execute("UPDATE meetings SET notes=? WHERE id=?", params![notes, id])
                         .map_err(err)?;
+                    return Ok(json!({"notes":notes}));
                 }
                 Ok(Value::Null)
             }
@@ -1347,19 +1488,13 @@ impl Service {
                 let db = self.db.lock().unwrap();
                 let (id, kind) = (text(&p, "id")?, text(&p, "kind")?);
                 let job = db.enqueue(id, kind)?;
-                // Transcribe on a recording's page starts over: the rows it
-                // wrote go (the user's edits stay), with the search index
-                // and the checkpoint. Retry leaves them, so it resumes.
-                // Under the same lock, so the pass cannot start in between.
+                // Transcribe on a recording's page starts over, but only when
+                // its job starts (`Db::start_over`): cancelled before then, it
+                // leaves the transcript as it was. Retry resumes instead.
                 if kind == "transcribe" && p["restart"] == true {
-                    for sql in [
-                        "DELETE FROM transcript_segments WHERE meeting_id=? AND edited=0",
-                        "DELETE FROM embedding_items WHERE meeting_id=?",
-                        "DELETE FROM asr_progress WHERE meeting_id=?",
-                        "UPDATE audio_tracks SET transcribed=0 WHERE meeting_id=?",
-                    ] {
-                        db.conn.execute(sql, [id]).map_err(err)?;
-                    }
+                    db.conn
+                        .execute("INSERT OR IGNORE INTO restart_jobs(job_id) VALUES(?)", [&job])
+                        .map_err(err)?;
                 }
                 Ok(json!(job))
             }
@@ -2110,7 +2245,7 @@ impl Service {
         if format == "summary_docx" || format == "docx" {
             let summary = format == "summary_docx";
             let body = if summary {
-                crate::meeting_notes(detail["meeting"]["summary"].as_str().unwrap_or(""))
+                crate::meeting_notes(detail["meeting"]["notes"].as_str().unwrap_or(""))
             } else {
                 segments
                     .iter()
@@ -2172,7 +2307,7 @@ impl Service {
                     )
                 })
                 .collect(),
-            "summary" => crate::meeting_notes(detail["meeting"]["summary"].as_str().unwrap_or("")),
+            "summary" => crate::meeting_notes(detail["meeting"]["notes"].as_str().unwrap_or("")),
             "txt" | "md" => {
                 let body = segments
                     .iter()

@@ -57,7 +57,7 @@ impl Db {
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .map_err(err)?;
-        if version > 3 {
+        if version > 4 {
             return Err("This library was created by a newer VoxLoom version".into());
         }
         conn.execute_batch(include_str!("../migrations/001.sql"))
@@ -65,6 +65,8 @@ impl Db {
         conn.execute_batch(include_str!("../migrations/002.sql"))
             .map_err(err)?;
         conn.execute_batch(include_str!("../migrations/003.sql"))
+            .map_err(err)?;
+        conn.execute_batch(include_str!("../migrations/004.sql"))
             .map_err(err)?;
         conn.execute_batch("PRAGMA secure_delete=ON;")
             .map_err(err)?;
@@ -192,6 +194,24 @@ impl Db {
             .map_err(err)?;
         Ok(job)
     }
+    /// Transcribe asked to start over (`restart_jobs`): only now, as its job
+    /// starts, do the rows it wrote go, with the search index and the
+    /// checkpoint. The user's edited rows stay. A Transcribe cancelled before
+    /// it started never gets here, so the transcript stays as it was.
+    pub fn start_over(&mut self, job: &str, meeting: &str) -> Result<()> {
+        let tx = self.conn.transaction().map_err(err)?;
+        if tx.execute("DELETE FROM restart_jobs WHERE job_id=?", [job]).map_err(err)? > 0 {
+            for sql in [
+                "DELETE FROM transcript_segments WHERE meeting_id=? AND edited=0",
+                "DELETE FROM embedding_items WHERE meeting_id=?",
+                "DELETE FROM asr_progress WHERE meeting_id=?",
+                "UPDATE audio_tracks SET transcribed=0 WHERE meeting_id=?",
+            ] {
+                tx.execute(sql, [meeting]).map_err(err)?;
+            }
+        }
+        tx.commit().map_err(err)
+    }
     pub fn job_status(
         &self,
         job: &str,
@@ -279,8 +299,37 @@ mod tests {
             .collect::<std::result::Result<Vec<_>, _>>().unwrap();
         // One pending transcription per recording; the old failure is gone.
         assert_eq!(jobs, [("1".into(), "transcribe".into(), "pending".into()), ("3".into(), "transcribe".into(), "pending".into())]);
-        assert_eq!(db.conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 3);
+        assert_eq!(db.conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 4);
         assert!(db.enqueue("a", "transcribe_live").is_err());
+    }
+
+    #[test]
+    fn summaries_from_an_older_version_move_below_the_notes_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.db");
+        {
+            let db = Db::open(&path).unwrap();
+            for (id, notes, summary) in [("both", "My notes.", "## Overview\nSummary.\n"), ("only", "", "## Overview\nJust a summary."),
+                                         ("none", "Notes only.", ""), ("draft", "Mine.", "<|channel>thought half")] {
+                db.create(id, "Meeting", 1000, "ready").unwrap();
+                db.conn.execute("UPDATE meetings SET notes=?,summary=? WHERE id=?", params![notes, summary, id]).unwrap();
+            }
+            db.conn.execute_batch("PRAGMA user_version = 3;").unwrap();
+        }
+        let read = |db: &Db| -> Vec<(String, String, String)> {
+            db.conn.prepare("SELECT id,notes,summary FROM meetings ORDER BY id").unwrap()
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap()
+                .collect::<std::result::Result<Vec<_>, _>>().unwrap()
+        };
+        let expected = vec![
+            ("both".into(), "My notes.\n\n# Summary\n\n## Overview\nSummary.".into(), "".into()),
+            ("draft".into(), "Mine.".into(), "<|channel>thought half".into()),
+            ("none".into(), "Notes only.".into(), "".into()),
+            ("only".into(), "# Summary\n\n## Overview\nJust a summary.".into(), "".into()),
+        ];
+        assert_eq!(read(&Db::open(&path).unwrap()), expected);
+        // Every open runs the migrations: the second one changes nothing.
+        assert_eq!(read(&Db::open(&path).unwrap()), expected);
     }
 
     #[test]

@@ -40,22 +40,25 @@ with tempfile.TemporaryDirectory(prefix='voxloom-native-notes-') as directory:
     with sqlite3.connect(data/'library.db') as db:
         for migration in ['001.sql','002.sql']:
             db.executescript((root/'src-tauri/migrations'/migration).read_text())
-        db.execute("INSERT INTO meetings(id,title,created_at,duration_ms,status,summary) VALUES(?,?,?,?,?,?)",('fixture','Clipboard fixture',int(time.time()),60000,'ready','Overview\nThe workshop covers privacy.\n\nAction items\n• **Sarah** sends the guide on Friday at 09:30.'))
+        # A library from before 0.1.23: the app's migration moves the summary below the notes.
+        db.execute("INSERT INTO meetings(id,title,created_at,duration_ms,status,notes,summary) VALUES(?,?,?,?,?,?,?)",('fixture','Clipboard fixture',int(time.time()),60000,'ready','Ask about the venue.','Overview\nThe workshop covers privacy.\n\nAction items\n• **Sarah** sends the guide on Friday at 09:30.'))
     env=dict(os.environ,VOXLOOM_DATA_DIR=directory,VOXLOOM_CACHE_DIR=directory+'/cache')
     with open('/tmp/voxloom-native-notes.log','w') as log:
         app=subprocess.Popen([sys.argv[1]],env=env,stdout=log,stderr=log)
         try:
-            time.sleep(5)
-            assert app.poll() is None
+            # A debug build can take well over 5 s to show its window.
+            deadline=time.time()+30
+            while 'VoxLoom' not in subprocess.check_output(['xwininfo','-root','-tree'],text=True):
+                assert time.time()<deadline and app.poll() is None,'The window never appeared'
+                time.sleep(.2)
+            time.sleep(4)
             key=x11.XKeysymToKeycode(display,0xff1b)
             xtst.XTestFakeKeyEvent(display,key,1,0);xtst.XTestFakeKeyEvent(display,key,0,0);x11.XFlush(display);time.sleep(.5)
             click(105,258)
             snapshot('library')
-            click(460,378)
-            snapshot('detail')
-            click(370,384)
-            snapshot('summary')
-            click(965,508)
+            click(460,427)
+            snapshot('notes')
+            click(872,523)
             snapshot('copied')
             gtk=ctypes.CDLL('libgtk-3.so.0')
             gdk=ctypes.CDLL('libgdk-3.so.0')
@@ -67,6 +70,7 @@ with tempfile.TemporaryDirectory(prefix='voxloom-native-notes-') as directory:
             clipboard=gtk.gtk_clipboard_get(gdk.gdk_atom_intern_static_string(b'CLIPBOARD'))
             gtk.gtk_clipboard_wait_for_text.argtypes=[ctypes.c_void_p];gtk.gtk_clipboard_wait_for_text.restype=ctypes.c_char_p
             plain=(gtk.gtk_clipboard_wait_for_text(clipboard) or b'').decode()
+            assert plain.startswith('Ask about the venue.\n\nSummary'),repr(plain)
             assert 'Sarah sends the guide on Friday at 09:30.' in plain,repr(plain)
             assert '**' not in plain
             gtk.gtk_clipboard_wait_for_contents.argtypes=[ctypes.c_void_p,ctypes.c_void_p];gtk.gtk_clipboard_wait_for_contents.restype=ctypes.c_void_p
@@ -75,8 +79,8 @@ with tempfile.TemporaryDirectory(prefix='voxloom-native-notes-') as directory:
             gtk.gtk_selection_data_get_data.argtypes=[ctypes.c_void_p];gtk.gtk_selection_data_get_data.restype=ctypes.c_void_p
             gtk.gtk_selection_data_get_length.argtypes=[ctypes.c_void_p];gtk.gtk_selection_data_get_length.restype=ctypes.c_int
             html=ctypes.string_at(gtk.gtk_selection_data_get_data(selection),gtk.gtk_selection_data_get_length(selection)).decode(errors='replace')
-            assert '<h3' in html and '<strong>Sarah</strong>' in html,html
-            click(179,791)
+            assert '<h2' in html and '<h3' in html and '<strong>Sarah</strong>' in html,html
+            click(185,791)
             app.wait(timeout=10)
             print({'native_copy_plain':'PASS','native_copy_html':'PASS','quit_exit_code':app.returncode})
         finally:

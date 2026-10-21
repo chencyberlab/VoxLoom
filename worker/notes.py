@@ -9,6 +9,28 @@ def clean_meeting_notes(text):
 
 
 MEETING_SECTIONS = ("Overview", "Key discussion points", "Discussion", "Decisions", "Action items", "Next steps", "Open questions")
+# Each summary is added below the notes under this top-level title.
+SUMMARY_TITLE = "# Summary"
+OWN_NOTES_CHARS = 1500
+
+
+def own_notes(text, limit=OWN_NOTES_CHARS):
+    """What the person wrote themselves: the notes without the summaries
+    VoxLoom added, each from its "# Summary" title to the next top-level
+    title. Long notes keep their beginning, cut at a line, so they fit the
+    summary model's context with the transcript."""
+    kept, added = [], False
+    for line in text.splitlines():
+        if re.fullmatch(r"#\s+\S.*", line.strip()):
+            added = re.fullmatch(r"#\s+summary\b.*", line.strip(), flags=re.I) is not None
+            if added:
+                continue
+        if not added:
+            kept.append(line.rstrip())
+    notes = "\n".join(kept).strip()
+    if len(notes) > limit:
+        notes = notes[:limit].rsplit("\n", 1)[0].strip() if "\n" in notes[:limit] else notes[:limit]
+    return notes
 
 
 def heading_text(line, headings=()):

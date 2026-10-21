@@ -11,7 +11,7 @@ for (const theme of ['light', 'dark'] as const) {
     await page.addInitScript((t) => {
       localStorage.setItem('voxloom-appearance', t);
       const meetings = [
-        { id: 'a', title: 'Student check-in', created_at: 1792100000, duration_ms: 153000, status: 'ready', notes: '', summary: '## Overview\nThe client described a demanding first year in Canada.\n\n## Main concerns\n• Failing two classes.\n• Few chances to meet people.\n\n## Strengths and supports\n• Learning English and interpreting for parents.' },
+        { id: 'a', title: 'Student check-in', created_at: 1792100000, duration_ms: 153000, status: 'ready', notes: 'Seemed tired but open.\n- ask about the study group\n\n# Summary\n\n## Overview\nThe client described a demanding first year in Canada.\n\n## Main concerns\n• Failing two classes.\n• Few chances to meet people.\n\n## Strengths and supports\n• Learning English and interpreting for parents.' },
         { id: 'b', title: 'Untitled recording', created_at: 1792000000, duration_ms: 264000, status: 'ready', notes: '', summary: '' },
       ];
       const segments = Array.from({ length: 8 }, (_, i) => ({ id: i, meeting_id: 'a', start_ms: i * 9000, end_ms: i * 9000 + 6000, source: i % 2 ? 'system' : 'mic', text: ['Yeah, I guess I have to figure out things for myself and for my parents.', 'You have a lot to manage right now.', 'I have to learn and improve my English for school.', 'It sounds like you have a lot of responsibilities.', 'And I don\'t have any friend.', 'Sounds like you had hoped for things to be different.', 'My teacher just told me I\'m failing two classes.', 'Is that correct? Yeah.'][i] }));
@@ -45,8 +45,8 @@ for (const theme of ['light', 'dark'] as const) {
     await page.goto('/');
     await shot('home');
     await page.getByRole('button', { name: /^All recordings/ }).click(); await shot('library');
-    await page.getByRole('button', { name: 'Student check-in', exact: false }).first().click(); await shot('detail-transcript');
-    await page.getByRole('button', { name: 'Summary', exact: true }).click(); await shot('detail-summary');
+    await page.getByRole('button', { name: 'Student check-in', exact: false }).first().click(); await shot('detail-notes');
+    await page.getByRole('button', { name: 'Transcript', exact: true }).click(); await shot('detail-transcript');
     await page.getByRole('button', { name: 'New recording', exact: true }).first().click(); await shot('studio');
     await page.getByRole('button', { name: 'Search', exact: true }).first().click();
     await page.getByRole('textbox').first().fill('failing classes'); await page.keyboard.press('Enter'); await shot('search');

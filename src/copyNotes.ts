@@ -2,12 +2,15 @@
 export async function copyMeetingNotes(element:HTMLElement):Promise<void> {
   const copy=element.cloneNode(true) as HTMLElement;
   copy.style.cssText='font-family:Calibri,Arial,sans-serif;font-size:11pt;line-height:1.4;color:#000;background:#fff';
+  copy.querySelectorAll<HTMLElement>('h2').forEach(node=>node.style.cssText='font-size:15pt;font-weight:bold;margin:20pt 0 8pt;color:#000');
   copy.querySelectorAll<HTMLElement>('h3').forEach(node=>node.style.cssText='font-size:13pt;font-weight:bold;margin:16pt 0 6pt;color:#000');
   copy.querySelectorAll<HTMLElement>('p,li').forEach(node=>node.style.cssText='font-size:11pt;color:#000;margin:0 0 6pt');
   const html=`<html><body><!--StartFragment-->${copy.outerHTML}<!--EndFragment--></body></html>`;
+  // A typed line break is a <br>, which has no text of its own.
+  const text=(node:Node)=>Array.from(node.childNodes).map(child=>child.nodeName==='BR'?'\n':child.textContent||'').join('');
   const plain=Array.from(copy.children).map(node=>node.tagName==='UL'
-    ?Array.from(node.children).map(item=>`• ${item.textContent||''}`).join('\n')
-    :node.textContent||'').join('\n\n');
+    ?Array.from(node.children).map(item=>`• ${text(item)}`).join('\n')
+    :text(node)).join('\n\n');
   await writeClipboard(plain,html,copy);
 }
 

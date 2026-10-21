@@ -11,7 +11,7 @@ from zipfile import ZipFile
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'worker'))
 import engine
 from export_docx import export_docx
-from notes import clean_meeting_notes, normalise_meeting_notes
+from notes import clean_meeting_notes, normalise_meeting_notes, own_notes
 
 
 class MeetingNotesTests(unittest.TestCase):
@@ -38,7 +38,7 @@ class MeetingNotesTests(unittest.TestCase):
 
     def test_long_notes_reduce_by_topic_without_inserting_source_times(self):
         calls,rows=[],[]
-        def generate(request,content,scratch,meeting_notes=False,title=False):
+        def generate(request,content,scratch,meeting_notes=False,title=False,notes=''):
             calls.append((content,meeting_notes,title))
             notes='Overview\nThe workshop covers privacy.\n\nAction items\n• Sarah drafts the guide by Friday.'
             return (notes,'Privacy workshop') if title else notes
@@ -52,9 +52,41 @@ class MeetingNotesTests(unittest.TestCase):
         self.assertEqual([title for *_,title in calls],[False]*(len(calls)-1)+[True])
         self.assertEqual(rows[-1]['title'],'Privacy workshop')
 
+    def test_own_notes_leave_out_added_summaries_and_keep_their_beginning(self):
+        doc='Client worried about school.\n- call mum\n\n# Summary\n\n## Overview\nGenerated.\n\n# My follow-up\nTuesday.\n\n# summary\nAgain.'
+        self.assertEqual(own_notes(doc),'Client worried about school.\n- call mum\n\n# My follow-up\nTuesday.')
+        self.assertEqual(own_notes('# Summary\n## Overview\nOnly generated.'),'')
+        long='\n'.join(f'Line {i} of my notes.' for i in range(200))
+        cut=own_notes(long)
+        self.assertLessEqual(len(cut),1500);self.assertTrue(cut.startswith('Line 0 of'));self.assertTrue(cut.endswith('of my notes.'))
+
+    def test_the_persons_notes_steer_every_pass_but_are_never_evidence(self):
+        calls=[]
+        def generate(request,content,scratch,meeting_notes=False,title=False,notes=''):
+            calls.append(notes)
+            result='Overview\nNote.'
+            return (result,'Title') if title else result
+        segments=[{'start_ms':i*30000,'text':('The workshop covers privacy. '*100)} for i in range(3)]
+        doc='- privacy worries\n\n# Summary\n\n## Overview\nAn earlier summary.'
+        with patch.object(engine,'generate',side_effect=generate):
+            engine.summarize({'segments':segments,'notes':doc},lambda **row:None,Path('/tmp'))
+        self.assertEqual(calls,['- privacy worries']*len(calls))
+        with tempfile.TemporaryDirectory() as directory:
+            scratch=Path(directory)
+            reply=b'<voxloom_result>Overview\nThe workshop was approved.</voxloom_result>'
+            with patch.object(engine,'ensure_model',return_value='fixture'),patch.object(engine,'run',return_value=reply):
+                engine.generate({'models':{'summary':'fixture'},'llama_cli':'fixture','threads':2},'<EVIDENCE>The workshop was approved.</EVIDENCE>',scratch,meeting_notes=True,notes='- privacy worries')
+                prompt=(scratch/'prompt.txt').read_text()
+                self.assertIn('<NOTES>\n- privacy worries\n</NOTES>',prompt)
+                self.assertIn('state nothing as said in the conversation unless the EVIDENCE says it',prompt)
+                self.assertLess(prompt.index('</NOTES>'),prompt.index('<EVIDENCE>'))
+                engine.generate({'models':{'summary':'fixture'},'llama_cli':'fixture','threads':2},'<EVIDENCE>The workshop was approved.</EVIDENCE>',scratch,meeting_notes=True)
+                prompt=(scratch/'prompt.txt').read_text()
+                self.assertNotIn('<NOTES>',prompt);self.assertNotIn('NOTES block',prompt)
+
     def test_odd_leftover_note_waits_for_a_partner_instead_of_a_solo_pass(self):
         calls=[]
-        def generate(request,content,scratch,meeting_notes=False,title=False):
+        def generate(request,content,scratch,meeting_notes=False,title=False,notes=''):
             calls.append(content)
             notes=f'Overview\nNote {len(calls)}.'
             return (notes,'Title') if title else notes

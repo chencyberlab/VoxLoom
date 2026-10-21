@@ -3,7 +3,7 @@ import { test, expect } from '@playwright/test';
 test('meeting notes render normally and copy as rich text or Markdown',async({page,context})=>{
   await context.grantPermissions(['clipboard-read','clipboard-write']);
   await page.addInitScript(()=>{
-    const meeting={id:'notes',title:'Workshop planning',created_at:1,duration_ms:60000,status:'ready',notes:'',summary:'## Overview\nThe workshop covers privacy. [00:00:03]\n\n**Action items**\n- **Sarah** sends the guide on Friday at 09:30.'};
+    const meeting={id:'notes',title:'Workshop planning',created_at:1,duration_ms:60000,status:'ready',notes:'Ask about the venue.\n10:30:00 room booked\n\n# Summary\n\n## Overview\nThe workshop covers privacy. [00:00:03]\n\n**Action items**\n- **Sarah** sends the guide on Friday at 09:30.',summary:''};
     Object.assign(window,{isTauri:true,__exports:[],__TAURI_INTERNALS__:{transformCallback:()=>1,invoke:async(command:string,args:{action?:string;payload?:unknown})=>{
       if(command.startsWith('plugin:event'))return 1;
       if(command==='plugin:dialog|save')return '/tmp/Meeting notes.docx';
@@ -11,8 +11,11 @@ test('meeting notes render normally and copy as rich text or Markdown',async({pa
     }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
   });
   await page.goto('/');await page.getByRole('button',{name:'Workshop planning',exact:false}).click();
-  await page.getByRole('button',{name:'Summary',exact:true}).click();
+  // A recording opens on its notes: the person's own lines as typed, then the summary.
   await expect(page.getByRole('heading',{name:'Meeting notes.',exact:true})).toBeVisible();
+  await expect(page.locator('.meeting-notes p').first()).toHaveText('Ask about the venue.10:30:00 room booked');
+  await expect(page.locator('.meeting-notes p').first().locator('br')).toHaveCount(1);
+  await expect(page.getByRole('heading',{name:'Summary',exact:true,level:2})).toBeVisible();
   await expect(page.getByRole('heading',{name:'Overview',exact:true})).toBeVisible();
   await expect(page.getByRole('heading',{name:'Action items',exact:true})).toBeVisible();
   await expect(page.locator('.meeting-notes li')).toHaveText('Sarah sends the guide on Friday at 09:30.');
@@ -25,12 +28,13 @@ test('meeting notes render normally and copy as rich text or Markdown',async({pa
     return {plain:await(await item.getType('text/plain')).text(),html:await(await item.getType('text/html')).text()};
   });
   expect(copied.plain).toContain('• Sarah sends the guide on Friday at 09:30.');expect(copied.plain).not.toMatch(/\*\*|##|\[00:00:03\]/);
+  expect(copied.plain.startsWith('Ask about the venue.\n10:30:00 room booked\n\nSummary')).toBeTruthy();
   expect(copied.html).toContain('<h3');expect(copied.html).toContain('<strong>Sarah</strong>');
   await expect(page.getByRole('button',{name:'Word document'})).toHaveCount(0);
   await page.getByRole('button',{name:'Copy Markdown',exact:true}).click();
   await expect(page.getByRole('status')).toContainText('Markdown copied');
   const markdown=await page.evaluate(async()=>{const items=await navigator.clipboard.read();return {types:items[0].types,text:await navigator.clipboard.readText()};});
-  expect(markdown.text).toBe('## Overview\n\nThe workshop covers privacy.\n\n## Action items\n\n- **Sarah** sends the guide on Friday at 09:30.');
+  expect(markdown.text).toBe('Ask about the venue.\n10:30:00 room booked\n\n# Summary\n\n## Overview\n\nThe workshop covers privacy.\n\n## Action items\n\n- **Sarah** sends the guide on Friday at 09:30.');
   expect(markdown.types).not.toContain('text/html');
   await page.setViewportSize({width:900,height:720});expect(await page.locator('.meeting-notes').evaluate(element=>element.scrollWidth<=element.clientWidth)).toBeTruthy();
   await page.screenshot({path:'test-results/meeting-notes.png',fullPage:true});
@@ -74,9 +78,86 @@ for(const choice of ['e2b','e4b','none'] as const){
   });
 }
 
+test('one notes page: typed in the studio, edited later, a summary added below without losing typing',async({page})=>{
+  await page.addInitScript(()=>{
+    const w=window as unknown as {__notes:Record<string,string>;__calls:{action:string;payload:Record<string,unknown>}[];__capture:unknown;__segments:unknown[]};
+    w.__notes={rec:''};w.__calls=[];w.__capture={meeting_id:'rec',elapsed_ms:60000,paused:false,failed:false,levels:[0,0]};w.__segments=[];
+    const meeting=()=>({id:'rec',title:'Check-in',created_at:1,duration_ms:60000,status:'ready',notes:w.__notes.rec,summary:''});
+    Object.assign(window,{isTauri:true,__TAURI_INTERNALS__:{transformCallback:()=>1,invoke:async(command:string,args:{action?:string;payload?:Record<string,unknown>})=>{
+      if(command.startsWith('plugin:event'))return 1;
+      const payload=args?.payload||{};
+      if(['update','enqueue','stop'].includes(args?.action||''))w.__calls.push({action:args!.action!,payload});
+      switch(args?.action){case 'library':return [meeting()];case 'jobs':case 'devices':return [];case 'status':return w.__capture;case 'runtime_status':return {inference:true,whisper:true,llama:true,disk_free_bytes:1e10};
+        case 'models':return {models:[{id:'whisper',present:true},{id:'embedding',present:true},{id:'summary_e2b',present:true}]};case 'settings':return {summary_style:'counselling'};
+        case 'detail':return {meeting:meeting(),tracks:[],segments:w.__segments};
+        case 'stop':w.__capture=null;w.__segments=[{id:1,meeting_id:'rec',start_ms:0,end_ms:3000,source:'mic',text:'I feel isolated at school.'}];return null;
+        case 'update':{
+          // As the host does: keep anything added after the notes the page started from.
+          const current=w.__notes.rec,from=payload.notes_base as string;let notes=payload.notes as string;
+          if(current!==from&&current.startsWith(from))notes+=current.slice(from.length);
+          w.__notes.rec=notes;return {notes};}
+        default:return null;}
+    }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
+  });
+  const calls=()=>page.evaluate(()=>(window as unknown as {__calls:{action:string;payload:Record<string,unknown>}[]}).__calls);
+  await page.goto('/');
+  await page.getByRole('navigation').getByRole('button',{name:'New recording',exact:true}).click();
+  const pad=page.getByLabel('Notes for this recording',{exact:true});
+  await pad.fill('Feels isolated\n- follow up with school');
+  await expect.poll(async()=>(await calls()).filter(c=>c.action==='update').at(-1)?.payload).toEqual({id:'rec',notes:'Feels isolated\n- follow up with school',notes_base:''});
+  await page.screenshot({path:'test-results/studio-notes.png'});
+  // Stop opens the recording on its notes, as typed.
+  await page.getByRole('button',{name:'Stop recording',exact:true}).first().click();
+  await expect(page.getByRole('heading',{name:'Session notes.',exact:true})).toBeVisible();
+  await expect(page.locator('.notes-panel .meeting-notes')).toContainText('Feels isolated');
+  await expect(page.locator('.notes-panel .meeting-notes li')).toHaveText('follow up with school');
+  // Edit, then Summarise: what was typed is saved before the summary is asked for.
+  await page.getByRole('button',{name:'Edit',exact:true}).click();
+  const editor=page.getByLabel('Notes',{exact:true});
+  await expect(editor).toBeFocused();
+  await editor.press('End');await editor.pressSequentially('\nMum to call Friday');
+  await page.getByRole('button',{name:'Summarise',exact:true}).click();
+  await expect.poll(async()=>(await calls()).filter(c=>['update','enqueue'].includes(c.action)).slice(-2).map(c=>c.action)).toEqual(['update','enqueue']);
+  await expect.poll(()=>page.evaluate(()=>(window as unknown as {__notes:Record<string,string>}).__notes.rec)).toBe('Feels isolated\n- follow up with school\nMum to call Friday');
+  // The summary lands below while the person keeps typing; neither is lost.
+  await editor.click();await editor.press('Control+End');await editor.pressSequentially('\nShe smiled at the end');
+  await page.evaluate(()=>{const w=window as unknown as {__notes:Record<string,string>};w.__notes.rec+='\n\n# Summary\n\n## Main concerns\n• Feeling isolated at school.';});
+  await expect(editor).toHaveValue('Feels isolated\n- follow up with school\nMum to call Friday\nShe smiled at the end\n\n# Summary\n\n## Main concerns\n• Feeling isolated at school.',{timeout:8000});
+  await page.getByRole('button',{name:'Done',exact:true}).click();
+  await expect.poll(()=>page.evaluate(()=>(window as unknown as {__notes:Record<string,string>}).__notes.rec)).toBe('Feels isolated\n- follow up with school\nMum to call Friday\nShe smiled at the end\n\n# Summary\n\n## Main concerns\n• Feeling isolated at school.');
+  await expect(page.getByRole('heading',{name:'Summary',exact:true,level:2})).toBeVisible();
+  await expect(page.getByRole('heading',{name:'Main concerns',exact:true})).toBeVisible();
+  await page.screenshot({path:'test-results/notes-page.png',fullPage:true});
+});
+
+test('typing into empty notes keeps the editor open, and the page shows they are saved',async({page})=>{
+  await page.addInitScript(()=>{
+    const w=window as unknown as {__notes:string};w.__notes='';
+    const meeting=()=>({id:'empty',title:'Quiet check-in',created_at:1,duration_ms:60000,status:'ready',notes:w.__notes,summary:''});
+    Object.assign(window,{isTauri:true,__TAURI_INTERNALS__:{transformCallback:()=>1,invoke:async(command:string,args:{action?:string;payload?:Record<string,unknown>})=>{
+      if(command.startsWith('plugin:event'))return 1;
+      switch(args?.action){case 'library':return [meeting()];case 'jobs':case 'devices':return [];case 'status':return null;case 'runtime_status':return {inference:true,whisper:true,llama:true,disk_free_bytes:1e10};
+        case 'models':return {models:[{id:'whisper',present:true},{id:'embedding',present:true},{id:'summary_e2b',present:true}]};case 'settings':return {summary_style:'meeting'};
+        case 'detail':return {meeting:meeting(),tracks:[],segments:[]};
+        case 'update':w.__notes=args!.payload!.notes as string;return {notes:w.__notes};
+        default:return null;}
+    }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
+  });
+  await page.goto('/');await page.getByRole('button',{name:'Quiet check-in',exact:false}).click();
+  const editor=page.getByLabel('Notes',{exact:true});
+  await editor.click();await editor.pressSequentially('First line');
+  // Past the save: the person is still typing in the same field.
+  await expect.poll(()=>page.evaluate(()=>(window as unknown as {__notes:string}).__notes)).toBe('First line');
+  await expect(editor).toBeFocused();await expect(editor).toHaveValue('First line');
+  await expect(page.getByRole('button',{name:'Copy notes',exact:true})).toBeVisible();
+  await page.getByRole('button',{name:'Done',exact:true}).click();
+  await expect(page.locator('.notes-panel .meeting-notes p')).toHaveText('First line');
+  await expect(page.getByRole('button',{name:'Edit',exact:true})).toBeVisible();
+});
+
 test('summary style defaults to counselling and custom instructions are saved',async({page})=>{
   await page.addInitScript(()=>{
-    const meeting={id:'s',title:'Untitled recording',created_at:1,duration_ms:60000,status:'ready',notes:'',summary:'## Main concerns\n• Feeling isolated at school.'};
+    const meeting={id:'s',title:'Untitled recording',created_at:1,duration_ms:60000,status:'ready',notes:'# Summary\n\n## Main concerns\n• Feeling isolated at school.',summary:''};
     Object.assign(window,{isTauri:true,__calls:[],__TAURI_INTERNALS__:{transformCallback:()=>1,invoke:async(command:string,args:{action?:string;payload?:unknown})=>{
       if(command.startsWith('plugin:event'))return 1;
       if(args?.action==='save_settings')(window as unknown as {__calls:unknown[]}).__calls.push(args.payload);
@@ -84,13 +165,12 @@ test('summary style defaults to counselling and custom instructions are saved',a
     }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
   });
   await page.goto('/');await page.getByRole('button',{name:'Untitled recording',exact:false}).click();
-  await page.getByRole('button',{name:'Summary',exact:true}).click();
   await expect(page.getByRole('heading',{name:'Session notes.',exact:true})).toBeVisible();
   await expect(page.getByRole('heading',{name:'Main concerns',exact:true})).toBeVisible();
   await expect(page.locator('.meeting-notes')).not.toContainText('##');
   // Progress lives in the top bar, not in a panel below the page.
   await page.getByRole('button',{name:'Summarise',exact:true}).click();
-  await expect(page.getByRole('status')).toHaveText('Summary queued. Its progress shows at the top; click it to cancel.');
+  await expect(page.getByRole('status')).toHaveText('Summary queued. It will be added below your notes; its progress shows at the top.');
   await page.getByRole('button',{name:'Settings',exact:true}).click();
   const style=page.getByLabel('Summary style',{exact:true});
   await expect(style).toHaveValue('counselling');await expect(page.getByText('No diagnosis, labels or advice',{exact:false})).toBeVisible();
@@ -219,6 +299,7 @@ test('progress stays visible at the top while scrolling a long transcript',async
   });
   await page.setViewportSize({width:900,height:720});
   await page.goto('/');await page.getByRole('button',{name:'Long conversation',exact:false}).click();
+  await page.getByRole('button',{name:'Transcript',exact:true}).click();
   const chip=page.locator('.activity-chip');
   await expect(chip).toContainText('Creating summary · 40%');await expect(chip).toContainText('+1 more');
   await page.evaluate(()=>window.scrollTo(0,document.body.scrollHeight));
@@ -275,6 +356,10 @@ test('nothing is transcribed while recording; the transcript is written after St
   await expect(chip).toHaveText('Transcribing · 40%');
   await page.getByRole('button',{name:/All recordings/}).click();
   await page.getByText('Team call').first().click();
+  // It opens on its notes, which say the transcript is on its way and hold Summarise until it is done.
+  await expect(page.getByText('Writing the transcript… 40%. Summarise works once it is done.')).toBeVisible();
+  await expect(page.getByRole('button',{name:'Summarise',exact:true})).toBeDisabled();
+  await page.getByRole('button',{name:'Transcript',exact:true}).click();
   await expect(page.getByText('Writing the transcript… 40%. Rows appear as each part is finished.')).toBeVisible();
   await expect(page.getByLabel('Transcription progress')).toHaveAttribute('value','0.4');
   await expect(page.getByRole('button',{name:'Transcribe this recording'})).toHaveCount(0);
@@ -419,8 +504,8 @@ test('continuous playback advances across stored audio chunks and seeks globally
   await page.getByRole('button',{name:'Play recording',exact:true}).click();
   await expect.poll(()=>page.locator('audio').getAttribute('src')).toContain('second.wav');
   await page.getByLabel('Recording timeline').fill('300');await expect.poll(()=>page.locator('audio').getAttribute('src')).toContain('first.wav');
-  await page.getByRole('button',{name:'Summary',exact:true}).click();
-  await expect(page.getByText('This saved summary is an unfinished draft.',{exact:false})).toBeVisible();
+  await page.getByRole('button',{name:'Notes',exact:true}).click();
+  await expect(page.getByLabel('Notes',{exact:true})).toHaveValue('');
   await expect(page.getByText('Thinking Process: private draft from an old build',{exact:false})).toHaveCount(0);
   await expect(page.getByRole('button',{name:'Export',exact:true})).toHaveCount(0);
 });
