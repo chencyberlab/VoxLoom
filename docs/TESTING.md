@@ -18,6 +18,17 @@ Meaningful unit checks cover pause-aligned chunk planning, skipped-speech retrie
 
 Version 0.1.1 added a first-run 1B/E2B summary selector. Six browser tests pass, including the request payload, displayed estimate and locked selection during setup for 1B, E2B and no summaries. These use an explicitly mocked bridge, without downloading models. A separate Rust regression executes the real offline provisioning script with tiny SHA-256-checked fixture files and a stubbed runtime readiness probe. It verifies core plus only the chosen summary model, saved E2B selection after success, core-only setup, missing-summary failure without changing the saved selection, and rejection of an unknown profile. Native checks on the final 0.1.1 package also passed launch, compact/expand and Quit, with all three observed processes released. The setup action remains fully visible at 900×720 in the browser checks. No user library or installed app data is reset during updates.
 
+## Version 0.1.24: fix from the review of 0.1.23
+
+Tested on a 4-core cloud VM (Ubuntu 24.04, no audio devices).
+
+Validation:
+- Host (`an_interrupted_recording_is_ready_once_its_transcription_completes`): a library holds an `interrupted` recording with two registered files and a queued transcription. A stand-in worker in the test's resources folder reports each file as 12,000 ms long and exits well, so the scheduler runs the whole path: start, ingest, completion. The job completes, the recording's length becomes 42,000 ms (30,000 ms offset plus the second file) and its status `ready`. A second interrupted recording whose transcription was cancelled stays `interrupted` at 0 ms. On 0.1.23 the same test fails with `interrupted 42000`: the length was restored but the status never changed.
+- Recovery of interrupted recordings (`interrupted_recordings_resume_transcription_and_regain_their_length`), the stranded-recording query, start-over and retry, the capture scheduler and the queue cap keep their tests.
+- Native (Xvfb, debug build, `scripts/native-smoke.py`): launch, floating recorder and back, Quit with exit code 0, all 4 observed processes released; idle single-webview peak 672,692 KiB. The sidebar shows 0.1.24.
+- Fast set: 50 Python checks, 34 Rust unit checks plus the offline setup integration check, 19 browser checks (the tour skipped without `TOUR_OUT`), TypeScript/privacy/version, and clippy for desktop and the Windows target.
+- Read, not run: Windows recording (`audio/wasapi.rs`, `audio/pcm.rs`), the installer hooks and the update check against GitHub; this environment has no Windows machine, audio device or desktop session.
+
 ## Version 0.1.23: one notes page; fixes from the review of 0.1.22 (issue #8)
 
 Tested on a 4-core cloud VM (Ubuntu 24.04, no audio devices) and on GitHub's Windows Server 2025 machines.
