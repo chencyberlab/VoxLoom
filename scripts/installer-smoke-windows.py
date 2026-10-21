@@ -114,7 +114,10 @@ for mode, folder, root, start_menu in MODES:
 
         def left():
             paths = [folder, start_menu / "VoxLoom.lnk", *desktops, roaming / "org.voxloom.desktop"]
-            paths += [data] if delete_data else [data / part for part in REMOVED]
+            # The folders it removes, not a file in them: the real browser
+            # profile the launch left in EBWebView takes a while to delete,
+            # and the folder outlived the planted file in one run.
+            paths += [data] if delete_data else sorted({data / Path(part).parts[0] for part in REMOVED})
             keys = {"uninstall entry": (root, UNINSTALL), "remembered location": (root, REMEMBERED),
                     "installer language": (winreg.HKEY_CURRENT_USER, REMEMBERED),
                     "microphone record": (winreg.HKEY_CURRENT_USER, microphone)}
