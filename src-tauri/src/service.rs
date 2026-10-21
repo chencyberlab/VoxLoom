@@ -672,6 +672,73 @@ mod tests {
         assert_eq!(duration("done"), 5000);
         service.shutdown();
     }
+
+    /// A recording cut short by a crash is "interrupted" until its recovery
+    /// transcription completes; then the library lists it like any other.
+    /// A stand-in worker reports each file's length and exits well, so the
+    /// whole scheduler path runs: start, ingest, completion.
+    #[test]
+    fn an_interrupted_recording_is_ready_once_its_transcription_completes() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(temp.path().join("worker")).unwrap();
+        fs::write(
+            temp.path().join("worker/engine.py"),
+            r#"import json, sys
+args = sys.argv
+with open(args[args.index("--request") + 1], encoding="utf-8") as f:
+    request = json.load(f)
+with open(args[args.index("--response") + 1], "w", encoding="utf-8") as out:
+    for track in request["tracks"]:
+        out.write(json.dumps({"type": "track_duration", "track_id": track["id"], "duration_ms": 12000}) + "\n")
+"#,
+        )
+        .unwrap();
+        let service = Service::open(
+            temp.path().join("data"),
+            temp.path().join("cache"),
+            temp.path().into(),
+            Arc::new(|_| {}),
+        )
+        .unwrap();
+        let python = service.python();
+        if !Path::new(&python).is_file() && !platform::on_path(&python) {
+            eprintln!("SKIPPED: no Python to run the stand-in worker");
+            service.shutdown();
+            return;
+        }
+        fs::write(temp.path().join("data/models/ggml-base.en.bin"), b"base").unwrap();
+        let _busy = service.inference.lock().unwrap();
+        let job = {
+            let db = service.db.lock().unwrap();
+            db.create("lost", DEFAULT_TITLE, 0, "interrupted").unwrap();
+            db.add_track("lost", &temp.path().join("s0000-mic-000000.flac"), "mic", 0).unwrap();
+            db.add_track("lost", &temp.path().join("s0000-mic-000001.flac"), "mic", 30000).unwrap();
+            // A recording whose transcription was cancelled is not touched.
+            db.create("kept", DEFAULT_TITLE, 0, "interrupted").unwrap();
+            db.add_track("kept", &temp.path().join("kept.flac"), "mic", 0).unwrap();
+            let cancelled = db.enqueue("kept", "transcribe").unwrap();
+            db.job_status(&cancelled, "cancelled", 0., None).unwrap();
+            db.enqueue("lost", "transcribe").unwrap()
+        };
+        drop(_busy);
+        let status = |sql: &str, id: &str| -> String {
+            service.db.lock().unwrap().conn.query_row(sql, [id], |r| r.get(0)).unwrap()
+        };
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while ["pending", "running"].contains(&status("SELECT status FROM jobs WHERE id=?", &job).as_str()) {
+            assert!(Instant::now() < deadline, "the transcription did not run");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert_eq!(
+            status("SELECT status||' '||COALESCE(error,'') FROM jobs WHERE id=?", &job).trim(),
+            "completed"
+        );
+        let meeting = |id: &str| status("SELECT status||' '||duration_ms FROM meetings WHERE id=?", id);
+        assert_eq!(meeting("lost"), "ready 42000");
+        assert_eq!(meeting("kept"), "interrupted 0");
+        assert_eq!(transcriptions(&service, "lost", Some("completed")), 1);
+        service.shutdown();
+    }
 }
 fn text<'a>(v: &'a Value, key: &str) -> Result<&'a str> {
     v[key].as_str().ok_or_else(|| format!("Missing {key}"))
@@ -1142,6 +1209,16 @@ impl Service {
                     // (start-up recovery) still needs its own pass.
                     if remaining > 0 {
                         let _ = db.enqueue(&meeting, "transcribe");
+                    } else if kind == "transcribe" {
+                        // A recording cut short by a crash is whole again:
+                        // its files are registered, its length restored from
+                        // them (`ingest`, track_duration) and its words
+                        // written. Without this it stayed "interrupted" in
+                        // the library for good.
+                        let _ = db.conn.execute(
+                            "UPDATE meetings SET status='ready' WHERE id=? AND status='interrupted'",
+                            [&meeting],
+                        );
                     }
                     if !recording
                         && remaining == 0
