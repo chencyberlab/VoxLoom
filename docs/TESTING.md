@@ -22,11 +22,15 @@ Version 0.1.1 added a first-run 1B/E2B summary selector. Six browser tests pass,
 
 Tested on a 4-core cloud VM (Ubuntu 24.04, no audio devices).
 
+Issue #10 (review of bbcc741) and the first Apps run:
+- Start-up repair (`interrupted_recordings_resume_transcription_and_regain_their_length`): an `interrupted` recording whose files are all read and whose checkpoint holds no unfinished sentence, the row 0.1.23 leaves after a recovery pass, is `ready` after reopening and gets no new transcription. One with an unfinished sentence stays `interrupted` with its pass queued; one whose folder holds no audio stays `interrupted` with nothing queued. Without the repair the test fails.
+- The first Apps run on bbcc741 failed in the Windows installer check: after closing the per-machine install, `native-smoke-windows.py` reported `vctip.exe` still running. That is the Visual C++ build tools' telemetry helper, left by the compile step (GitHub's job cleanup ends it as an orphan in every Windows job), not a VoxLoom process. Windows keeps an exited parent's id in its children and reuses ids, so the orphan of an exited linker looked like a child of a VoxLoom process that got the linker's old id. The check now counts a process only if it started after the app, and after its parent while that parent still runs.
+
 Validation:
 - Host (`an_interrupted_recording_is_ready_once_its_transcription_completes`): a library holds an `interrupted` recording with two registered files and a queued transcription. A stand-in worker in the test's resources folder reports each file as 12,000 ms long and exits well, so the scheduler runs the whole path: start, ingest, completion. The job completes, the recording's length becomes 42,000 ms (30,000 ms offset plus the second file) and its status `ready`. A second interrupted recording whose transcription was cancelled stays `interrupted` at 0 ms. On 0.1.23 the same test fails with `interrupted 42000`: the length was restored but the status never changed.
 - Recovery of interrupted recordings (`interrupted_recordings_resume_transcription_and_regain_their_length`), the stranded-recording query, start-over and retry, the capture scheduler and the queue cap keep their tests.
 - Native (Xvfb, debug build, `scripts/native-smoke.py`): launch, floating recorder and back, Quit with exit code 0, all 4 observed processes released; idle single-webview peak 672,692 KiB. The sidebar shows 0.1.24.
-- Fast set: 50 Python checks, 34 Rust unit checks plus the offline setup integration check, 19 browser checks (the tour skipped without `TOUR_OUT`), TypeScript/privacy/version, and clippy for desktop and the Windows target.
+- Fast set (with the repair): 50 Python checks, 34 Rust unit checks plus the offline setup integration check, 19 browser checks (the tour skipped without `TOUR_OUT`), TypeScript/privacy/version, and clippy for desktop and the Windows target.
 - Read, not run: Windows recording (`audio/wasapi.rs`, `audio/pcm.rs`), the installer hooks and the update check against GitHub; this environment has no Windows machine, audio device or desktop session.
 
 ## Version 0.1.23: one notes page; fixes from the review of 0.1.22 (issue #8)

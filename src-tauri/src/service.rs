@@ -618,9 +618,11 @@ mod tests {
             db.create("lost", DEFAULT_TITLE, 0, "recording").unwrap();
             db.create("done", DEFAULT_TITLE, 5000, "ready").unwrap();
             db.add_track("done", &temp.path().join("s0000-mic-000000.flac"), "mic", 0).unwrap();
-            for id in ["half", "clean"] {
+            for id in ["half", "clean", "empty"] {
                 fs::create_dir_all(temp.path().join("data/recordings").join(id)).unwrap();
             }
+            // Cut off before its first file: nothing to transcribe or to call whole.
+            db.create("empty", DEFAULT_TITLE, 0, "interrupted").unwrap();
             // Every file was read, but the last pass carried an unfinished sentence.
             db.create("half", DEFAULT_TITLE, 0, "interrupted").unwrap();
             db.add_track("half", &temp.path().join("half.flac"), "mic", 0).unwrap();
@@ -656,6 +658,15 @@ mod tests {
         assert_eq!(transcriptions(&service, "half", None), 1);
         assert_eq!(transcriptions(&service, "clean", None), 0);
         assert_eq!(transcriptions(&service, "done", None), 0);
+        // Already whole (as 0.1.23 left it): listed as ready, with no new pass.
+        // Still owed work, or no audio at all, stays interrupted.
+        let status = |id: &str| -> String {
+            service.db.lock().unwrap().conn.query_row("SELECT status FROM meetings WHERE id=?", [id], |r| r.get(0)).unwrap()
+        };
+        assert_eq!(status("clean"), "ready");
+        assert_eq!(status("half"), "interrupted");
+        assert_eq!(status("empty"), "interrupted");
+        assert_eq!(transcriptions(&service, "empty", None), 0);
         assert_eq!(transcriptions(&service, "stranded", None), 1);
         assert_eq!(transcriptions(&service, "cancelled", None), 1);
         // It resumes: the checkpoint and its unfinished sentence are still there.
@@ -896,6 +907,13 @@ impl Service {
                 .map_err(err)?;
             if owed > 0 && self.whisper_model(&db).is_file() {
                 let _ = db.enqueue(&meeting.id, "transcribe");
+            } else if owed == 0 && !db.tracks(&meeting.id)?.is_empty() {
+                // Every file read and every sentence written, by a pass that
+                // never set the status back (0.1.23) or by one whose host
+                // stopped just after it completed: the recording is whole.
+                db.conn
+                    .execute("UPDATE meetings SET status='ready' WHERE id=? AND status='interrupted'", [&meeting.id])
+                    .map_err(err)?;
             }
         }
         // A finished recording whose pass began but never completed, with no

@@ -46,11 +46,31 @@ def processes():
     return found
 
 
+def created(pid):
+    """When the process started (FILETIME ticks), or None if it cannot be read."""
+    handle = kernel32.OpenProcess(0x1000, False, pid)
+    if not handle:
+        return None
+    times = [wintypes.FILETIME() for _ in range(4)]
+    ok = kernel32.GetProcessTimes(handle, *[ctypes.byref(t) for t in times])
+    kernel32.CloseHandle(handle)
+    return (times[0].dwHighDateTime << 32 | times[0].dwLowDateTime) if ok else None
+
+
 def descendants(root):
+    # Windows keeps an exited parent's id in its children, and reuses ids: a
+    # build tool's orphan (vctip.exe) once looked like a child of a worker that
+    # got its dead parent's id. A real child starts after the app, and after
+    # its parent while that parent still runs.
     table = processes()
     found = {root}
+    start = created(root)
     for _ in range(8):
-        found |= {pid for pid, (parent, _) in table.items() if parent in found}
+        for pid, (parent, _) in table.items():
+            if pid not in found and parent in found:
+                born, parent_born = created(pid), created(parent)
+                if born is not None and start is not None and born >= start and (parent_born is None or born >= parent_born):
+                    found.add(pid)
     return {pid: table[pid][1] for pid in found if pid in table}
 
 
