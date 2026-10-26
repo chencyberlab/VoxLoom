@@ -61,6 +61,7 @@ async fn dispatch(
         return Ok(serde_json::Value::Null);
     }
     let s = service.inner().clone();
+    let playback = action == "playback";
     let result = tauri::async_runtime::spawn_blocking(move || {
         s.dispatch(&action, payload.unwrap_or(serde_json::Value::Null))
     })
@@ -76,7 +77,31 @@ async fn dispatch(
             }
         }
     }
+    if playback {
+        if let Some(path) = result["path"].as_str() {
+            app.asset_protocol_scope()
+                .allow_file(path)
+                .map_err(|e| e.to_string())?;
+        }
+    }
     Ok(result)
+}
+/// A track's playback file, for a webview that cannot stream it from asset:
+/// (WebKitGTK's media player opens only schemes GStreamer knows). Only tracks
+/// in the library, looked up by id, as the `playback` action resolves them.
+#[tauri::command]
+async fn playback_bytes(
+    service: tauri::State<'_, Arc<Service>>,
+    id: String,
+) -> Result<tauri::ipc::Response, String> {
+    let s = service.inner().clone();
+    let bytes = tauri::async_runtime::spawn_blocking(move || {
+        let found = s.dispatch("playback", serde_json::json!({ "id": id }))?;
+        std::fs::read(found["path"].as_str().unwrap_or_default()).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    Ok(tauri::ipc::Response::new(bytes))
 }
 /// The window is created transparent for the floating recorder, which leaves the
 /// webview see-through until the page paints. The studio keeps the configured colour.
@@ -113,7 +138,7 @@ fn main() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![dispatch])
+        .invoke_handler(tauri::generate_handler![dispatch, playback_bytes])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();

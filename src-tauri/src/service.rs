@@ -171,6 +171,57 @@ mod tests {
     }
 
     #[test]
+    fn capture_segments_play_from_a_decoded_copy_that_goes_with_the_recording() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = Service::open(
+            temp.path().join("data"),
+            temp.path().join("cache"),
+            temp.path().into(),
+            Arc::new(|_| {}),
+        )
+        .unwrap();
+        let (first, second) = (db::id(), db::id());
+        let folder = temp.path().join("data/recordings").join(&first);
+        fs::create_dir_all(&folder).unwrap();
+        // Capture's own segment muxing: later files' frames keep their place in the stream.
+        assert!(process::hidden("ffmpeg")
+            .args(["-nostdin", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=3", "-ar", "16000", "-ac", "1",
+                   "-c:a", "flac", "-f", "segment", "-segment_time", "1", "-reset_timestamps", "1"])
+            .arg(folder.join("s0000-mic-%06d.flac"))
+            .status()
+            .unwrap()
+            .success());
+        fs::write(folder.join("original.flac"), b"imported").unwrap();
+        let tracks = {
+            let db = service.db.lock().unwrap();
+            db.create(&first, "Fixture", 3000, "ready").unwrap();
+            db.create(&second, "Other", 3000, "ready").unwrap();
+            db.add_track(&first, &folder.join("s0000-mic-000001.flac"), "mic", 1000).unwrap();
+            db.add_track(&second, &folder.join("original.flac"), "imported", 0).unwrap();
+            [db.tracks(&first).unwrap()[0].id.clone(), db.tracks(&second).unwrap()[0].id.clone()]
+        };
+        let play = |id: &str| PathBuf::from(service.dispatch("playback", json!({"id":id})).unwrap()["path"].as_str().unwrap());
+        let copy = play(&tracks[0]);
+        assert_eq!(copy, temp.path().join("cache/playback").join(&first).join(format!("{}.wav", tracks[0])));
+        let wav = fs::read(&copy).unwrap();
+        assert!(wav.starts_with(b"RIFF") && wav.len() > 44 + 16000 * 2 * 9 / 10, "{}", wav.len());
+        let made = fs::metadata(&copy).unwrap().modified().unwrap();
+        assert_eq!(play(&tracks[0]), copy);
+        assert_eq!(fs::metadata(&copy).unwrap().modified().unwrap(), made, "an unchanged segment is decoded once");
+        // An import is one ordinary file and plays as it is; only the open recording's copies stay.
+        assert_eq!(play(&tracks[1]), folder.join("original.flac"));
+        assert!(copy.exists());
+        service.db.lock().unwrap().add_track(&second, &folder.join("s0000-mic-000002.flac"), "mic", 2000).unwrap();
+        let other = service.db.lock().unwrap().tracks(&second).unwrap().into_iter().find(|t| t.source == "mic").unwrap().id;
+        assert!(play(&other).exists());
+        assert!(!copy.exists() && !temp.path().join("cache/playback").join(&first).exists());
+        service.dispatch("delete", json!({"id":second})).unwrap();
+        assert!(!temp.path().join("cache/playback").join(&second).exists());
+        assert!(service.dispatch("playback", json!({"id":"gone"})).is_err());
+        service.shutdown();
+    }
+
+    #[test]
     fn summary_title_replaces_only_the_default_name() {
         let temp = tempfile::tempdir().unwrap();
         let service = Service::open(
@@ -819,7 +870,7 @@ impl Service {
         for entry in fs::read_dir(&cache).map_err(err)? {
             let path = entry.map_err(err)?.path();
             let name = path.file_name().unwrap().to_string_lossy();
-            if path.is_dir() && (name.starts_with("request-") || name.starts_with("job-")) {
+            if path.is_dir() && (name.starts_with("request-") || name.starts_with("job-") || name == "playback") {
                 fs::remove_dir_all(path).map_err(err)?;
             }
         }
@@ -1831,6 +1882,7 @@ impl Service {
                 Ok(Value::Null)
             }
             "delete" => self.delete(text(&p, "id")?),
+            "playback" => self.playback(text(&p, "id")?),
             "export" => self.export(&p),
             _ => Err("Unknown application command".into()),
         }
@@ -2321,6 +2373,8 @@ impl Service {
             let _ = fs::rename(&trash, &folder);
             return Err(err(e));
         }
+        // Decoded copies for playback go with the recording (start-up clears any left).
+        let _ = fs::remove_dir_all(self.cache.join("playback").join(id));
         if trash.exists() {
             // Windows can keep a just-closed file locked for a moment; the
             // recording is already gone from the library, and the next start
@@ -2332,6 +2386,56 @@ impl Service {
             }
         }
         Ok(Value::Null)
+    }
+    /// The file the webview plays for one track. A capture segment's FLAC
+    /// frames carry their position in the whole recording and its header no
+    /// length: WebKitGTK cannot seek in it, and both webviews ran its clock
+    /// from that position instead of zero. It is decoded to WAV in the private
+    /// cache, reused until the segment changes. Only the open recording's
+    /// copies are kept; deleting the recording deletes them too.
+    fn playback(&self, id: &str) -> Result<Value> {
+        let (meeting, path): (String, String) = self
+            .db
+            .lock()
+            .unwrap()
+            .conn
+            .query_row("SELECT meeting_id,path FROM audio_tracks WHERE id=?", [id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .optional()
+            .map_err(err)?
+            .ok_or("This audio is no longer in the library")?;
+        let source = PathBuf::from(&path);
+        let name = source.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if !(name.starts_with('s') && (name.contains("-mic-") || name.contains("-system-")) && name.ends_with(".flac")) {
+            return Ok(json!({"path":path}));
+        }
+        let folder = self.cache.join("playback");
+        for entry in fs::read_dir(&folder).into_iter().flatten().flatten() {
+            if entry.file_name().to_string_lossy() != meeting {
+                let _ = fs::remove_dir_all(entry.path());
+            }
+        }
+        let target = folder.join(&meeting).join(format!("{id}.wav"));
+        let modified = |p: &Path| p.metadata().and_then(|m| m.modified()).ok();
+        if modified(&target) < modified(&source) || !target.is_file() {
+            private_dir(target.parent().unwrap())?;
+            let part = target.with_extension("part");
+            let status = process::hidden("ffmpeg")
+                .args(["-nostdin", "-protocol_whitelist", "file,pipe", "-v", "error", "-y", "-i"])
+                .arg(&source)
+                .args(["-vn", "-c:a", "pcm_s16le", "-f", "wav"])
+                .arg(&part)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .map_err(err)?;
+            if !status.success() {
+                let _ = fs::remove_file(&part);
+                return Err("This part of the recording could not be read for playback.".into());
+            }
+            fs::rename(&part, &target).map_err(err)?;
+        }
+        Ok(json!({"path":target}))
     }
     fn export(&self, p: &Value) -> Result<Value> {
         let db = self.db.lock().unwrap();

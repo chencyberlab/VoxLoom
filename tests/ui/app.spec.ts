@@ -290,6 +290,28 @@ test('accurate transcription is an explicit download and setting',async({page})=
   await expect.poll(async()=>(await calls()).find(c=>c.action==='setup')?.payload).toMatchObject({mode:'download',model:'parakeet'});
 });
 
+test('each part plays from the host\'s copy, from memory when the webview cannot stream it',async({page})=>{
+  // WebKitGTK refuses media from asset: (MEDIA_ERR_SRC_NOT_SUPPORTED); an unreadable response stands in for that here.
+  await page.addInitScript(()=>{
+    const meeting={id:'fixture',title:'Playback fixture',created_at:1,duration_ms:1000,status:'ready',notes:'',summary:''};
+    const tracks=[{id:'one',meeting_id:'fixture',source:'mic',path:'/data/recordings/fixture/s0000-mic-000000.flac',offset_ms:0}];
+    const wav=new Uint8Array(44+32000);const view=new DataView(wav.buffer);const text=(at:number,value:string)=>[...value].forEach((c,i)=>{wav[at+i]=c.charCodeAt(0);});
+    text(0,'RIFF');view.setUint32(4,wav.length-8,true);text(8,'WAVEfmt ');view.setUint32(16,16,true);view.setUint16(20,1,true);view.setUint16(22,1,true);view.setUint32(24,16000,true);view.setUint32(28,32000,true);view.setUint16(32,2,true);view.setUint16(34,16,true);text(36,'data');view.setUint32(40,32000,true);
+    const calls:unknown[]=[];
+    Object.assign(window,{isTauri:true,__calls:calls,__TAURI_INTERNALS__:{transformCallback:()=>1,convertFileSrc:(path:string)=>`/fixtures/${path.split('/').pop()}`,invoke:async(command:string,args:{action?:string;payload?:{id?:string};id?:string})=>{
+      if(command.startsWith('plugin:event'))return 1;
+      if(command==='playback_bytes'){calls.push(['bytes',args.id]);return wav.buffer.slice(0);}
+      switch(args?.action){case 'library':return [meeting];case 'jobs':return [];case 'status':return null;case 'runtime_status':return {inference:true,whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models:[{id:'whisper',present:true},{id:'embedding',present:true}]};case 'settings':return {};case 'devices':return [];case 'detail':return {meeting,tracks,segments:[]};case 'playback':calls.push(['playback',args.payload?.id]);return {path:'/cache/playback/fixture/one.wav'};default:return null;}
+    }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
+  });
+  await page.route('**/fixtures/one.wav',route=>route.fulfill({status:200,contentType:'audio/wav',body:'not audio'}));
+  await page.goto('/');await page.getByRole('button',{name:'Playback fixture',exact:false}).click();
+  await expect.poll(()=>page.locator('audio').getAttribute('src')).toMatch(/^blob:/);
+  expect(await page.evaluate(()=>(window as unknown as {__calls:unknown[]}).__calls)).toEqual([['playback','one'],['bytes','one']]);
+  await page.getByRole('button',{name:'Play recording',exact:true}).click();
+  await expect(page.getByRole('button',{name:'Pause playback',exact:true})).toBeVisible();
+});
+
 test('progress stays visible at the top while scrolling a long transcript',async({page})=>{
   await page.addInitScript(()=>{
     const meeting={id:'long',title:'Long conversation',created_at:1,duration_ms:3600000,status:'ready',notes:'',summary:''};
@@ -505,8 +527,14 @@ test('continuous playback advances across stored audio chunks and seeks globally
   await page.route('**/fixtures/*.wav',route=>route.fulfill({status:200,contentType:'audio/wav',body:wav}));
   await page.goto('/');await page.getByRole('button',{name:'Playback fixture',exact:false}).click();
   await expect(page.getByLabel('Audio source',{exact:true})).toHaveValue('imported');await expect(page.getByLabel('Recording timeline')).toHaveAttribute('max','2000');
+  // Every label the button shows from Play to the end: no flicker where one part hands over to the next.
+  await page.locator('.play-button').evaluate(button=>{const labels:string[]=[];(window as unknown as {__labels:string[]}).__labels=labels;new MutationObserver(()=>labels.push(button.getAttribute('aria-label')||'')).observe(button,{attributes:true,attributeFilter:['aria-label']});});
   await page.getByRole('button',{name:'Play recording',exact:true}).click();
   await expect.poll(()=>page.locator('audio').getAttribute('src')).toContain('second.wav');
+  // The next part really plays, and the button shows when it stops.
+  await expect.poll(()=>page.locator('audio').evaluate(a=>{const audio=a as HTMLAudioElement;return audio.src.includes('second.wav')&&audio.played.length>0;})).toBe(true);
+  await expect(page.getByRole('button',{name:'Play recording',exact:true})).toBeVisible();
+  expect(await page.evaluate(()=>(window as unknown as {__labels:string[]}).__labels)).toEqual(['Pause playback','Play recording']);
   await page.getByLabel('Recording timeline').fill('300');await expect.poll(()=>page.locator('audio').getAttribute('src')).toContain('first.wav');
   await page.getByRole('button',{name:'Notes',exact:true}).click();
   await expect(page.getByLabel('Notes',{exact:true})).toHaveValue('');
