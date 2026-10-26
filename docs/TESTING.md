@@ -18,6 +18,15 @@ Meaningful unit checks cover pause-aligned chunk planning, skipped-speech retrie
 
 Version 0.1.1 added a first-run 1B/E2B summary selector. Six browser tests pass, including the request payload, displayed estimate and locked selection during setup for 1B, E2B and no summaries. These use an explicitly mocked bridge, without downloading models. A separate Rust regression executes the real offline provisioning script with tiny SHA-256-checked fixture files and a stubbed runtime readiness probe. It verifies core plus only the chosen summary model, saved E2B selection after success, core-only setup, missing-summary failure without changing the saved selection, and rejection of an unknown profile. Native checks on the final 0.1.1 package also passed launch, compact/expand and Quit, with all three observed processes released. The setup action remains fully visible at 900×720 in the browser checks. No user library or installed app data is reset during updates.
 
+## Version 0.1.29: fixes from the review of 0.1.28 (issue #13)
+
+Both findings of the review of b5fa15d were confirmed, each first by a browser test that failed on 0.1.28, and a third case turned up while writing them:
+- **A jump on a part whose copy had failed showed Pause and never asked again** (medium). On 0.1.28, one `playback` call 4 s after the timestamp click; now a second call, playing from the row (at least 1 s into the part), no error.
+- **A jump on a part whose bytes could not be read stuck on Pause** (low). On 0.1.28 the failed read showed no error at all, so the test stopped there. Now the error is shown, and the jump asks for the copy and the bytes again and plays from the row. A rejected Play also resets the button to Play.
+- **Pause pressed during that jump started the part** (found here). On 0.1.28 the button still said Pause 500 ms after the press. Now it says Play at once, and 1.5 s after the bytes arrive the 2-second part is still unplayed at the row (1 s). A first version of this test passed on 0.1.28, only because the fixture had played to its end within the wait; it now checks that nothing was played.
+
+Validation: TypeScript/privacy/version (0.1.29), 55 Python checks, 27 browser checks in Playwright's Chromium (new: the jump after a failed copy, the jump after a failed bytes read, and Pause during that retry; all three fail on 0.1.28), 36 Rust unit checks plus the offline setup integration check. Not run: clippy and a local build (this environment has no GTK or WebKitGTK; the Rust code changed only in its version), WebKitGTK playback, Windows. The change is to the UI only.
+
 ## Version 0.1.28: fixes from the review of 0.1.27 (issue #12) and a Windows test
 
 Both findings of the review of 9d9d6f5 were confirmed and fixed, and a third problem turned up while checking them in WebKitGTK:

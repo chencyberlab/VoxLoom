@@ -279,3 +279,10 @@ Release result: built by the Apps workflow when this version reaches main, on th
 Known limitations: playback on Windows is still read, not run (CI ran Accurate transcription there, not playback).
 Next: the user clicks transcript rows and search results while listening on Linux, including in a long import.
 
+Version 0.1.29: fixes from the review of 0.1.28 (issue #13)
+Implemented: a part that could not be made playable (its copy failed, its bytes could not be read, or the element could not play it) is remembered and its media dropped. A jump from a transcript row or search result on that part now asks the host again from the copy and starts at the row; before, it showed Pause with nothing loading, and pressing that Pause started the part. A failed bytes read is reported like a failed copy instead of silently, and a rejected Play no longer leaves the button on Pause.
+Verified: see TESTING.md, "Version 0.1.29".
+Release result: built by the Apps workflow when this version reaches main, on the draft release v0.1.29. Not built locally.
+Known limitations: checked in Chrome only; not yet run in WebKitGTK or on Windows.
+Next: the user checks in WebKitGTK that a jump after a failed part plays: make `<cache>/playback` read-only, open a recording (the copy fails), make it writable again, then click a transcript row in the first 30 seconds.
+
