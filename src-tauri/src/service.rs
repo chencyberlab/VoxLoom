@@ -183,7 +183,7 @@ mod tests {
         )
         .unwrap();
         let (first, second) = (db::id(), db::id());
-        let folder = temp.path().join("data/recordings").join(&first);
+        let folder = temp.path().join("data").join("recordings").join(&first);
         fs::create_dir_all(&folder).unwrap();
         // Capture's own segment muxing: later files' frames keep their place in the stream.
         assert!(process::hidden("ffmpeg")
@@ -204,7 +204,7 @@ mod tests {
         };
         let play = |id: &str| PathBuf::from(service.dispatch("playback", json!({"id":id})).unwrap()["path"].as_str().unwrap());
         let copy = play(&tracks[0]);
-        assert_eq!(copy, temp.path().join("cache/playback").join(&first).join(format!("{}.wav", tracks[0])));
+        assert_eq!(copy, temp.path().join("cache").join("playback").join(&first).join(format!("{}.wav", tracks[0])));
         let wav = fs::read(&copy).unwrap();
         assert!(wav.starts_with(b"RIFF") && wav.len() > 44 + 16000 * 2 * 9 / 10, "{}", wav.len());
         let made = fs::metadata(&copy).unwrap().modified().unwrap();
@@ -216,9 +216,9 @@ mod tests {
         service.db.lock().unwrap().add_track(&second, &folder.join("s0000-mic-000002.flac"), "mic", 2000).unwrap();
         let other = service.db.lock().unwrap().tracks(&second).unwrap().into_iter().find(|t| t.source == "mic").unwrap().id;
         assert!(play(&other).exists());
-        assert!(!copy.exists() && !temp.path().join("cache/playback").join(&first).exists());
+        assert!(!copy.exists() && !temp.path().join("cache").join("playback").join(&first).exists());
         service.dispatch("delete", json!({"id":second})).unwrap();
-        assert!(!temp.path().join("cache/playback").join(&second).exists());
+        assert!(!temp.path().join("cache").join("playback").join(&second).exists());
         assert!(service.dispatch("playback", json!({"id":"gone"})).is_err());
         service.shutdown();
     }
@@ -235,7 +235,7 @@ mod tests {
         )
         .unwrap();
         let meeting = db::id();
-        let folder = temp.path().join("data/recordings").join(&meeting);
+        let folder = temp.path().join("data").join("recordings").join(&meeting);
         fs::create_dir_all(&folder).unwrap();
         assert!(process::hidden("ffmpeg")
             .args(["-nostdin", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=12", "-ar", "16000", "-ac", "1",
@@ -260,9 +260,9 @@ mod tests {
                 })
             })
             .collect();
-        let copy = temp.path().join("cache/playback").join(&meeting).join(format!("{track}.wav"));
+        let copy = temp.path().join("cache").join("playback").join(&meeting).join(format!("{track}.wav"));
         for caller in callers {
-            assert_eq!(caller.join().unwrap().unwrap()["path"], json!(copy));
+            assert_eq!(PathBuf::from(caller.join().unwrap().unwrap()["path"].as_str().unwrap()), copy);
         }
         // About six seconds of 16 kHz mono PCM (segments end on a FLAC frame), whatever its place in the recording.
         let wav = fs::read(&copy).unwrap();

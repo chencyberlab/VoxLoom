@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 
 test('meeting notes render normally and copy as rich text or Markdown',async({page,context})=>{
   await context.grantPermissions(['clipboard-read','clipboard-write']);
@@ -336,6 +336,49 @@ for(const [stage,delays] of [['while the host prepares the part',{playback:700,b
     await expect(page.getByRole('alert')).toHaveCount(0);
   });
 }
+
+// A host stand-in for the playback tests below: one 2-second part whose asset: URL cannot be played (as in WebKitGTK).
+const playbackHost=async(page:Page,options:{bytesDelay:number;failFirstCopy:boolean})=>{
+  await page.addInitScript(options=>{
+    const meeting={id:'fixture',title:'Playback fixture',created_at:1,duration_ms:2000,status:'ready',notes:'',summary:''};
+    const tracks=[{id:'one',meeting_id:'fixture',source:'mic',path:'/data/recordings/fixture/s0000-mic-000000.flac',offset_ms:0}];
+    const segments=[{id:1,start_ms:1000,end_ms:1900,text:'A row to jump to.',source:'mic'}];
+    const wav=new Uint8Array(44+64000);const view=new DataView(wav.buffer);const text=(at:number,value:string)=>[...value].forEach((c,i)=>{wav[at+i]=c.charCodeAt(0);});
+    text(0,'RIFF');view.setUint32(4,wav.length-8,true);text(8,'WAVEfmt ');view.setUint32(16,16,true);view.setUint16(20,1,true);view.setUint16(22,1,true);view.setUint32(24,16000,true);view.setUint32(28,32000,true);view.setUint16(32,2,true);view.setUint16(34,16,true);text(36,'data');view.setUint32(40,64000,true);
+    const calls:string[]=[];let copies=0;
+    Object.assign(window,{isTauri:true,__calls:calls,__TAURI_INTERNALS__:{transformCallback:()=>1,convertFileSrc:(path:string)=>`/fixtures/${path.split('/').pop()}`,invoke:async(command:string,args:{action?:string})=>{
+      if(command.startsWith('plugin:event'))return 1;
+      if(command==='playback_bytes'){calls.push('bytes');await new Promise(r=>setTimeout(r,options.bytesDelay));return wav.buffer.slice(0);}
+      switch(args?.action){case 'library':return [meeting];case 'jobs':return [];case 'status':return null;case 'runtime_status':return {inference:true,whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models:[{id:'whisper',present:true},{id:'embedding',present:true}]};case 'settings':return {};case 'devices':return [];case 'detail':return {meeting,tracks,segments};
+        case 'playback':calls.push('playback');if(options.failFirstCopy&&copies++===0)throw 'This part of the recording could not be read for playback.';return {path:'/cache/playback/fixture/one.wav'};default:return null;}
+    }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
+  },options);
+  await page.route('**/fixtures/one.wav',route=>route.fulfill({status:200,contentType:'audio/wav',body:'not audio'}));
+  await page.goto('/');await page.getByRole('button',{name:'Playback fixture',exact:false}).click();
+};
+const startedFromMemory=(page:Page)=>page.locator('audio').evaluate(a=>{const audio=a as HTMLAudioElement;return audio.src.startsWith('blob:')&&audio.played.length>0&&!audio.paused;});
+
+test('a transcript jump while the part is loading shows Pause and starts it',async({page})=>{
+  await playbackHost(page,{bytesDelay:2500,failFirstCopy:false});
+  await page.getByRole('button',{name:'Transcript',exact:true}).click();
+  await page.locator('.timestamp').first().click();
+  // The jump has asked the part to start: the button says so at once, while the bytes are still on the way.
+  await expect(page.getByRole('button',{name:'Pause playback',exact:true})).toBeVisible({timeout:500});
+  expect(await page.locator('audio').evaluate(a=>(a as HTMLAudioElement).src.startsWith('blob:'))).toBe(false);
+  await expect.poll(()=>startedFromMemory(page),{timeout:8000}).toBe(true);
+  expect(await page.locator('audio').evaluate(a=>(a as HTMLAudioElement).currentTime)).toBeGreaterThanOrEqual(1);
+  await expect(page.getByRole('alert')).toHaveCount(0);
+});
+
+test('after a part could not be read, Play asks the host again',async({page})=>{
+  await playbackHost(page,{bytesDelay:0,failFirstCopy:true});
+  await expect(page.getByRole('alert')).toContainText('could not be read for playback');
+  await expect(page.getByRole('button',{name:'Play recording',exact:true})).toBeVisible();
+  await page.getByRole('button',{name:'Play recording',exact:true}).click();
+  await expect.poll(()=>startedFromMemory(page),{timeout:8000}).toBe(true);
+  expect(await page.evaluate(()=>(window as unknown as {__calls:string[]}).__calls.filter(c=>c==='playback').length)).toBe(2);
+  await expect(page.getByRole('alert')).toHaveCount(0);
+});
 
 test('progress stays visible at the top while scrolling a long transcript',async({page})=>{
   await page.addInitScript(()=>{

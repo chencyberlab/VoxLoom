@@ -272,3 +272,10 @@ Release result: built by the Apps workflow when this version reaches main, on th
 Known limitations: playback on Windows is still read, not run.
 Next: the user opens a long import and presses Play at once on Linux, and plays a recording on the Windows laptop when there is time.
 
+Version 0.1.28: fixes from the review of 0.1.27 (issue #12) and a Windows test
+Implemented: a jump from a transcript row or search result shows Pause at once, and while a part loads the button follows what it shows (Play asks for the start, Pause cancels it), so Play no longer cancels a jump that was waiting. After a failed copy, Play asks the host again. Only an element with the part loaded is seeked: in WebKitGTK a seek on the empty element was applied after play began and stalled playback from the Blob. The playback tests build paths that also hold on Windows.
+Verified: see TESTING.md, "Version 0.1.28".
+Release result: built by the Apps workflow when this version reaches main, on the draft release v0.1.28. A local build, release/voxloom_0.1.28_amd64.deb (SHA-256 4df014446421dacac6cdb6849a6f15f85268f1886236c290e98dec769f07a426), passed the native launch check.
+Known limitations: playback on Windows is still read, not run (CI ran Accurate transcription there, not playback).
+Next: the user clicks transcript rows and search results while listening on Linux, including in a long import.
+
