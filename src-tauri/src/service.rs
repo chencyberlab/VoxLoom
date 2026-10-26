@@ -30,6 +30,8 @@ pub struct Service {
     quit: AtomicBool,
     setup_active: AtomicBool,
     setup_cancel: AtomicBool,
+    /// One playback decode at a time, so a part asked for twice is decoded once.
+    playback: Mutex<()>,
     pub notify: Arc<dyn Fn(Value) + Send + Sync>,
 }
 /// Name of a recording started without a title; Summarise may replace it.
@@ -218,6 +220,57 @@ mod tests {
         service.dispatch("delete", json!({"id":second})).unwrap();
         assert!(!temp.path().join("cache/playback").join(&second).exists());
         assert!(service.dispatch("playback", json!({"id":"gone"})).is_err());
+        service.shutdown();
+    }
+
+    #[test]
+    fn a_part_asked_for_twice_at_once_is_decoded_once_for_both() {
+        // Choosing a part also prepares the next one, so a quick jump asks for it again mid-decode.
+        let temp = tempfile::tempdir().unwrap();
+        let service = Service::open(
+            temp.path().join("data"),
+            temp.path().join("cache"),
+            temp.path().into(),
+            Arc::new(|_| {}),
+        )
+        .unwrap();
+        let meeting = db::id();
+        let folder = temp.path().join("data/recordings").join(&meeting);
+        fs::create_dir_all(&folder).unwrap();
+        assert!(process::hidden("ffmpeg")
+            .args(["-nostdin", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=12", "-ar", "16000", "-ac", "1",
+                   "-c:a", "flac", "-f", "segment", "-segment_time", "6", "-reset_timestamps", "1"])
+            .arg(folder.join("s0000-mic-%06d.flac"))
+            .status()
+            .unwrap()
+            .success());
+        let track = {
+            let db = service.db.lock().unwrap();
+            db.create(&meeting, "Fixture", 12000, "ready").unwrap();
+            db.add_track(&meeting, &folder.join("s0000-mic-000001.flac"), "mic", 6000).unwrap();
+            db.tracks(&meeting).unwrap()[0].id.clone()
+        };
+        let start = Arc::new(std::sync::Barrier::new(8));
+        let callers: Vec<_> = (0..8)
+            .map(|_| {
+                let (service, start, track) = (service.clone(), start.clone(), track.clone());
+                std::thread::spawn(move || {
+                    start.wait();
+                    service.dispatch("playback", json!({"id":track}))
+                })
+            })
+            .collect();
+        let copy = temp.path().join("cache/playback").join(&meeting).join(format!("{track}.wav"));
+        for caller in callers {
+            assert_eq!(caller.join().unwrap().unwrap()["path"], json!(copy));
+        }
+        // About six seconds of 16 kHz mono PCM (segments end on a FLAC frame), whatever its place in the recording.
+        let wav = fs::read(&copy).unwrap();
+        let data = wav.windows(4).position(|w| w == b"data").unwrap();
+        let bytes = u32::from_le_bytes(wav[data + 4..data + 8].try_into().unwrap()) as usize;
+        assert_eq!(bytes, wav.len() - data - 8);
+        assert!((5.8..6.2).contains(&(bytes as f64 / 32000.)), "{bytes} bytes");
+        assert_eq!(fs::read_dir(copy.parent().unwrap()).unwrap().count(), 1, "no partial file is left");
         service.shutdown();
     }
 
@@ -887,6 +940,7 @@ impl Service {
             quit: AtomicBool::new(false),
             setup_active: AtomicBool::new(false),
             setup_cancel: AtomicBool::new(false),
+            playback: Mutex::new(()),
             notify,
         });
         s.recover_tracks()?;
@@ -2408,6 +2462,9 @@ impl Service {
         if !(name.starts_with('s') && (name.contains("-mic-") || name.contains("-system-")) && name.ends_with(".flac")) {
             return Ok(json!({"path":path}));
         }
+        // Choosing a part also prepares the next one, so the same part can be asked for
+        // again mid-decode; the second caller waits and gets the finished copy.
+        let _decoding = self.playback.lock().unwrap();
         let folder = self.cache.join("playback");
         for entry in fs::read_dir(&folder).into_iter().flatten().flatten() {
             if entry.file_name().to_string_lossy() != meeting {

@@ -312,6 +312,31 @@ test('each part plays from the host\'s copy, from memory when the webview cannot
   await expect(page.getByRole('button',{name:'Pause playback',exact:true})).toBeVisible();
 });
 
+for(const [stage,delays] of [['while the host prepares the part',{playback:700,bytes:0}],['while its bytes are on their way',{playback:0,bytes:900}]] as const){
+  test(`Play pressed ${stage} starts the part once it is ready`,async({page})=>{
+    await page.addInitScript(delays=>{
+      const meeting={id:'fixture',title:'Playback fixture',created_at:1,duration_ms:1000,status:'ready',notes:'',summary:''};
+      const tracks=[{id:'one',meeting_id:'fixture',source:'mic',path:'/data/recordings/fixture/s0000-mic-000000.flac',offset_ms:0}];
+      const wav=new Uint8Array(44+32000);const view=new DataView(wav.buffer);const text=(at:number,value:string)=>[...value].forEach((c,i)=>{wav[at+i]=c.charCodeAt(0);});
+      text(0,'RIFF');view.setUint32(4,wav.length-8,true);text(8,'WAVEfmt ');view.setUint32(16,16,true);view.setUint16(20,1,true);view.setUint16(22,1,true);view.setUint32(24,16000,true);view.setUint32(28,32000,true);view.setUint16(32,2,true);view.setUint16(34,16,true);text(36,'data');view.setUint32(40,32000,true);
+      const later=(ms:number)=>new Promise(r=>setTimeout(r,ms));
+      Object.assign(window,{isTauri:true,__TAURI_INTERNALS__:{transformCallback:()=>1,convertFileSrc:(path:string)=>`/fixtures/${path.split('/').pop()}`,invoke:async(command:string,args:{action?:string})=>{
+        if(command.startsWith('plugin:event'))return 1;
+        if(command==='playback_bytes'){await later(delays.bytes);return wav.buffer.slice(0);}
+        switch(args?.action){case 'library':return [meeting];case 'jobs':return [];case 'status':return null;case 'runtime_status':return {inference:true,whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models:[{id:'whisper',present:true},{id:'embedding',present:true}]};case 'settings':return {};case 'devices':return [];case 'detail':return {meeting,tracks,segments:[]};case 'playback':await later(delays.playback);return {path:'/cache/playback/fixture/one.wav'};default:return null;}
+      }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
+    },delays);
+    // As in WebKitGTK, the asset: URL cannot be played; the bytes can.
+    await page.route('**/fixtures/one.wav',route=>route.fulfill({status:200,contentType:'audio/wav',body:'not audio'}));
+    await page.goto('/');await page.getByRole('button',{name:'Playback fixture',exact:false}).click();
+    if(delays.bytes)await expect.poll(()=>page.locator('audio').getAttribute('src')).toContain('/fixtures/one.wav');
+    await page.getByRole('button',{name:'Play recording',exact:true}).click();
+    await expect(page.getByRole('button',{name:'Pause playback',exact:true})).toBeVisible();
+    await expect.poll(()=>page.locator('audio').evaluate(a=>{const audio=a as HTMLAudioElement;return audio.src.startsWith('blob:')&&audio.played.length>0;})).toBe(true);
+    await expect(page.getByRole('alert')).toHaveCount(0);
+  });
+}
+
 test('progress stays visible at the top while scrolling a long transcript',async({page})=>{
   await page.addInitScript(()=>{
     const meeting={id:'long',title:'Long conversation',created_at:1,duration_ms:3600000,status:'ready',notes:'',summary:''};

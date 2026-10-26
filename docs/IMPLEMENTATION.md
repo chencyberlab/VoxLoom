@@ -264,3 +264,11 @@ Verified: see TESTING.md, "Version 0.1.26".
 Release result: built by the Apps workflow when this version reaches main, on the draft release v0.1.26. A local build, release/voxloom_0.1.26_amd64.deb (SHA-256 e639499a995355185b34667219f99a132273c4b6e5063ba53e4114e0a2bd5b04), passed the native launch check.
 Known limitations: in WebKitGTK an import is held in memory as a whole while it plays (about 470 MB for an hour of 44.1 kHz stereo, the format of the one import measured); a capture segment's WAV is about 1 MB (16 kHz mono). Playback on Windows was read, not run.
 Next: the user plays a few recordings on Linux (Play, jumping from transcript rows, across 30-second boundaries) and, when there is time, on the Windows laptop.
+
+Version 0.1.27: fixes from the review of 0.1.26 (issue #11)
+Implemented: both findings of the review of e0e4b3e. Play pressed before the selected part can play (its copy still being made, its bytes still on the way, or not yet asked for) no longer shows an error and loses the click: it asks the part to start when it loads, and a second press cancels. Playback decodes are serialised, so a part asked for twice at once (choosing a part also prepares the next one) is decoded once and both callers get the WAV; a failed copy is reported instead of playing the capture file, whose clock is wrong in WebView2.
+Verified: see TESTING.md, "Version 0.1.27".
+Release result: built by the Apps workflow when this version reaches main, on the draft release v0.1.27. A local build, release/voxloom_0.1.27_amd64.deb (SHA-256 0524602b38a16a2427267ab37dcad5a90b987dd889d4fa937741fb36cd83b5ba), passed the native launch check.
+Known limitations: playback on Windows is still read, not run.
+Next: the user opens a long import and presses Play at once on Linux, and plays a recording on the Windows laptop when there is time.
+
