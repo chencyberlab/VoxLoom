@@ -28,6 +28,7 @@ Recording on Windows has not yet run on real audio hardware; that is the next ch
 |---|---|---|
 | `engines/whisper-cli.exe`, `-generic.exe` | whisper.cpp, the pin in `setup-runtimes.sh` | AVX2 and generic builds, as on Linux. MinGW-w64 GCC, no OpenMP (ggml's own thread pool; OpenMP would be another DLL). |
 | `engines/llama-completion.exe`, `-generic.exe` | llama.cpp, the pin in `setup-runtimes.sh`, patched by `patch-llama-completion.py` | Same build options. |
+| `engines/transcribe-cli.exe`, `-generic.exe` | transcribe.cpp, the pin in `setup-runtimes.sh` | Accurate transcription (Parakeet) since 0.1.25. Same build options, no system BLAS; its `THIRD-PARTY-LICENSES.md` goes into `licenses/`. |
 | `engines/ffmpeg.exe`, `ffprobe.exe` | FFmpeg 7.1.5, SHA-256 `de668509…5d558f`, release signature checked against FFmpeg's key `FCF9 86EA … D676 58D8` | LGPL: no `--enable-gpl`, no external libraries. Only the demuxers, decoders and filters VoxLoom uses (WAV, FLAC, MP3, OGG/Opus/Vorbis, M4A/MP4/MOV, MKV/WebM, AAC; segment and FLAC output; raw PCM in and `channelsplit` for capture). About 3 MB each. |
 | `python/` | CPython 3.13.16 embeddable package, SHA-256 `97dae527…821961297` (as published on python.org) | Its `._pth` adds `Lib\site-packages`. LiteRT and its dependencies are installed from `worker/requirements.windows.lock.txt` with `--require-hashes`; the same pins as Linux. LiteRT's CPU library needs only Windows' own DLLs. |
 

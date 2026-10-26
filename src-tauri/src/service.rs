@@ -43,6 +43,9 @@ const MIN_RECORD_FREE_BYTES: u64 = 256 * 1024 * 1024;
 /// when that is more: a two-hour cap ended summaries of long recordings on
 /// slow machines half-way.
 const WORKER_TIMEOUT: Duration = Duration::from_secs(7200);
+/// Accurate transcription since 0.1.25: Parakeet TDT 0.6B v2, run by
+/// transcribe.cpp's `transcribe-cli` (docs/TESTING.md has the comparison).
+const PARAKEET_MODEL: &str = "parakeet-tdt-0.6b-v2-Q6_K.gguf";
 
 /// Whether a recording must not start. A full volume reports `Some(0)`; a
 /// volume that could not be queried reports `None` and never blocks the user.
@@ -148,14 +151,22 @@ mod tests {
         service
             .dispatch("save_settings", json!({"transcription_profile":"accurate"}))
             .unwrap();
-        let chosen = |s: &Service| s.request("transcribe", None).unwrap()["models"]["whisper"].clone();
-        assert!(chosen(&service).as_str().unwrap().ends_with("ggml-base.en.bin"));
+        let chosen = |s: &Service| {
+            let request = s.request("transcribe", None).unwrap();
+            assert!(!request["transcribe_cli"].as_str().unwrap().is_empty());
+            let model = request["models"]["whisper"].as_str().unwrap().to_string();
+            (model.rsplit(['/', '\\']).next().unwrap().to_string(), request["asr_engine"].as_str().unwrap().to_string())
+        };
+        assert_eq!(chosen(&service), ("ggml-base.en.bin".into(), "whisper".into()));
+        // The Whisper model Accurate used until 0.1.25 is no longer chosen.
         fs::write(models.join("ggml-small.en-q8_0.bin"), b"small").unwrap();
-        assert!(chosen(&service).as_str().unwrap().ends_with("ggml-small.en-q8_0.bin"));
+        assert_eq!(chosen(&service), ("ggml-base.en.bin".into(), "whisper".into()));
+        fs::write(models.join(PARAKEET_MODEL), b"parakeet").unwrap();
+        assert_eq!(chosen(&service), (PARAKEET_MODEL.into(), "parakeet".into()));
         service
             .dispatch("save_settings", json!({"transcription_profile":"standard"}))
             .unwrap();
-        assert!(chosen(&service).as_str().unwrap().ends_with("ggml-base.en.bin"));
+        assert_eq!(chosen(&service), ("ggml-base.en.bin".into(), "whisper".into()));
         service.shutdown();
     }
 
@@ -905,7 +916,7 @@ impl Service {
                     |r| r.get(0),
                 )
                 .map_err(err)?;
-            if owed > 0 && self.whisper_model(&db).is_file() {
+            if owed > 0 && self.transcription_model(&db).is_file() {
                 let _ = db.enqueue(&meeting.id, "transcribe");
             } else if owed == 0 && !db.tracks(&meeting.id)?.is_empty() {
                 // Every file read and every sentence written, by a pass that
@@ -931,7 +942,7 @@ impl Service {
             .map_err(err)?
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(err)?;
-        if self.whisper_model(&db).is_file() {
+        if self.transcription_model(&db).is_file() {
             for id in stranded {
                 let _ = db.enqueue(&id, "transcribe");
             }
@@ -940,10 +951,10 @@ impl Service {
     }
     /// The selected transcription model. Accurate falls back to the standard
     /// model until it is downloaded, so a recording is always transcribed.
-    fn whisper_model(&self, db: &Db) -> PathBuf {
+    fn transcription_model(&self, db: &Db) -> PathBuf {
         let models =
             PathBuf::from(db.setting("models_dir", &self.data.join("models").to_string_lossy()));
-        let accurate = models.join("ggml-small.en-q8_0.bin");
+        let accurate = models.join(PARAKEET_MODEL);
         if db.setting("transcription_profile", "standard") == "accurate" && accurate.is_file() {
             accurate
         } else {
@@ -1027,6 +1038,11 @@ impl Service {
                 Path::new("runtimes/whisper/bin").join(platform::exe("whisper-cli")),
                 "whisper-cli",
             ),
+            "transcribe_cli" => (
+                Path::new(".runtimes/transcribe-build/bin").join(platform::exe("transcribe-cli")),
+                Path::new("runtimes/transcribe/bin").join(platform::exe("transcribe-cli")),
+                "transcribe-cli",
+            ),
             _ => (
                 Path::new(".runtimes/llama-build/bin").join(platform::exe("llama-completion")),
                 Path::new("runtimes/llama/bin").join(platform::exe("llama-completion")),
@@ -1068,7 +1084,9 @@ impl Service {
         let db = self.db.lock().unwrap();
         let models =
             PathBuf::from(db.setting("models_dir", &self.data.join("models").to_string_lossy()));
-        let mut v = json!({"kind":kind,"cache_dir":self.cache,"models":{"whisper":self.whisper_model(&db),"embedding":models.join("embeddinggemma-2-740m.litertlm"),"summary":""},"threads":db.setting("threads","2").parse::<u32>().unwrap_or(2).clamp(1,8),"language":db.setting("language","en"),"whisper_cli":self.tool(&db,"whisper_cli"),"llama_cli":self.tool(&db,"llama_cli")});
+        let transcription = self.transcription_model(&db);
+        let asr_engine = if transcription.ends_with(PARAKEET_MODEL) { "parakeet" } else { "whisper" };
+        let mut v = json!({"kind":kind,"cache_dir":self.cache,"models":{"whisper":transcription,"embedding":models.join("embeddinggemma-2-740m.litertlm"),"summary":""},"threads":db.setting("threads","2").parse::<u32>().unwrap_or(2).clamp(1,8),"language":db.setting("language","en"),"asr_engine":asr_engine,"whisper_cli":self.tool(&db,"whisper_cli"),"transcribe_cli":self.tool(&db,"transcribe_cli"),"llama_cli":self.tool(&db,"llama_cli")});
         if kind == "summarize" {
             v["summary_style"] = json!(db.setting("summary_style", "counselling"));
             v["summary_prompt"] = json!(db.setting("summary_prompt", ""));
@@ -1651,7 +1669,7 @@ impl Service {
                     .map(|s| s.success())
                     .unwrap_or(false);
                 Ok(
-                    json!({"inference":inference,"whisper":available("whisper_cli"),"llama":available("llama_cli"),"python":python,"storage":self.data,"disk_free_bytes":platform::free_disk_bytes(&self.data)}),
+                    json!({"inference":inference,"whisper":available("whisper_cli"),"transcribe":available("transcribe_cli"),"llama":available("llama_cli"),"python":python,"storage":self.data,"disk_free_bytes":platform::free_disk_bytes(&self.data)}),
                 )
             }
             "setup" => {
@@ -1698,7 +1716,7 @@ impl Service {
             "settings" => {
                 let db = self.db.lock().unwrap();
                 Ok(
-                    json!({"threads":db.setting("threads","2"),"language":db.setting("language","en"),"whisper_cli":self.tool(&db,"whisper_cli"),"llama_cli":self.tool(&db,"llama_cli"),"python":self.tool(&db,"python"),"models_dir":db.setting("models_dir",&self.data.join("models").to_string_lossy()),"summary_profile":summary_profile(&db),"summary_model":db.setting("summary_model",""),"summary_style":db.setting("summary_style","counselling"),"summary_prompt":db.setting("summary_prompt",""),"transcription_profile":db.setting("transcription_profile","standard"),"appearance":db.setting("appearance","system"),"storage":self.data,"low_memory":true}),
+                    json!({"threads":db.setting("threads","2"),"language":db.setting("language","en"),"whisper_cli":self.tool(&db,"whisper_cli"),"transcribe_cli":self.tool(&db,"transcribe_cli"),"llama_cli":self.tool(&db,"llama_cli"),"python":self.tool(&db,"python"),"models_dir":db.setting("models_dir",&self.data.join("models").to_string_lossy()),"summary_profile":summary_profile(&db),"summary_model":db.setting("summary_model",""),"summary_style":db.setting("summary_style","counselling"),"summary_prompt":db.setting("summary_prompt",""),"transcription_profile":db.setting("transcription_profile","standard"),"appearance":db.setting("appearance","system"),"storage":self.data,"low_memory":true}),
                 )
             }
             "save_settings" => {
@@ -1707,6 +1725,7 @@ impl Service {
                     "threads",
                     "language",
                     "whisper_cli",
+                    "transcribe_cli",
                     "llama_cli",
                     "python",
                     "models_dir",
@@ -1740,6 +1759,7 @@ impl Service {
                         }
                         if [
                             "whisper_cli",
+                            "transcribe_cli",
                             "llama_cli",
                             "python",
                             "models_dir",
@@ -1756,7 +1776,7 @@ impl Service {
                         // user did not edit stays as stored (a custom one that
                         // is missing for now survives), and choosing the default
                         // stores nothing, so the default follows the app.
-                        if ["whisper_cli", "llama_cli", "python"].contains(&k) {
+                        if ["whisper_cli", "transcribe_cli", "llama_cli", "python"].contains(&k) {
                             if v == self.tool(&db, k) {
                                 continue;
                             }
@@ -1772,13 +1792,14 @@ impl Service {
             }
             "diagnostics" => {
                 let tools: &[&str] = if cfg!(windows) {
-                    &["ffmpeg", "ffprobe", "whisper-cli", "llama-cli", "python"]
+                    &["ffmpeg", "ffprobe", "whisper-cli", "transcribe-cli", "llama-cli", "python"]
                 } else {
                     &[
                         "ffmpeg",
                         "ffprobe",
                         "pactl",
                         "whisper-cli",
+                        "transcribe-cli",
                         "llama-cli",
                         "python3",
                     ]
@@ -1871,7 +1892,7 @@ impl Service {
         db.add_track(&id, &target, "imported", 0)?;
         let models =
             PathBuf::from(db.setting("models_dir", &self.data.join("models").to_string_lossy()));
-        if self.whisper_model(&db).is_file() {
+        if self.transcription_model(&db).is_file() {
             let _ = db.enqueue(&id, "transcribe");
         } else if models.join("embeddinggemma-2-740m.litertlm").is_file() {
             let _ = db.enqueue(&id, "index");
@@ -2045,7 +2066,7 @@ impl Service {
             self.provision(model_mode, &models)?;
             if let Some(profile) = transcription {
                 if profile == "accurate" {
-                    models["model"] = json!("whisper_accurate");
+                    models["model"] = json!("parakeet");
                     self.provision(model_mode, &models)?;
                 }
                 self.db
@@ -2099,7 +2120,7 @@ impl Service {
             cmd.arg("--core-only");
         }
         if let Some(model) = p["model"].as_str() {
-            if !["whisper", "whisper_accurate", "embedding", "summary_e2b", "summary_e4b"].contains(&model) {
+            if !["whisper", "parakeet", "embedding", "summary_e2b", "summary_e4b"].contains(&model) {
                 return Err("Unknown model".into());
             }
             cmd.arg("--model").arg(model);
@@ -2252,7 +2273,7 @@ impl Service {
             .map_err(err)?;
         // One pass over the whole recording, after Stop. Pause starts none:
         // the recording usually resumes, and nothing runs until it ends.
-        if stop && self.whisper_model(&db).is_file() {
+        if stop && self.transcription_model(&db).is_file() {
             let _ = db.enqueue(&c.meeting, "transcribe");
         }
         if stop {

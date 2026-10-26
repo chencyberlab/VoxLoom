@@ -6,7 +6,7 @@
 #   bash scripts/build-app.sh --check         # also run the automated tests first
 #
 # Node and Rust are installed privately into .toolchain/ when missing (no sudo).
-# The pinned whisper.cpp/llama.cpp engines are compiled into .local-data/runtimes/
+# The pinned whisper.cpp/llama.cpp/transcribe.cpp engines are compiled into .local-data/runtimes/
 # once. AI models are never downloaded or bundled here: the app's first-run
 # "Download & set up" handles them.
 set -euo pipefail
@@ -97,11 +97,11 @@ export VOXLOOM_DATA_DIR="${VOXLOOM_DATA_DIR:-$repo/.local-data}"
 runtimes="$VOXLOOM_DATA_DIR/runtimes"
 step "Preparing the speech and summary engines"
 if [[ -f "$runtimes/whisper/bin/whisper-cli" && -f "$runtimes/llama/bin/llama-completion" &&
-      -f "$runtimes/whisper-generic/bin/whisper-cli" && -f "$runtimes/llama-generic/bin/llama-completion" ]] ||
-   [[ -f .runtimes/whisper-build/bin/whisper-cli && -f .runtimes/llama-build/bin/llama-completion ]]; then
+      -f "$runtimes/whisper-generic/bin/whisper-cli" && -f "$runtimes/llama-generic/bin/llama-completion" &&
+      -f "$runtimes/transcribe/bin/transcribe-cli" && -f "$runtimes/transcribe-generic/bin/transcribe-cli" ]]; then
   echo "Already built."
 else
-  echo "Compiling pinned whisper.cpp and llama.cpp (first time only; about 5-15 minutes)."
+  echo "Compiling pinned whisper.cpp, llama.cpp and transcribe.cpp (first time only; about 10-20 minutes)."
   bash scripts/setup-runtimes.sh --engines-only
 fi
 

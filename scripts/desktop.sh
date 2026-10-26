@@ -10,8 +10,8 @@ cd "$repo"
 if [[ "${1:-}" == "build" ]]; then
   mkdir -p "$repo/src-tauri/engines"
   runtime_dir="${VOXLOOM_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/voxloom}/runtimes"
-  for engine in whisper llama; do
-    if [[ "$engine" == whisper ]]; then executable=whisper-cli; else executable=llama-completion; fi
+  for engine in whisper llama transcribe; do
+    case "$engine" in whisper) executable=whisper-cli ;; llama) executable=llama-completion ;; transcribe) executable=transcribe-cli ;; esac
     source="$repo/.runtimes/$engine-build/bin/$executable"
     if [[ ! -f "$source" ]]; then source="$runtime_dir/$engine/bin/$executable"; fi
     if [[ ! -f "$source" ]]; then printf 'Build pinned CPU inference engines with scripts/setup-runtimes.sh before packaging.\n' >&2; exit 1; fi

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "verified_at": "2026-10-16",
+  "verified_at": "2026-10-26",
   "models": [
     {
       "id": "whisper",
@@ -15,15 +15,15 @@
       "optional": false
     },
     {
-      "id": "whisper_accurate",
-      "name": "Whisper Small English \u00b7 Q8_0",
-      "repo": "ggerganov/whisper.cpp",
-      "revision": "5359861c739e955e79d9a303bcbc70fb988958b1",
-      "filename": "ggml-small.en-q8_0.bin",
-      "bytes": 264477561,
-      "sha256": "67a179f608ea6114bd3fdb9060e762b588a3fb3bd00c4387971be4d177958067",
-      "license": "MIT",
-      "license_url": "https://huggingface.co/ggerganov/whisper.cpp/blob/5359861c739e955e79d9a303bcbc70fb988958b1/README.md",
+      "id": "parakeet",
+      "name": "Parakeet TDT 0.6B v2 \u00b7 Q6_K",
+      "repo": "handy-computer/parakeet-tdt-0.6b-v2-gguf",
+      "revision": "58239cf6d0ecb0af921e7936c1e5e0a8dba91dbb",
+      "filename": "parakeet-tdt-0.6b-v2-Q6_K.gguf",
+      "bytes": 600408576,
+      "sha256": "44c7c363438e03b613cf8ced8b7e6fd1beb2b3805008136fe5e922ab3c79eea9",
+      "license": "CC-BY-4.0 (NVIDIA; GGUF conversion by handy-computer)",
+      "license_url": "https://huggingface.co/handy-computer/parakeet-tdt-0.6b-v2-gguf/blob/58239cf6d0ecb0af921e7936c1e5e0a8dba91dbb/README.md",
       "optional": true,
       "manual_only": true
     },
@@ -74,6 +74,13 @@
       "filename": "gemma-3-1b-it-qat-Q4_0.gguf",
       "bytes": 720425600,
       "retired_in": "0.1.8"
+    },
+    {
+      "id": "whisper_accurate",
+      "name": "Whisper Small English \u00b7 Q8_0",
+      "filename": "ggml-small.en-q8_0.bin",
+      "bytes": 264477561,
+      "retired_in": "0.1.25"
     }
   ]
 }

@@ -20,10 +20,17 @@ parser.add_argument("--models", type=Path, required=True)
 parser.add_argument("--summaries", action="store_true")
 parser.add_argument("--artifacts", type=Path)
 parser.add_argument("--whisper-cli", default=str(ROOT / ".runtimes/whisper-build/bin/whisper-cli"))
+parser.add_argument("--transcribe-cli", help="also check Accurate (Parakeet); its model must be in --models")
 args = parser.parse_args()
 whisper = args.models / "ggml-base.en.bin"
 if not whisper.is_file():
     raise SystemExit("SKIPPED: model files not provisioned; choose a local --models folder")
+passes = [("whisper", whisper)]
+if args.transcribe_cli:
+    parakeet = args.models / "parakeet-tdt-0.6b-v2-Q6_K.gguf"
+    if not parakeet.is_file():
+        raise SystemExit("SKIPPED: the Accurate model is not in --models")
+    passes.append(("parakeet", parakeet))
 
 if args.artifacts:
     args.artifacts.mkdir(parents=True, exist_ok=True)
@@ -50,16 +57,6 @@ with (nullcontext(str(args.artifacts)) if args.artifacts else tempfile.Temporary
         output.writeframesraw(b"\0\0" * 16000)
     subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-i", str(full), "-c:a", "flac", "-f", "segment", "-segment_time", "30", "-reset_timestamps", "1", str(scratch / "s0000-system-%06d.flac")], check=True)
     tracks = [{"id": str(i), "path": str(path), "source": "system", "offset_ms": i * 30000} for i, path in enumerate(sorted(scratch.glob("s0000-system-*.flac")))]
-    checkpoints, lengths, segments = {}, {}, []
-
-    def receive(**event):
-        if event["type"] == "track_duration":
-            lengths[event["track_id"]] = event["duration_ms"]
-        elif event["type"] == "asr_batch":
-            checkpoints[event["stream"]] = {"covered_ms": event["covered_ms"], "overlap_text": event.get("overlap_text", "")}
-            segments.extend(event["segments"])
-
-    started = time.monotonic()
     original_run = engine.run
     calls = []
     def traced_run(argv, **kwargs):
@@ -71,16 +68,28 @@ with (nullcontext(str(args.artifacts)) if args.artifacts else tempfile.Temporary
                 shutil.copyfile(scratch/'asr.wav', scratch/f'pass-{len(calls)}.wav')
         return result
     engine.run = traced_run
-    # The pass after Stop: every 30-second file at once, sentences crossing their edges.
-    engine.transcribe({"kind": "transcribe", "models": {"whisper": str(whisper)}, "tracks": tracks, "asr_progress": {}, "whisper_cli": args.whisper_cli, "threads": 2}, receive, scratch)
-    assert checkpoints["system:s0000"]["covered_ms"] == sum(lengths.values())
-    transcript = " ".join(segment["text"] for segment in segments)
-    if args.artifacts:
-        (scratch/'segments.json').write_text(json.dumps(segments,indent=2))
-    for word in ["committee", "approved", "community", "budget", "invoice", "Friday", "emergency", "inspection", "Tuesday", "safety", "report"]:
-        assert word.lower() in transcript.lower(), (word, transcript)
-    assert all(s["start_ms"] <= s["end_ms"] for s in segments)
-    print(json.dumps({"continuous_asr": "PASS", "seconds": time.monotonic() - started, "audio_ms": sum(lengths.values()), "covered_ms": checkpoints["system:s0000"]["covered_ms"], "synthetic_transcript": transcript}, indent=2), flush=True)
+    for name, model in passes:
+        checkpoints, lengths, segments = {}, {}, []
+
+        def receive(**event):
+            if event["type"] == "track_duration":
+                lengths[event["track_id"]] = event["duration_ms"]
+            elif event["type"] == "asr_batch":
+                checkpoints[event["stream"]] = {"covered_ms": event["covered_ms"], "overlap_text": event.get("overlap_text", "")}
+                segments.extend(event["segments"])
+
+        started = time.monotonic()
+        # The pass after Stop: every 30-second file at once, sentences crossing their edges.
+        engine.transcribe({"kind": "transcribe", "models": {"whisper": str(model)}, "tracks": tracks, "asr_progress": {}, "asr_engine": name,
+                           "whisper_cli": args.whisper_cli, "transcribe_cli": args.transcribe_cli, "threads": 2}, receive, scratch)
+        assert checkpoints["system:s0000"]["covered_ms"] == sum(lengths.values())
+        transcript = " ".join(segment["text"] for segment in segments)
+        if args.artifacts:
+            (scratch/f'segments-{name}.json').write_text(json.dumps(segments,indent=2))
+        for word in ["committee", "approved", "community", "budget", "invoice", "Friday", "emergency", "inspection", "Tuesday", "safety", "report"]:
+            assert word.lower() in transcript.lower(), (name, word, transcript)
+        assert all(s["start_ms"] <= s["end_ms"] for s in segments)
+        print(json.dumps({"continuous_asr": "PASS", "engine": name, "seconds": time.monotonic() - started, "audio_ms": sum(lengths.values()), "covered_ms": checkpoints["system:s0000"]["covered_ms"], "synthetic_transcript": transcript}, indent=2), flush=True)
     if args.summaries:
         for name in ["gemma-4-E2B-it-Q4_0.gguf"]:
             model = args.models / name

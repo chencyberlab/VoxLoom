@@ -28,10 +28,12 @@ def run(*argv, data=None):
     return subprocess.run([str(a) for a in argv], input=data, capture_output=True, timeout=300, env=env)
 
 
-for name in ["whisper-cli", "whisper-cli-generic", "llama-completion", "llama-completion-generic", "ffmpeg", "ffprobe"]:
+for name in ["whisper-cli", "whisper-cli-generic", "transcribe-cli", "transcribe-cli-generic", "llama-completion",
+             "llama-completion-generic", "ffmpeg", "ffprobe"]:
     assert (engines / f"{name}.exe").is_file(), f"missing {name}.exe"
 for name, args in [("ffmpeg", ["-version"]), ("ffprobe", ["-version"]), ("whisper-cli", ["--help"]),
-                   ("whisper-cli-generic", ["--help"]), ("llama-completion", ["--version"]),
+                   ("whisper-cli-generic", ["--help"]), ("transcribe-cli", ["--help"]), ("transcribe-cli-generic", ["--help"]),
+                   ("llama-completion", ["--version"]),
                    ("llama-completion-generic", ["--version"])]:
     result = run(engines / f"{name}.exe", *args)
     assert result.returncode == 0, f"{name} {args} exited {result.returncode}: {result.stderr[-400:]!r}"

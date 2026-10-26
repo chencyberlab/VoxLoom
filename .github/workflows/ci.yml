@@ -132,9 +132,11 @@ jobs:
         with:
           path: models-cache
           key: models-${{ hashFiles('models/manifest.json') }}
-      - name: Pinned models (Whisper, embeddings, E2B summaries)
+      - name: Pinned models (Whisper, Parakeet, embeddings, E2B summaries)
         if: steps.models.outputs.cache-hit != 'true'
-        run: python worker/provision.py --download --directory models-cache
+        run: |
+          python worker/provision.py --download --directory models-cache
+          python worker/provision.py --download --model parakeet --directory models-cache
       - uses: actions/cache/save@v5
         if: steps.models.outputs.cache-hit != 'true'
         with:
@@ -150,6 +152,7 @@ jobs:
           $env:VOXLOOM_TEST_FIXTURES = "$env:GITHUB_WORKSPACE\fixtures"
           $env:VOXLOOM_TEST_PYTHON = "$env:GITHUB_WORKSPACE\src-tauri\python\python.exe"
           $env:VOXLOOM_TEST_WHISPER_CLI = "$env:GITHUB_WORKSPACE\src-tauri\engines\whisper-cli.exe"
+          $env:VOXLOOM_TEST_TRANSCRIBE_CLI = "$env:GITHUB_WORKSPACE\src-tauri\engines\transcribe-cli.exe"
           $env:VOXLOOM_TEST_LLAMA_CLI = "$env:GITHUB_WORKSPACE\src-tauri\engines\llama-completion.exe"
           $env:VOXLOOM_TEST_REPORT = "$env:RUNNER_TEMP\windows-engine-metrics.json"
           $env:Path = "$env:GITHUB_WORKSPACE\src-tauri\engines;$env:Path"
@@ -170,6 +173,21 @@ jobs:
           python scripts/transcribe-recording.py --recording $recording --model models-cache\ggml-base.en.bin --whisper-cli src-tauri\engines\whisper-cli.exe --out "$env:RUNNER_TEMP\rows.json" --stop-after 1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -c "import json,sys; rows=json.load(open(sys.argv[1],encoding='utf-8'))['rows']; text=' '.join(r['text'] for r in rows); print(text); assert text.lower().count('budget')>=3, text" "$env:RUNNER_TEMP\rows.json"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        env:
+          PYTHONUTF8: "1"
+      - name: The same with Accurate (Parakeet), stopped half-way and resumed
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          $recording = "$env:RUNNER_TEMP\recording Zoë accurate"
+          New-Item -ItemType Directory -Path $recording | Out-Null
+          $env:Path = "$env:GITHUB_WORKSPACE\src-tauri\engines;$env:Path"
+          ffmpeg -nostdin -v error -i fixtures\voxloom-long.wav -ar 16000 -ac 1 -c:a flac -f segment -segment_time 30 -reset_timestamps 1 "$recording\s0000-mic-%06d.flac"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/transcribe-recording.py --recording $recording --engine parakeet --model models-cache\parakeet-tdt-0.6b-v2-Q6_K.gguf --transcribe-cli src-tauri\engines\transcribe-cli.exe --out "$env:RUNNER_TEMP\rows-accurate.json" --stop-after 1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -c "import json,sys; rows=json.load(open(sys.argv[1],encoding='utf-8'))['rows']; text=' '.join(r['text'] for r in rows); print(text); assert text.lower().count('budget')>=3, text" "$env:RUNNER_TEMP\rows-accurate.json"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         env:
           PYTHONUTF8: "1"

@@ -18,6 +18,108 @@ Meaningful unit checks cover pause-aligned chunk planning, skipped-speech retrie
 
 Version 0.1.1 added a first-run 1B/E2B summary selector. Six browser tests pass, including the request payload, displayed estimate and locked selection during setup for 1B, E2B and no summaries. These use an explicitly mocked bridge, without downloading models. A separate Rust regression executes the real offline provisioning script with tiny SHA-256-checked fixture files and a stubbed runtime readiness probe. It verifies core plus only the chosen summary model, saved E2B selection after success, core-only setup, missing-summary failure without changing the saved selection, and rejection of an unknown profile. Native checks on the final 0.1.1 package also passed launch, compact/expand and Quit, with all three observed processes released. The setup action remains fully visible at 900×720 in the browser checks. No user library or installed app data is reset during updates.
 
+## Version 0.1.25: Parakeet for Accurate transcription
+
+Tested on the Surface Laptop Studio (i7-11370H, 4 cores, Ubuntu 24.04) with the desktop in use.
+
+Validation:
+- Fast set: TypeScript/privacy/version (0.1.25), 55 Python checks (new: Parakeet word grouping, text kept whole when its word list is missing or disagrees, empty chunks, times past a chunk's end, engine choice, and the skipped-speech retry through Parakeet), 19 browser checks (setup offers Accurate at +600 MB and 4.2 GB in total; Settings downloads model `parakeet`), 34 Rust unit checks plus the offline setup integration check (Accurate chooses the Parakeet file and `asr_engine` `parakeet`, never the retired Whisper Small file), clippy for desktop and for the Windows target. The visual tour was captured in light and dark; the settings page lists "Transcription · more accurate, 600 MB".
+- Engines: `setup-runtimes.sh --engines-only` built transcribe-cli from its pinned archive (SHA-256 96a3993c…cab4a5) as an AVX2 build (5,024,560 bytes) and a generic one (4,543,856 bytes); both start.
+- Provisioning: `provision.py --download --model parakeet` downloaded 600,408,576 bytes and verified the pinned SHA-256.
+- `test-transcript-continuity.py --transcribe-cli`: both engines covered all 67,574 ms and wrote the same two sentences across the 30- and 60-second file edges.
+- `transcribe-recording.py --engine parakeet` on copies of three real recordings, deleted afterwards: 84cc8615 40 rows at 0.15 of real time, 76e99b52 20 rows at 0.16, d34b2474 61 rows. Every millisecond was covered, and the row counts equal the evaluation's below. Stopped after three chunks and resumed, 76e99b52 gave the same 20 rows.
+- Real-engine workflow test (`real_offline_import…`, Linux): passed in 54.5 s with its new Accurate pass. Transcribe started over with Parakeet and heard "budget". On that 10-second fixture Standard took 1.9 s with a 0.28 GiB engine peak, and Accurate 2.2 s with 0.93 GiB.
+- CI's new Accurate step, run here: the long fixture as 30-second FLAC files in a folder named "recording Zoë accurate", stopped after the first of two chunks and resumed: 33,507 ms covered, "budget" six times.
+- Windows: `build-windows-runtime.sh --parts engines` with Ubuntu 24.04's mingw-w64 packages unpacked locally built all six engines. `transcribe-cli.exe` (7,811,499 bytes) and its generic build import only ADVAPI32, KERNEL32 and msvcrt and carry the UTF-8 code-page manifest. `licenses/` gained `transcribe.cpp-LICENSE.txt` and `transcribe.cpp-THIRD-PARTY-LICENSES.md`, and `VERSIONS.txt` lists transcribe.cpp v0.4.1. They were not run: there is no Windows machine here.
+- Package: `build-app.sh` reused the engines and made `release/voxloom_0.1.25_amd64.deb` (19,148,454 bytes, SHA-256 0ae08b1a…dd9cd5), with transcribe-cli and its generic build in `/usr/lib/voxloom/engines`. Native smoke (Xvfb) on the extracted package: launch, floating recorder and back, Quit with exit code 0, all 4 observed processes released; idle single-webview peak 446,888 KiB.
+- Read, not run: the Windows CI steps (runtime smoke, Accurate workflow pass, Accurate recording pass) and the installer check, which now expects `engines/transcribe-cli.exe`.
+
+## Parakeet TDT 0.6B v2 as a transcription model (evaluated after 0.1.24)
+
+Question: should NVIDIA's Parakeet TDT 0.6B v2 (English only, CC-BY-4.0) replace Standard or Accurate? Windows 11 work laptops are short of RAM and already slow with company monitoring software, so memory was weighed as heavily as accuracy. Published Open ASR Leaderboard average: 6.05%, against 10.32% for base.en and 7.44% for large-v3. Published LibriSpeech test-clean figures for the GGUF files: Q8_0 1.69%, Q6_K 1.70%, Q4_K_M 1.72%.
+
+Setup, all in a temporary folder outside the repository:
+- Engine: transcribe.cpp v0.4.1 (github.com/handy-computer/transcribe.cpp, commit 4d7c1cc, MIT, released 2026-10-22), `transcribe-cli`, CPU only. It was built with the same SIMD flags as VoxLoom's whisper-cli (AVX, AVX2, FMA, F16C, BMI2, no AVX-512), with `TRANSCRIBE_USE_SYSTEM_BLAS=OFF` (its official-wheel setting; a Windows package would bundle no BLAS) and its default thread pool, not OpenMP.
+- Output: `--timestamps word` prints word times on stdout. `-o` writes only the plain text, and `--batch-jsonl` only segment times.
+- Models: handy-computer/parakeet-tdt-0.6b-v2-gguf, revision 58239cf6d0ecb0af921e7936c1e5e0a8dba91dbb. These are conversions of nvidia/parakeet-tdt-0.6b-v2 at commit 1b149a3, not retrained.
+  - Q8_0: 729,574,912 bytes, SHA-256 f0d0e99cebb6d3b83f1f7069b82b5d3c2e39a54545b0da039cb4bafd9c4e5caa.
+  - Q6_K: 600,408,576 bytes, 44c7c363438e03b613cf8ced8b7e6fd1beb2b3805008136fe5e922ab3c79eea9.
+  - Q4_K_M: 475,491,840 bytes, 4853f9653f641d376e6f7de65d73c7a34a73677704a606727bf51acc83f999f3.
+  - Licence CC-BY-4.0: shipping them needs attribution to NVIDIA and a note of the conversion in the app's notices.
+- What transcribe.cpp does at load, which a release build cannot turn off:
+  - It runs the full-attention checkpoint with local attention [256, 256], NVIDIA's long-audio mode. That is exact up to 20.5 s, so it changes only the far ends of a 28 s chunk.
+  - It converts 48 F16 convolution weights to F32 for the CPU, about 300 MB of private memory at every quantisation.
+
+Method:
+- `scripts/transcribe-recording.py` ran unchanged from a harness that replaced `engine.whisper_pieces` in memory with transcribe-cli. Parakeet's word times were grouped into Whisper-style pieces that end at a sentence end or at a pause of 1 s or more. So the pause-planned 28 s chunks, the skipped-speech retry and the music-bed re-read all stayed on.
+- Each chunk started a fresh engine process, as with whisper-cli, and each engine process ran under `/usr/bin/time`.
+- Runs were pinned with `taskset` to two cores with two threads, and repeated on all four cores with four threads. The desktop stayed in use (Chrome, about a third of a core).
+
+References:
+- The Moonshine trial's references no longer exist, so 76e99b52, 9337ef83 and d34b2474 lost their video-transcript references. All recordings were scored against whisper.cpp large-v3-turbo q5_0 run over each whole stream: the same pinned file (revision 5359861c, 574,041,195 bytes, SHA-256 394221709c…ffa7e2 checked), four threads.
+- Check on the new references: on 76e99b52, Standard and Accurate scored 5.7% and 4.6% against turbo, and 5.8% and 4.7% against the video in the Moonshine table.
+- The microphone takes of the parent-relationship video (d34b2474, 86eb3f3e, 78822941) were also scored against turbo's transcript of the clean system-audio capture of the same video (9337ef83), with free ends. Every model had 45-49 extra words at d34b2474's edges, and the other two recordings started 74 reference words in.
+- Text rules as in the Moonshine trial. Sound tags were removed from the references only, so a model's own tags count as extra words.
+- Three more recordings were scored: 86eb3f3e and 78822941 (the same video recorded by microphone at +10 dB boost, without and with WebRTC noise suppression), and 632f6500 (an imported student English listening test, copied as one capture file).
+
+| Recording | Standard | Accurate | Parakeet Q8_0 | Parakeet Q6_K | Parakeet Q4_K_M |
+|---|---|---|---|---|---|
+| 76e99b52 counselling role-play, system audio, music bed (2 min 33 s) | 5.7% | 4.6% | 2.9% | 2.9% | 2.9% |
+| 9337ef83 parent relationship role-play, system audio (4 min 13 s) | 6.3% | 4.6% | 2.5% | 2.7% | 3.6% |
+| d34b2474 same video, clipped laptop microphone (4 min 45 s) | 39.3% | 30.0% | 20.9% | 21.7% | 21.1% |
+| d34b2474 against the clean system-audio copy | 39.3% | 28.5% | 18.6% | 19.0% | 18.6% |
+| 84cc8615 counselling podcast, noisy laptop microphone (4 min 24 s) | 21.6% | 12.1% | 8.0% | 8.8% | 8.8% |
+| 7735714c listening test, system audio (2 min 2 s) | 1.2% | 0.8% | 0.8% | 0.8% | 0.8% |
+| ef1e2714 listening test, system audio (4 min 31 s) | 4.7% | 5.1% | 4.9% | 4.9% | 5.1% |
+| 86eb3f3e parent role-play, microphone at +10 dB (4 min 2 s), against the clean copy | 8.3% | 5.4% | 4.7% | 4.5% | 5.4% |
+| 78822941 the same with WebRTC noise suppression (4 min 1 s), against the clean copy | 7.6% | 7.0% | 5.0% | 4.5% | 5.6% |
+| 632f6500 student English listening test, imported (2 min 21 s) | 5.8% | 2.5% | 4.9% | 4.9% | 4.4% |
+| Longest run of missing words | 7 | 3 | 4 | 4 | 4 |
+| Time / audio, two cores | 0.12-0.26 | 0.29-0.63 | 0.12-0.21 | 0.11-0.19 | 0.11-0.20 |
+| Time / audio, four cores | | 0.20-0.43 | 0.09-0.18 | 0.08-0.19 | 0.08-0.14 |
+| Peak memory, mapped weights (default): whole / private | 0.28-0.30 GiB | 0.52-0.54 GiB | 1.15-1.19 / 0.51 GiB | 1.03-1.07 / 0.51 GiB | 0.92-0.95 / 0.51 GiB |
+| Peak memory, weights copied (`--no-mmap`), all private | | | 1.19 GiB | 1.07 GiB | 0.95 GiB |
+| Time under a memory cap of 80% / 60% of peak (84cc8615, cold cache) | | 1.35× / 1.40× | 1.7× / 2.3× | 1.7× / 2.4× | 1.6× / 2.3× |
+| The same with weights copied | | | 3.0× / 3.5× | 2.6× / 3.4× | 2.0× / 2.9× |
+
+How the rows were measured:
+- Time is the whole pass (Python, FFmpeg and the engine) divided by the audio. d34b2474's is per microphone minute: its dual-capture system track is digital silence and produced no rows.
+- Peak memory is the engine process. "Whole" is its peak RSS, which counts the model file's pages mapped from disk. "Private" is peak RssAnon on a real 28 s chunk, sampled every 5 ms. Whisper reads its model into private memory: Standard 0.27 GiB, Accurate 0.52 GiB.
+- All 143 passes covered every captured millisecond. Parakeet's transcripts were identical at two and four threads, with copied weights, and under every memory cap.
+
+Load against decode (one process, two threads, warm page cache, median of three):
+- Parakeet loads in 0.22-0.23 s mapped and 0.37-0.47 s copied. On 1.1 s of silence its whole process takes 0.4 s, against 1.9 s for Standard and 5.5 s for Accurate, because whisper.cpp always encodes a full 30 s window.
+- On a real 28 s chunk: Standard 7.2 s, Accurate 13.6 s, Q8_0 4.2 s, Q6_K and Q4_K_M 3.2 s. The K-quants encode faster than Q8_0 on this CPU.
+- Private memory is 0.33 GiB after load and 0.51 GiB on the chunk, the same at every size. The size changes only the mapped part: 702 / 579 / 460 MiB.
+
+Retries and re-reads:
+- The skipped-speech retry fired on 39-40 of 102 Parakeet chunks (69-70 extra decodes), against 15-17 of 103 for Whisper (30-33). Parakeet returns no words for fillers, laughter and repeated starts, which Whisper often covers with a segment. The retries are included in the times above.
+- The music-bed re-read fired once for Standard and twice for Accurate (76e99b52, d34b2474), and never for Parakeet. Its word times end with the words, so no piece spreads over music. It kept the "yeah" after 76e99b52's music bed, which Accurate dropped.
+
+Losses and invented words:
+- **Parakeet:** its longest losses are speakers repeating themselves ("I, I wasn't, I wasn't" written once) and a 4-word "and I mean like" on the clipped microphone. Its longest insertions are the reverse: repeats the reference left out, numbers as words ("eleven to sixteen" for "11 to 16"), "oh yeah oh" on the clipped microphone, and one "warren" on 84cc8615. It writes British spellings ("counselling"), as Accurate does, and emits no sound tags.
+- **Accurate:** it invented an 11-word phrase on d34b2474 that is in neither reference, and sound tags ("car engine revving", "breathing heavily", "water splashing").
+- **632f6500:** Parakeet's deficit is mostly formatting. It wrote "Eton" (most likely right) five times where turbo and Accurate wrote "Eaton", and wrote numbers as words. With spelling and number formats normalised, it scores 3.8-4.0% against Accurate's 1.6%. Elsewhere normalising put Parakeet ahead on ef1e2714 (4.1-4.3%, against 4.7% for Standard and 5.1% for Accurate) and changed no other ranking.
+
+Memory caps:
+- Each pass over 84cc8615 ran in a `systemd-run --user --scope -p MemoryMax=…` with the whole job inside, and 4 GiB of swap available. The model file was dropped from the page cache first (`posix_fadvise(DONTNEED)`, no root), so its pages were charged to the capped scope. A first attempt with the file already cached never pressed: Linux charges cached pages to the group that read them first, so the scope peaked at 0.51 GiB under every cap.
+- Caps: Accurate 427 / 320 MiB, Q8_0 961 / 721, Q6_K 862 / 647, Q4_K_M 767 / 575.
+- No pass failed or was killed. Accurate swapped private memory (swap peak 139 / 267 MiB). Mapped Parakeet re-read its weights from the NVMe disk instead: 2.1-3.0 million page refaults at 60%, about 8-12 GB read per pass. A slower disk would cost more.
+- Even at 60%, Q6_K took 99 s (0.37 of real time), faster than Accurate with no cap (113 s). Copied weights have to go to swap, which made them 1.5-2.0 times slower than mapped weights under the same cap.
+
+Windows build: transcribe-cli cross-compiled at the first attempt.
+- Toolchain: Ubuntu 24.04's mingw-w64 11 / GCC 13 posix, the packages `build-windows-runtime.sh` uses, unpacked locally with `dpkg-deb` rather than installed. The build used that script's toolchain file, its `mingw-compat.h`, `-static -static-libgcc -static-libstdc++` and `GGML_OPENMP=OFF`.
+- Result: a 7.8 MB `transcribe-cli.exe` that imports only ADVAPI32, KERNEL32 and msvcrt. Its 280 warnings are mostly `-Wformat` about `%zu` in log messages and `-Wshadow` in ggml.
+- It was not run: this machine has no Windows or Wine.
+
+Decision: replace Accurate with Parakeet Q6_K, memory-mapped, and keep Standard (Whisper base.en) as the low-memory model that setup always installs and the app falls back to. Implemented in 0.1.25 (see "Version 0.1.25").
+- **Against the bar:** it beats Accurate on both laptop microphones (18.6-19.0% against 28.5% on d34b2474, 8.8% against 12.1% on 84cc8615). Its longest missing run is 3-4 words, against Whisper's 3-7. It runs at 0.11-0.19 of real time on two cores. Its private memory, 0.51 GiB, matches Accurate's 0.52 GiB; its whole peak, 1.03-1.07 GiB, does not, but the operating system can drop the mapped part under pressure, which the caps show to be survivable.
+- **Q6_K over the others:** it is within 0.8 points of Q8_0 everywhere (worse on three recordings, better on two), maps 120 MiB less and encodes faster. Q4_K_M saves another 120 MiB of mapped memory but no private memory, and is 0.9-1.1 points worse than Q6_K on 9337ef83, 86eb3f3e and 78822941.
+- **Still to check:** the real-engine workflow on GitHub's Windows machines, and a Windows 11 work laptop with its monitoring software.
+- **To note for users:** Parakeet drops fillers and repeated words, so transcripts are tidier but less verbatim than Whisper's.
+
+Recordings, references, transcripts, models and builds were in a temporary folder and were deleted afterwards.
+
 ## Version 0.1.24: fix from the review of 0.1.23
 
 Tested on a 4-core cloud VM (Ubuntu 24.04, no audio devices).

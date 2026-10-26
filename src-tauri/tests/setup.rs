@@ -28,13 +28,13 @@ fn offline_setup_installs_only_selected_models_and_saves_successful_choices() {
         ("e2b", true, None, Some("accurate"), "standard"),
         ("e4b", false, None, Some("accurate"), "standard"),
         ("e2b", false, None, Some("standard"), "accurate"),
-        ("e2b", false, Some("whisper_accurate"), Some("accurate"), "standard"),
+        ("e2b", false, Some("parakeet"), Some("accurate"), "standard"),
         ("e2b", false, None, Some("best"), "standard"),
     ] {
         let valid = ["e2b", "e4b"].contains(&profile)
             && transcription.is_none_or(|t| ["standard", "accurate"].contains(&t));
         let accurate = transcription == Some("accurate");
-        let transcribed = valid && !(accurate && missing == Some("whisper_accurate"));
+        let transcribed = valid && !(accurate && missing == Some("parakeet"));
         let summary = format!("summary_{profile}");
         let summarised = transcribed && !core_only && missing != Some(summary.as_str());
         let expected = summarised.then_some(summary.as_str());
@@ -54,13 +54,13 @@ fn offline_setup_installs_only_selected_models_and_saves_successful_choices() {
             ("embedding", "embeddinggemma-2-740m.litertlm", false),
             ("summary_e2b", "gemma-4-E2B-it-Q4_0.gguf", true),
             ("summary_e4b", "gemma-4-E4B-it-Q4_0.gguf", true),
-            ("whisper_accurate", "ggml-small.en-q8_0.bin", true),
+            ("parakeet", "parakeet-tdt-0.6b-v2-Q6_K.gguf", true),
         ];
         let manifest: Vec<_> = files.iter().map(|(id, filename, optional)| {
             if missing != Some(*id) {
                 fs::write(bundle.join("models").join(filename), b"abc").unwrap();
             }
-            json!({"id":id,"name":id,"filename":filename,"bytes":3,"sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad","optional":optional,"manual_only":(["summary_e4b","whisper_accurate"].contains(id))})
+            json!({"id":id,"name":id,"filename":filename,"bytes":3,"sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad","optional":optional,"manual_only":(["summary_e4b","parakeet"].contains(id))})
         }).collect();
         fs::write(
             resources.join("models/manifest.json"),
@@ -110,7 +110,7 @@ fn offline_setup_installs_only_selected_models_and_saves_successful_choices() {
         for (id, filename, _) in files {
             let installed = match id {
                 "whisper" | "embedding" => valid,
-                "whisper_accurate" => transcribed && accurate,
+                "parakeet" => transcribed && accurate,
                 _ => expected == Some(id),
             };
             assert_eq!(data.join("models").join(filename).exists(), installed, "profile={profile}, core_only={core_only}, missing={missing:?}, transcription={transcription:?}, model={id}");

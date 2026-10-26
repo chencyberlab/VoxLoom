@@ -189,7 +189,7 @@ test('summary style defaults to counselling and custom instructions are saved',a
 
 test('first-run setup offers Standard or Accurate transcription',async({page})=>{
   await page.addInitScript(()=>{
-    const models=[{id:'whisper',bytes:147964211,present:false},{id:'whisper_accurate',bytes:264477561,present:false,optional:true,manual_only:true},{id:'embedding',bytes:484622336,present:false},{id:'summary_e2b',bytes:2841481184,present:false,optional:true},{id:'summary_e4b',bytes:4590807392,present:false,optional:true,manual_only:true}];
+    const models=[{id:'whisper',bytes:147964211,present:false},{id:'parakeet',bytes:600408576,present:false,optional:true,manual_only:true},{id:'embedding',bytes:484622336,present:false},{id:'summary_e2b',bytes:2841481184,present:false,optional:true},{id:'summary_e4b',bytes:4590807392,present:false,optional:true,manual_only:true}];
     Object.assign(window,{isTauri:true,__setupCalls:[],__TAURI_INTERNALS__:{transformCallback:()=>1,invoke:async(command:string,args:{action?:string;payload?:unknown})=>{
       if(command.startsWith('plugin:event'))return 1;
       switch(args?.action){case 'library':case 'jobs':case 'devices':return [];case 'status':return null;case 'runtime_status':return {inference:true,whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models};case 'settings':return {summary_profile:'e2b'};case 'setup':(window as unknown as {__setupCalls:unknown[]}).__setupCalls.push(args.payload);return null;default:return null;}
@@ -199,12 +199,12 @@ test('first-run setup offers Standard or Accurate transcription',async({page})=>
   const dialog=page.getByRole('dialog');
   const choice=dialog.getByLabel('Transcription model',{exact:true});
   await expect(choice).toHaveValue('standard');
-  await expect(choice.locator('option')).toHaveText([/Standard · Fast default/,/Accurate · Fewer misheard words · \+264 MB/]);
+  await expect(choice.locator('option')).toHaveText([/Standard · Fast default/,/Accurate · Fewer misheard words · \+600 MB/]);
   await expect(dialog.getByText('About 3.6 GB in total',{exact:false})).toBeVisible();
   await choice.selectOption('accurate');
-  await expect(dialog.getByText('Writing each transcript takes about three times as long.',{exact:false})).toBeVisible();
-  await expect(dialog.getByText('About 3.9 GB in total',{exact:false})).toBeVisible();
-  await expect(dialog.locator('.welcome-model',{has:page.getByLabel('Transcription model',{exact:true})}).locator('.welcome-size')).toHaveText('412 MB');
+  await expect(dialog.getByText('Uses about 1 GB of memory while it writes each transcript.',{exact:false})).toBeVisible();
+  await expect(dialog.getByText('About 4.2 GB in total',{exact:false})).toBeVisible();
+  await expect(dialog.locator('.welcome-model',{has:page.getByLabel('Transcription model',{exact:true})}).locator('.welcome-size')).toHaveText('748 MB');
   await page.setViewportSize({width:900,height:720});
   await page.setViewportSize({width:900,height:720});
   await expect(dialog.getByRole('button',{name:'Download & set up',exact:true})).toBeInViewport({ratio:1});
@@ -217,7 +217,7 @@ test('first-run setup offers Standard or Accurate transcription',async({page})=>
 
 test('model setup shows the saved transcription choice',async({page})=>{
   await page.addInitScript(()=>{
-    const models=[{id:'whisper',bytes:147964211,present:true},{id:'whisper_accurate',bytes:264477561,present:true,optional:true,manual_only:true},{id:'embedding',bytes:484622336,present:true},{id:'summary_e2b',bytes:2841481184,present:true,optional:true}];
+    const models=[{id:'whisper',bytes:147964211,present:true},{id:'parakeet',bytes:600408576,present:true,optional:true,manual_only:true},{id:'embedding',bytes:484622336,present:true},{id:'summary_e2b',bytes:2841481184,present:true,optional:true}];
     Object.assign(window,{isTauri:true,__TAURI_INTERNALS__:{transformCallback:()=>1,invoke:async(command:string,args:{action?:string;payload?:unknown})=>{
       if(command.startsWith('plugin:event'))return 1;
       switch(args?.action){case 'library':case 'jobs':case 'devices':return [];case 'status':return null;case 'runtime_status':return {inference:true,whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models};case 'settings':return {summary_profile:'e2b',transcription_profile:'accurate'};default:return null;}
@@ -268,7 +268,7 @@ test('updates are checked only when asked, and only the release page opens',asyn
 
 test('accurate transcription is an explicit download and setting',async({page})=>{
   await page.addInitScript(()=>{
-    const models=[{id:'whisper',bytes:147964211,present:true},{id:'whisper_accurate',bytes:264477561,present:false,optional:true,manual_only:true},{id:'embedding',bytes:484622336,present:true},{id:'summary_e2b',bytes:2841481184,present:true,optional:true}];
+    const models=[{id:'whisper',bytes:147964211,present:true},{id:'parakeet',bytes:600408576,present:false,optional:true,manual_only:true},{id:'embedding',bytes:484622336,present:true},{id:'summary_e2b',bytes:2841481184,present:true,optional:true}];
     Object.assign(window,{isTauri:true,__calls:[],__TAURI_INTERNALS__:{transformCallback:()=>1,invoke:async(command:string,args:{action?:string;payload?:unknown})=>{
       if(command.startsWith('plugin:event'))return 1;
       if(args?.action==='save_settings'||args?.action==='setup')(window as unknown as {__calls:unknown[]}).__calls.push({action:args.action,payload:args.payload});
@@ -285,9 +285,9 @@ test('accurate transcription is an explicit download and setting',async({page})=
   const calls=()=>page.evaluate(()=>(window as unknown as {__calls:{action:string;payload:Record<string,unknown>}[]}).__calls);
   await expect.poll(async()=>(await calls()).find(c=>c.action==='save_settings')?.payload.transcription_profile).toBe('accurate');
   const accurate=page.locator('article.model',{hasText:'Transcription · more accurate'});
-  await expect(accurate).toContainText('264 MB');
+  await expect(accurate).toContainText('600 MB');
   await accurate.getByRole('button',{name:'Download',exact:true}).click();
-  await expect.poll(async()=>(await calls()).find(c=>c.action==='setup')?.payload).toMatchObject({mode:'download',model:'whisper_accurate'});
+  await expect.poll(async()=>(await calls()).find(c=>c.action==='setup')?.payload).toMatchObject({mode:'download',model:'parakeet'});
 });
 
 test('progress stays visible at the top while scrolling a long transcript',async({page})=>{

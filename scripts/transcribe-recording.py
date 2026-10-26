@@ -6,9 +6,11 @@ sNNNN-system-NNNNNN.flac, with each session's offset from session-NNNN.json),
 runs one transcription pass over all of it, and writes the rows and a summary
 as JSON. With --stop-after N the pass is stopped after N chunks and started
 again from its checkpoint, as when a new recording or Quit interrupts it.
+--engine parakeet runs Accurate (transcribe-cli) instead of Whisper.
 Never downloads anything.
 
   python3 scripts/transcribe-recording.py --recording DIR --model ggml-base.en.bin --whisper-cli whisper-cli --out rows.json
+  python3 scripts/transcribe-recording.py --recording DIR --engine parakeet --model parakeet-tdt-0.6b-v2-Q6_K.gguf --transcribe-cli transcribe-cli --out rows.json
 """
 import argparse
 import json
@@ -25,7 +27,9 @@ import engine
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--recording", type=Path, required=True, help="folder with sNNNN-<source>-NNNNNN.flac files")
 parser.add_argument("--model", type=Path, required=True)
+parser.add_argument("--engine", choices=["whisper", "parakeet"], default="whisper")
 parser.add_argument("--whisper-cli", default=str(ROOT / ".runtimes/whisper-build/bin/whisper-cli"))
+parser.add_argument("--transcribe-cli", default=str(ROOT / ".local-data/runtimes/transcribe/bin/transcribe-cli"))
 parser.add_argument("--threads", type=int, default=2)
 parser.add_argument("--stop-after", type=int, help="stop after this many chunks, then resume from the checkpoint")
 parser.add_argument("--out", type=Path, required=True)
@@ -45,18 +49,18 @@ class Stopped(Exception):
     pass
 
 
-progress, rows, chunks, whisper_seconds = {}, [], 0, 0.0
+progress, rows, chunks, engine_seconds = {}, [], 0, 0.0
 real_run = engine.run
 
 
 def timed_run(argv, **kwargs):
-    global whisper_seconds
+    global engine_seconds
     started = time.monotonic()
     try:
         return real_run(argv, **kwargs)
     finally:
-        if Path(argv[0]).name.startswith("whisper"):
-            whisper_seconds += time.monotonic() - started
+        if Path(argv[0]).name.startswith(("whisper", "transcribe")):
+            engine_seconds += time.monotonic() - started
 
 
 engine.run = timed_run
@@ -76,8 +80,8 @@ def receive(**event):
 
 started = time.monotonic()
 with tempfile.TemporaryDirectory(prefix="voxloom-transcribe-") as directory:
-    request = {"kind": "transcribe", "models": {"whisper": str(args.model)}, "whisper_cli": args.whisper_cli,
-               "threads": args.threads, "language": "en"}
+    request = {"kind": "transcribe", "models": {"whisper": str(args.model)}, "asr_engine": args.engine, "whisper_cli": args.whisper_cli,
+               "transcribe_cli": args.transcribe_cli, "threads": args.threads, "language": "en"}
     for _ in range(2):
         try:
             engine.transcribe(dict(request, tracks=tracks, asr_progress=json.loads(json.dumps(progress))), receive, Path(directory))
@@ -90,7 +94,7 @@ streams = {s["key"]: s["length"] for s in engine.audio_streams(tracks, lambda **
 audio = sum(streams.values())
 summary = {"audio_ms": audio, "streams": streams, "covered_ms": {k: progress.get(k, {}).get("covered_ms", 0) for k in streams},
            "rows": len(rows), "chunks": chunks, "words": sum(len(r["text"].split()) for r in rows),
-           "elapsed_s": round(elapsed, 1), "whisper_s": round(whisper_seconds, 1),
+           "elapsed_s": round(elapsed, 1), "engine": args.engine, "engine_s": round(engine_seconds, 1),
            "real_time_factor": round(elapsed / max(1, audio / 1000), 3), "resumed": bool(args.stop_after)}
 args.out.write_text(json.dumps({"summary": summary, "rows": rows}, indent=1), encoding="utf-8")
 print(json.dumps(summary))

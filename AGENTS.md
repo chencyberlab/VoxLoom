@@ -9,7 +9,8 @@ A private Linux desktop app (Ubuntu 24.04, x86_64) that records microphone and/o
 - **Desktop shell:** Tauri 2 hosting a React/TypeScript UI in the system WebKitGTK.
 - **Rust host** (`src-tauri/src`): capture, SQLite library, job queue, worker supervision.
 - **Python worker** (`worker/engine.py`): one fresh process per job. It drives:
-  - `whisper-cli` (whisper.cpp v1.9.5) for transcripts
+  - `whisper-cli` (whisper.cpp v1.9.5) for Standard transcripts
+  - `transcribe-cli` (transcribe.cpp v0.4.1) for Accurate transcripts, with Parakeet TDT 0.6B v2
   - LiteRT-LM EmbeddingGemma 2 740M for search
   - `llama-completion` (llama.cpp v0.6.0, patched) for summaries
 - **Target hardware:** ordinary business laptops with 4–8 CPU cores and 16 GB RAM, no GPU. Measure CPU and latency on that class of machine before making anything heavier.
@@ -67,7 +68,7 @@ A private Linux desktop app (Ubuntu 24.04, x86_64) that records microphone and/o
 | `%LOCALAPPDATA%\org.voxloom.desktop\` and `…\cache\` | The same library and cache on Windows. Local, not Roaming (Roaming can sync to a server on company networks), and not the per-user program folder `%LOCALAPPDATA%\Programs\VoxLoom`. The WebView2 profile (`EBWebView`) lives here too. The uninstaller always deletes `models`, `cache` and `EBWebView`; the library and recordings only if the user ticks "Also delete my recordings, transcripts and settings" (or runs `uninstall.exe /S /DELETEDATA`). Updates delete nothing. | Never |
 | `.local-data/windows-runtime/` | `build-windows-runtime.sh` output: `engines/`, `python/`, `licenses/` (bundled software's licences and sources), `VERSIONS.txt`, and `build/` (sources and objects, reusable). | Ignored |
 | `src-tauri/engines/`, `src-tauri/python/`, `src-tauri/licenses/`, `src-tauri/VERSIONS.txt` on Windows | The Windows runtime staged for debug builds (found through `resources/src-tauri/…`) and packaging. | Ignored |
-| `.local-data/` | This checkout's own library, models and compiled engines (`.local-data/runtimes/{whisper,llama}{,-generic}/bin`). Used by `run-local.sh` and `build-app.sh`, so development never touches the installed app's data. | Ignored |
+| `.local-data/` | This checkout's own library, models and compiled engines (`.local-data/runtimes/{whisper,llama,transcribe}{,-generic}/bin`). Used by `run-local.sh` and `build-app.sh`, so development never touches the installed app's data. | Ignored |
 | `.toolchain/` | Private Rust (`rustup`, `cargo`) and, if needed, Node (`node/`). Created by `build-app.sh`. | Ignored |
 | `.venv/` | Development Python with LiteRT, for real-engine tests. | Ignored |
 | `.runtimes/` | Older layout for engine builds (`whisper-build/bin`, `llama-build/bin`, `generic/`). Still accepted by `desktop.sh`. | Ignored |
@@ -142,14 +143,14 @@ Real-engine checks are opt-in. They need models and fixtures, and they never dow
 | Check | Command |
 |---|---|
 | Speech fixtures | `bash scripts/make-fixtures.sh` |
-| Transcription, sentences across 30 s file boundaries | `python3 scripts/test-transcript-continuity.py --models <models> --whisper-cli <whisper-cli>` |
-| **Transcribe a real recording exactly as the app does after Stop** (every session and source; `--stop-after N` stops it after N chunks and resumes from the checkpoint); prints coverage, speed and rows | `python3 scripts/transcribe-recording.py --recording ~/.local/share/voxloom/recordings/<id> --model <models>/ggml-base.en.bin --whisper-cli <whisper-cli> --out /tmp/rows.json` |
+| Transcription, sentences across 30 s file boundaries (add `--transcribe-cli <transcribe-cli>` to check Accurate too) | `python3 scripts/test-transcript-continuity.py --models <models> --whisper-cli <whisper-cli>` |
+| **Transcribe a real recording exactly as the app does after Stop** (every session and source; `--stop-after N` stops it after N chunks and resumes from the checkpoint; Accurate: `--engine parakeet --model <models>/parakeet-tdt-0.6b-v2-Q6_K.gguf --transcribe-cli <transcribe-cli>`); prints coverage, speed and rows | `python3 scripts/transcribe-recording.py --recording ~/.local/share/voxloom/recordings/<id> --model <models>/ggml-base.en.bin --whisper-cli <whisper-cli> --out /tmp/rows.json` |
 | Real capture through a temporary PipeWire test sink (removed afterwards; defaults unchanged) | `VOXLOOM_TEST_MODELS=<models> VOXLOOM_TEST_WHISPER_CLI=<whisper-cli> python3 scripts/test-capture.py` |
 | Full import → transcribe → index → search → summary → export → delete | see `docs/TESTING.md`, "Real local engines and full workflow" |
 | Packaged app launches, floats/expands and quits cleanly (hidden Xvfb display, throwaway data) | `xvfb-run -a python3 scripts/native-smoke.py <path>/usr/bin/voxloom` |
 | Engines, summaries, clipboard | `scripts/probe-engines.py`, `scripts/test-meeting-notes.py`, `scripts/test-native-notes.py` |
 
-`<whisper-cli>` can be `.local-data/runtimes/whisper/bin/whisper-cli` or the installed `/usr/lib/voxloom/engines/whisper-cli`.
+`<whisper-cli>` can be `.local-data/runtimes/whisper/bin/whisper-cli` or the installed `/usr/lib/voxloom/engines/whisper-cli`; `<transcribe-cli>` likewise (`.local-data/runtimes/transcribe/bin/transcribe-cli`). The real-engine workflow test runs its Accurate pass when `VOXLOOM_TEST_TRANSCRIBE_CLI` and the Parakeet model are there.
 
 To judge transcription quality on real audio, compare against a stronger reference transcript (e.g. large-v3-turbo over the whole file). Report word error rate and runs of missing words, not impressions. Record the numbers in `docs/TESTING.md`.
 
@@ -175,7 +176,7 @@ When releasing a new version:
 
 ## Transcription invariants
 
-A recording is transcribed once, after Stop. 0.1.22 removed live transcription: running Whisper beside the recording made laptops loud (the fan reached the microphone) and slowed calls, and cuts made at the edge of a file still being written misheard more than a pass over the finished recording. The path: Stop (`finish_capture`) → one `transcribe` job → `request("transcribe")` → `engine.py::transcribe` over every track of the recording. Imports and the Transcribe button use the same job. Rules:
+A recording is transcribed once, after Stop. Standard (Whisper, `whisper_pieces`) and Accurate (Parakeet, `parakeet_pieces`, which groups its word times into Whisper-style pieces) go through the same chunks and safety nets, so every rule below holds for both; `speech_pieces` picks the engine the request names. 0.1.22 removed live transcription: running Whisper beside the recording made laptops loud (the fan reached the microphone) and slowed calls, and cuts made at the edge of a file still being written misheard more than a pass over the finished recording. The path: Stop (`finish_capture`) → one `transcribe` job → `request("transcribe")` → `engine.py::transcribe` over every track of the recording. Imports and the Transcribe button use the same job. Rules:
 
 - **Nothing runs while a recording is open, paused included.** `tick` only registers closed segments, then returns; `run_worker` refuses; starting a recording stops a running worker and its job waits. Pause queues nothing. Never schedule work during capture again without the user's agreement.
 
@@ -197,7 +198,7 @@ Summary style: Settings → Summary style (`summary_style`: `counselling` (defau
 
 Notes: one document per recording (`meetings.notes`). The person types it in the studio while recording and on the recording's Notes tab; `NotesEditor` saves a moment after typing stops, on leaving the field, and before Summarise (`flush`). A summary is appended by `ingest` under the title `# Summary` (`SUMMARY_TITLE`), never in place of anything, and nothing is trimmed, so each save sends `notes_base` (the notes it started from) and `update` keeps whatever was added after that text below the edit. The summary prompt gets the person's own notes as a NOTES block (`notes.py::own_notes`: the notes without `# Summary` sections, at most 1,500 characters) that steers the topics; nothing that is only in the notes may be stated as said, and the transcript wins where they disagree. The renderer cleans recording times only inside `# Summary` sections; typed lines are shown as typed. The `summary` column is unused since 0.1.23: migration 004 moved finished summaries into the notes and left unfinished drafts where they were.
 
-Transcription model choice: first-run setup (and Settings → Model setup) and Settings → Transcription (`transcription_profile`: `standard` = `ggml-base.en.bin`, `accurate` = optional `ggml-small.en-q8_0.bin`). Setup always installs Standard, the fallback; choosing Accurate adds `whisper_accurate`, and the choice is saved only once its model is installed. A setup request without `transcription_profile` keeps the saved choice. `Service::whisper_model` is the only place that picks the file; it falls back to Standard until Accurate is downloaded. Never hard-code a model filename elsewhere.
+Transcription model choice: first-run setup (and Settings → Model setup) and Settings → Transcription (`transcription_profile`: `standard` = Whisper `ggml-base.en.bin`, `accurate` = optional Parakeet `parakeet-tdt-0.6b-v2-Q6_K.gguf`, run by `transcribe-cli`, since 0.1.25; it was Whisper `ggml-small.en-q8_0.bin` before, now listed under `retired` so Settings can remove it). Setup always installs Standard, the fallback and the low-memory choice; choosing Accurate adds `parakeet`, and the choice is saved only once its model is installed. A setup request without `transcription_profile` keeps the saved choice. `Service::transcription_model` is the only place that picks the file, and the request's `asr_engine` follows from it; it falls back to Standard until Accurate is downloaded. Never hard-code a model filename elsewhere. Why Parakeet, and its memory (0.51 GiB private, about 1.05 GiB including the memory-mapped model, which the system can drop under pressure; never pass `--no-mmap`): docs/TESTING.md, "Parakeet TDT 0.6B v2 as a transcription model".
 
 Tried and rejected (0.1.7): Gemma 4 E2B/E4B as the transcription model (Google AI Edge Foresight's approach, LiteRT-LM `.litertlm`, Google's ASR prompt as a system message, at most 30 s of audio per request). On the counselling recording it missed fewer words than Whisper (E2B 4, E4B 5, Whisper 6) and kept stammers, but misheard more (E2B 8.7%, E4B 7.6% WER against Accurate 5.1%), used 1.6 / 3.3 GB and 0.36 / 0.77 of real time on two threads, and gives no timestamps. With the instructions after the audio it once appended the prompt to the transcript. Through llama.cpp (`llama-mtmd-cli` + `mmproj`) it could not turn off thinking: 75-87 s per 28 s clip. See docs/TESTING.md, "Gemma 4 as a transcription model".
 
@@ -213,7 +214,8 @@ Performance reference (i7-11370H, 4 cores), one 28 s chunk:
 |---|---|---|---|
 | base.en (default) | 3.6 s | 2.5 s | |
 | small.en (full size) | 10.7 s | 8.8 s | About 4 points lower word error rate on a noisy mic |
-| small.en q8_0 ("Accurate") | about 40% of real time at 2 threads | | Fastest small variant on CPU; q5_1 is slower here |
+| small.en q8_0 (Accurate until 0.1.24) | about 40% of real time at 2 threads | | Fastest small variant on CPU; q5_1 is slower here |
+| Parakeet TDT 0.6B v2 Q6_K (Accurate since 0.1.25) | 3.2 s | | Fewer misheard words than small.en; peak 1.03-1.07 GiB, 0.51 GiB private |
 | large-v3-turbo q5_0 | 35 s | 23 s | Too slow for live use |
 
 ## Database changes
@@ -237,10 +239,11 @@ The Cloud Agent environment installs the Ubuntu packages from "Set up a developm
 
 Playwright uses `/opt/google/chrome/chrome`. The fast checks (`npm run check`, `npm test`, `npm run test:ui`, `cargo test --manifest-path src-tauri/Cargo.toml --no-default-features`, and `cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings` after `mkdir -p src-tauri/engines`) do not need models.
 
-Whisper, llama.cpp and the model files are not installed. `scripts/desktop.sh build` stops until `scripts/setup-runtimes.sh` has compiled the engines. A debug desktop binary does not need them: `npx tauri build --debug --no-bundle`, then `xvfb-run -a python3 scripts/native-smoke.py src-tauri/target/debug/voxloom`. Do not download models unless the task is a real-engine check.
+Whisper, llama.cpp, transcribe.cpp and the model files are not installed. `scripts/desktop.sh build` stops until `scripts/setup-runtimes.sh` has compiled the engines. A debug desktop binary does not need them: `npx tauri build --debug --no-bundle`, then `xvfb-run -a python3 scripts/native-smoke.py src-tauri/target/debug/voxloom`. Do not download models unless the task is a real-engine check.
 
 ## Known gotchas
 
+- `transcribe-cli` has no machine-readable word output: `parakeet_pieces` reads the `text:` line and the `words:` block it prints on stdout, and keeps the text as one piece if the two disagree. Before moving to a newer transcribe.cpp, run the `ParakeetPieces` unit tests against its real output and `scripts/transcribe-recording.py --engine parakeet` on a real recording.
 - FFmpeg's segment muxer can leave the full recording length in a later file's FLAC header. Count decoded samples (`duration()`), and decode segmented files before seeking.
 - Whisper output varies with exact chunk boundaries: the same audio cut a few milliseconds differently can gain or lose words. Compare runs, not single results.
 - whisper.cpp always encodes a full 30 s window, so short chunks cost almost as much as long ones.

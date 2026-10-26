@@ -233,7 +233,7 @@ class Stopped(Exception):
 class Transcription(unittest.TestCase):
     """Real chunk planner and sentence assembly with fixture audio and Whisper."""
 
-    def run_pass(self, spans, total, skip_tail_once=False, endings=None, room=-120.0, decode=None, stop_after=None):
+    def run_pass(self, spans, total, skip_tail_once=False, endings=None, room=-120.0, decode=None, stop_after=None, asr_engine='whisper'):
         """One pass over the finished recording. With stop_after, the pass is
         stopped after that many commits and started again from its checkpoint."""
         audio = speech_audio(spans, total)
@@ -272,11 +272,11 @@ class Transcription(unittest.TestCase):
                 patch.object(engine, 'ensure_model', return_value='fixture'), \
                 patch.object(engine, 'stream_samples', side_effect=lambda stream, a, b: audio[a * 16:b * 16]), \
                 patch.object(engine, 'voice_levels', side_effect=levels), \
-                patch.object(engine, 'whisper_pieces', side_effect=decode or whisper):
+                patch.object(engine, f'{asr_engine}_pieces', side_effect=decode or whisper):
             track = {'id': 't', 'path': '/fixture/s0000-mic-000000.flac', 'source': 'mic', 'offset_ms': 0, 'duration_ms': total}
             for _ in range(2):
                 try:
-                    engine.transcribe({'kind': 'transcribe', 'models': {'whisper': 'fixture'}, 'whisper_cli': 'fixture', 'threads': 2,
+                    engine.transcribe({'kind': 'transcribe', 'models': {'whisper': 'fixture'}, 'whisper_cli': 'fixture', 'threads': 2, 'asr_engine': asr_engine,
                                        'tracks': [track], 'asr_progress': json.loads(json.dumps(progress))}, receive, Path(directory))
                     break
                 except Stopped:
@@ -316,6 +316,12 @@ class Transcription(unittest.TestCase):
 
     def test_whisper_skipping_trailing_speech_is_retried(self):
         rows, _, calls = self.run_pass([(1000, 4000), (6000, 9000)], 12000, skip_tail_once=True)
+        self.assertEqual([r['text'] for r in rows], ['Speech at 1s.', 'Speech at 6s.'])
+        self.assertGreater(len(calls), 1)
+
+    def test_accurate_transcription_keeps_the_same_safety_nets(self):
+        # Parakeet goes through the same chunks and retries; Whisper is never called.
+        rows, _, calls = self.run_pass([(1000, 4000), (6000, 9000)], 12000, skip_tail_once=True, asr_engine='parakeet')
         self.assertEqual([r['text'] for r in rows], ['Speech at 1s.', 'Speech at 6s.'])
         self.assertGreater(len(calls), 1)
 
@@ -436,6 +442,56 @@ class Transcription(unittest.TestCase):
                              [{'type': 'track_duration', 'track_id': 'a', 'duration_ms': 2000}])
 
 
+class ParakeetPieces(unittest.TestCase):
+    """transcribe-cli's output read into the pieces the chunk planner uses."""
+
+    def output(self, text, words):
+        lines = ["audio: asr.wav", "run: ok", f"text: {text}"]
+        if words is not None:
+            lines += [f"words: {len(words)}", *(f"  [{a / 1000:7.2f} -> {b / 1000:7.2f}] {w}" for a, b, w in words)]
+        return ("\n".join(lines + ["  realtime:   9x"]) + "\n").encode()
+
+    def pieces(self, stdout, length_ms=28000):
+        calls = []
+
+        def fake(argv, **kwargs):
+            calls.append(argv)
+            return stdout
+
+        with tempfile.TemporaryDirectory() as directory, patch.object(engine, 'run', side_effect=fake):
+            found = engine.parakeet_pieces({'transcribe_cli': 'transcribe-cli', 'threads': 2}, 'model.gguf',
+                                           array('h', bytes(length_ms * 32)), Path(directory))
+            wav = str(Path(directory) / 'asr.wav')
+        return found, calls, wav
+
+    def test_words_are_grouped_at_sentence_ends_and_pauses(self):
+        words = [(240, 560, 'And'), (560, 1040, 'so,'), (1040, 1680, 'we'), (1680, 2000, 'agreed.'),
+                 (2100, 2400, 'Next'), (2400, 2800, 'week'), (4200, 4600, 'we'), (4600, 5000, 'meet.')]
+        found, calls, wav = self.pieces(self.output('And so, we agreed. Next week we meet.', words))
+        self.assertEqual(found, [{'text': 'And so, we agreed.', 'start_ms': 240, 'end_ms': 2000},
+                                 {'text': 'Next week', 'start_ms': 2100, 'end_ms': 2800},
+                                 {'text': 'we meet.', 'start_ms': 4200, 'end_ms': 5000}])
+        # Only the model and the scratch WAV reach the command line, never words.
+        self.assertEqual(calls, [['transcribe-cli', '-m', 'model.gguf', '--threads', '2', '--timestamps', 'word', wav]])
+
+    def test_text_is_kept_when_word_times_are_missing_or_disagree(self):
+        found, _, _ = self.pieces(self.output('Hello there.', None))
+        self.assertEqual(found, [{'text': 'Hello there.', 'start_ms': 0, 'end_ms': 28000}])
+        found, _, _ = self.pieces(self.output('Hello there, friend.', [(500, 900, 'Hello'), (900, 1400, 'there,')]))
+        self.assertEqual(found, [{'text': 'Hello there, friend.', 'start_ms': 500, 'end_ms': 1400}])
+
+    def test_empty_chunk_and_times_past_its_end(self):
+        found, _, _ = self.pieces(self.output('(empty)', []))
+        self.assertEqual(found, [])
+        found, _, _ = self.pieces(self.output('Done.', [(27900, 28600, 'Done.')]))
+        self.assertEqual(found, [{'text': 'Done.', 'start_ms': 27900, 'end_ms': 28000}])
+
+    def test_the_request_chooses_the_engine(self):
+        with patch.object(engine, 'whisper_pieces', return_value=['whisper']), patch.object(engine, 'parakeet_pieces', return_value=['parakeet']):
+            self.assertEqual(engine.speech_pieces({}, 'm', array('h'), Path('.')), ['whisper'])
+            self.assertEqual(engine.speech_pieces({'asr_engine': 'parakeet'}, 'm', array('h'), Path('.')), ['parakeet'])
+
+
 class Provisioning(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="voxloom test café ")
@@ -525,12 +581,14 @@ class Provisioning(unittest.TestCase):
             self.assertEqual(len(model["revision"]), 40)
         # Gemma 3 1B was removed in 0.1.8: never downloaded, only listed for removal.
         self.assertFalse(any("gemma-3" in m["filename"] for m in models))
+        # Whisper small (Accurate until 0.1.24) is listed only so Settings can remove it.
         retired = json.loads(provision.MANIFEST.read_text())["retired"]
-        self.assertEqual([r["filename"] for r in retired], ["gemma-3-1b-it-qat-Q4_0.gguf"])
+        self.assertEqual([r["filename"] for r in retired], ["gemma-3-1b-it-qat-Q4_0.gguf", "ggml-small.en-q8_0.bin"])
+        self.assertFalse(any(m["filename"] == "ggml-small.en-q8_0.bin" for m in models))
         # The accurate transcription model is an explicit, opt-in download.
-        accurate = next(m for m in models if m["id"] == "whisper_accurate")
+        accurate = next(m for m in models if m["id"] == "parakeet")
         self.assertTrue(accurate["manual_only"] and accurate["optional"])
-        self.assertEqual(accurate["filename"], "ggml-small.en-q8_0.bin")
+        self.assertEqual(accurate["filename"], "parakeet-tdt-0.6b-v2-Q6_K.gguf")
         for m in models:
             self.assertEqual(len(m["sha256"]), 64)
             self.assertEqual(len(m["revision"]), 40)

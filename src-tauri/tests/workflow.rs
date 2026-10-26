@@ -5,6 +5,8 @@
 //   VOXLOOM_TEST_FIXTURES  folder of scripts/make-fixtures.sh output (default /tmp)
 //   VOXLOOM_TEST_PYTHON, VOXLOOM_TEST_WHISPER_CLI, VOXLOOM_TEST_LLAMA_CLI  engines
 //                          (default: the Linux checkout layout under ROOT)
+//   VOXLOOM_TEST_TRANSCRIBE_CLI  Accurate's engine; that pass runs only when it
+//                          and the Parakeet model are present
 use serde_json::json;
 use std::{
     path::PathBuf,
@@ -205,6 +207,26 @@ fn real_offline_import_transcribe_index_search_restart_export_delete() {
                 .unwrap_or("")
                 .to_lowercase()
                 .contains("budget")));
+    // Accurate, when its engine and model are there: Transcribe starts over
+    // with Parakeet (transcribe-cli) and must hear the same words.
+    let transcribe_cli = env_path("VOXLOOM_TEST_TRANSCRIBE_CLI", root.join(".local-data/runtimes/transcribe/bin/transcribe-cli"));
+    let models_dir = env_path("VOXLOOM_TEST_MODELS", root.join(".local-data/models"));
+    if transcribe_cli.is_file() && models_dir.join("parakeet-tdt-0.6b-v2-Q6_K.gguf").is_file() {
+        s.dispatch("save_settings", json!({"transcribe_cli":transcribe_cli,"transcription_profile":"accurate"}))
+            .unwrap();
+        s.dispatch("enqueue", json!({"id":id,"kind":"transcribe","restart":true}))
+            .unwrap();
+        await_jobs(&s);
+        measured.insert("transcribe_accurate".into(), read_metrics("transcribe"));
+        let d = s.dispatch("detail", json!({"id":id})).unwrap();
+        let text = d["segments"].as_array().unwrap().iter().map(|v| v["text"].as_str().unwrap()).collect::<Vec<_>>().join(" ");
+        assert!(text.to_lowercase().contains("budget"), "{text}");
+        if let Ok(path) = std::env::var("VOXLOOM_TEST_REPORT") {
+            std::fs::write(path, serde_json::to_string_pretty(&measured).unwrap()).unwrap();
+        }
+    } else {
+        eprintln!("SKIPPED Accurate: set VOXLOOM_TEST_TRANSCRIBE_CLI and put the Parakeet model in VOXLOOM_TEST_MODELS");
+    }
     for format in ["srt", "txt", "md", "json", "docx", "summary_docx"] {
         let target = temp.path().join(format!("export.{format}"));
         s.dispatch("export", json!({"id":id,"format":format,"path":target}))

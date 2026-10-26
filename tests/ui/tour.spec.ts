@@ -17,7 +17,7 @@ for (const theme of ['light', 'dark'] as const) {
       const segments = Array.from({ length: 8 }, (_, i) => ({ id: i, meeting_id: 'a', start_ms: i * 9000, end_ms: i * 9000 + 6000, source: i % 2 ? 'system' : 'mic', text: ['Yeah, I guess I have to figure out things for myself and for my parents.', 'You have a lot to manage right now.', 'I have to learn and improve my English for school.', 'It sounds like you have a lot of responsibilities.', 'And I don\'t have any friend.', 'Sounds like you had hoped for things to be different.', 'My teacher just told me I\'m failing two classes.', 'Is that correct? Yeah.'][i] }));
       const models = [
         { id: 'whisper', name: 'Whisper', bytes: 147964211, disk_bytes: 147964211, present: true },
-        { id: 'whisper_accurate', name: 'Whisper small', bytes: 264477561, disk_bytes: 0, present: false, optional: true, manual_only: true },
+        { id: 'parakeet', name: 'Parakeet TDT 0.6B v2', bytes: 600408576, disk_bytes: 0, present: false, optional: true, manual_only: true },
         { id: 'embedding', name: 'EmbeddingGemma', bytes: 484622336, disk_bytes: 484622336, present: true },
         { id: 'summary_e2b', name: 'E2B', bytes: 2841481184, disk_bytes: 2841481184, present: true, optional: true },
         { id: 'summary_e4b', name: 'E4B', bytes: 4590807392, disk_bytes: 0, present: false, optional: true, manual_only: true },

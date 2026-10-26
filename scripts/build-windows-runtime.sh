@@ -4,6 +4,7 @@
 #
 #   engines/whisper-cli.exe, whisper-cli-generic.exe        whisper.cpp (pins from setup-runtimes.sh)
 #   engines/llama-completion.exe, llama-completion-generic.exe   llama.cpp, patched
+#   engines/transcribe-cli.exe, transcribe-cli-generic.exe  transcribe.cpp (Accurate transcription)
 #   engines/ffmpeg.exe, ffprobe.exe                          minimal LGPL FFmpeg, only what VoxLoom uses
 #   python/                                                  embeddable CPython + LiteRT (requirements.windows.lock.txt)
 #
@@ -53,7 +54,7 @@ printf '1 24 "voxloom.manifest"\n' > "$work/voxloom.rc"
 (cd "$work" && x86_64-w64-mingw32-windres voxloom.rc -O coff -o voxloom-manifest.o)
 static_ldflags="-static -static-libgcc -static-libstdc++ $work/voxloom-manifest.o"
 
-# whisper.cpp and llama.cpp: the same pins, patch and CPU variants as Linux.
+# whisper.cpp, llama.cpp and transcribe.cpp: the same pins, patch and CPU variants as Linux.
 cat > "$work/mingw.cmake" <<'EOF'
 set(CMAKE_SYSTEM_NAME Windows)
 set(CMAKE_SYSTEM_PROCESSOR x86_64)
@@ -81,18 +82,23 @@ typedef struct _THREAD_POWER_THROTTLING_STATE {
 HEADER
 build_engine() {
   local name="$1" version="$2" expected="$3" target="$4" upstream="$5"
-  fetch "https://github.com/ggml-org/$upstream/archive/refs/tags/$version.tar.gz" "$expected" "$work/$name-$version.tar.gz"
+  fetch "https://github.com/$upstream/archive/refs/tags/$version.tar.gz" "$expected" "$work/$name-$version.tar.gz"
   rm -rf "$work/$name-src" && mkdir -p "$work/$name-src"
   tar -xzf "$work/$name-$version.tar.gz" -C "$work/$name-src" --strip-components=1
-  cp "$work/$name-src/LICENSE" "$out/licenses/$upstream-LICENSE.txt"
+  cp "$work/$name-src/LICENSE" "$out/licenses/${upstream#*/}-LICENSE.txt"
   if [[ "$name" == llama ]]; then python3 "$repo/scripts/patch-llama-completion.py" "$work/$name-src"; fi
+  local extra=()
+  if [[ "$name" == transcribe ]]; then
+    cp "$work/$name-src/THIRD-PARTY-LICENSES.md" "$out/licenses/transcribe.cpp-THIRD-PARTY-LICENSES.md"
+    extra=(-DTRANSCRIBE_BUILD_TESTS=OFF -DTRANSCRIBE_USE_SYSTEM_BLAS=OFF -DTRANSCRIBE_METAL=OFF -DTRANSCRIBE_INSTALL=OFF)
+  fi
   for variant in optimized generic; do
     local cpu_flags=(-DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DGGML_BMI2=ON -DGGML_AVX512=OFF -DGGML_AVX_VNNI=OFF) suffix=""
     if [[ "$variant" == generic ]]; then cpu_flags=(-DGGML_AVX=OFF -DGGML_AVX2=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF -DGGML_BMI2=OFF); suffix="-generic"; fi
     # No OpenMP: its runtime would be another DLL; ggml's own thread pool is used instead.
     cmake -S "$work/$name-src" -B "$work/$name-$variant" -DCMAKE_TOOLCHAIN_FILE="$work/mingw.cmake" \
       -DGGML_NATIVE=OFF "${cpu_flags[@]}" -DGGML_OPENMP=OFF -DGGML_CCACHE=OFF -DGGML_CUDA=OFF -DGGML_VULKAN=OFF \
-      -DWHISPER_BUILD_TESTS=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_CURL=OFF -DLLAMA_OPENSSL=OFF \
+      -DWHISPER_BUILD_TESTS=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_CURL=OFF -DLLAMA_OPENSSL=OFF "${extra[@]}" \
       -DCMAKE_C_FLAGS="-include $work/mingw-compat.h" -DCMAKE_CXX_FLAGS="-include $work/mingw-compat.h" \
       -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DCMAKE_EXE_LINKER_FLAGS="$static_ldflags" > "$work/$name-$variant.log"
     cmake --build "$work/$name-$variant" --target "$target" -j "$jobs" >> "$work/$name-$variant.log"
@@ -101,9 +107,11 @@ build_engine() {
 }
 read -r _ _ whisper_version whisper_sha256 _ < <(grep '^build_engine whisper ' "$repo/scripts/setup-runtimes.sh")
 read -r _ _ llama_version llama_sha256 _ < <(grep '^build_engine llama ' "$repo/scripts/setup-runtimes.sh")
+read -r _ _ transcribe_version transcribe_sha256 _ < <(grep '^build_engine transcribe ' "$repo/scripts/setup-runtimes.sh")
 if wants engines; then
-  build_engine whisper "$whisper_version" "$whisper_sha256" whisper-cli whisper.cpp
-  build_engine llama "$llama_version" "$llama_sha256" llama-completion llama.cpp
+  build_engine whisper "$whisper_version" "$whisper_sha256" whisper-cli ggml-org/whisper.cpp
+  build_engine llama "$llama_version" "$llama_sha256" llama-completion ggml-org/llama.cpp
+  build_engine transcribe "$transcribe_version" "$transcribe_sha256" transcribe-cli handy-computer/transcribe.cpp
 fi
 
 # FFmpeg: LGPL (no --enable-gpl, no external libraries), only the formats import
@@ -156,8 +164,8 @@ for file in "$out"/engines/*.exe; do
   if [[ -n "$extra" ]]; then printf '%s needs DLLs Windows does not ship: %s\n' "$file" "$extra" >&2; exit 1; fi
 done
 
-printf 'whisper.cpp %s\nllama.cpp %s\nFFmpeg %s (LGPL)\nCPython %s embeddable\n' \
-  "$whisper_version" "$llama_version" "$ffmpeg_version" "$python_version" > "$out/VERSIONS.txt"
+printf 'whisper.cpp %s\nllama.cpp %s\ntranscribe.cpp %s\nFFmpeg %s (LGPL)\nCPython %s embeddable\n' \
+  "$whisper_version" "$llama_version" "$transcribe_version" "$ffmpeg_version" "$python_version" > "$out/VERSIONS.txt"
 # What a package that bundles the runtime must say about it.
 cat > "$out/licenses/README.txt" <<EOF
 Third-party software bundled with VoxLoom for Windows
@@ -166,6 +174,8 @@ whisper.cpp $whisper_version (MIT): https://github.com/ggml-org/whisper.cpp/tree
   Licence: whisper.cpp-LICENSE.txt
 llama.cpp $llama_version (MIT): https://github.com/ggml-org/llama.cpp/tree/$llama_version
   Patched by scripts/patch-llama-completion.py in VoxLoom's source. Licence: llama.cpp-LICENSE.txt
+transcribe.cpp $transcribe_version (MIT): https://github.com/handy-computer/transcribe.cpp/tree/$transcribe_version
+  Licence: transcribe.cpp-LICENSE.txt; the code it includes: transcribe.cpp-THIRD-PARTY-LICENSES.md
 FFmpeg $ffmpeg_version (LGPL 2.1 or later): https://ffmpeg.org/releases/ffmpeg-$ffmpeg_version.tar.xz
   Built unmodified with the options in scripts/build-windows-runtime.sh in VoxLoom's
   source (https://github.com/chencyberlab/VoxLoom). Licence: FFmpeg-COPYING.LGPLv2.1.txt, FFmpeg-LICENSE.md

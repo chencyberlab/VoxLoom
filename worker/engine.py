@@ -421,6 +421,52 @@ def whisper_pieces(request, model, samples, scratch):
     return pieces
 
 
+PARAKEET_WORD = re.compile(r"\s*\[\s*(-?[\d.]+)\s*->\s*(-?[\d.]+)\]\s?(.*)")
+
+
+def parakeet_pieces(request, model, samples, scratch):
+    """Parakeet's words, grouped into pieces the way Whisper returns segments.
+
+    transcribe-cli prints the text and then each word with its times. A piece
+    ends at a sentence end or a pause, so missed_voice still sees a voiced
+    stretch Parakeet wrote nothing for. Timestamps only place words: if the
+    word list is missing or disagrees with the text, the text stays whole as
+    one piece.
+    """
+    wav = scratch / "asr.wav"
+    write_wav(wav, samples, 17600)
+    lines = run([request["transcribe_cli"], "-m", model, "--threads", str(request["threads"]), "--timestamps", "word",
+                 str(wav)], timeout=600).decode("utf-8", "replace").splitlines()
+    length = len(samples) // 16
+    text = next((line[6:].strip() for line in lines if line.startswith("text: ")), "")
+    text = "" if text == "(empty)" else " ".join(NON_SPEECH.sub(" ", text).split())
+    found = []
+    for i, line in enumerate(lines):
+        if heading := re.fullmatch(r"words: (\d+)", line):
+            for entry in lines[i + 1:i + 1 + int(heading[1])]:
+                if word := PARAKEET_WORD.fullmatch(entry):
+                    start = max(0, min(length, round(float(word[1]) * 1000)))
+                    found.append([start, max(start, min(length, round(float(word[2]) * 1000))), word[3].strip()])
+            break
+    if " ".join(w[2] for w in found).split() != text.split():
+        found = [[found[0][0] if found else 0, found[-1][1] if found else length, text]] if text else []
+    pieces = []
+    for start, end, word in found:
+        if pieces and start - pieces[-1]["end_ms"] < TURN_GAP_MS and not SENTENCE_END.search(pieces[-1]["text"]):
+            pieces[-1]["text"] += " " + word
+            pieces[-1]["end_ms"] = end
+        else:
+            pieces.append({"text": word, "start_ms": start, "end_ms": end})
+    return pieces
+
+
+def speech_pieces(request, model, samples, scratch):
+    """Timed pieces for one chunk from the engine the request names."""
+    if request.get("asr_engine") == "parakeet":
+        return parakeet_pieces(request, model, samples, scratch)
+    return whisper_pieces(request, model, samples, scratch)
+
+
 def missed_voice(levels, threshold, pieces, length):
     """Voiced stretches that Whisper returned no words for.
 
@@ -462,14 +508,14 @@ def drop_repeated_start(previous, text):
 
 
 def transcribe_chunk(request, model, samples, levels, threshold, scratch):
-    """Whisper segments for one chunk, retrying any voiced stretch it skipped."""
+    """Timed pieces for one chunk, retrying any voiced stretch the engine skipped."""
     length = len(samples) // 16
 
     def decode(a, b):
         return [dict(p, start_ms=a + p["start_ms"], end_ms=a + p["end_ms"])
-                for p in whisper_pieces(request, model, samples[a * 16:b * 16], scratch)]
+                for p in speech_pieces(request, model, samples[a * 16:b * 16], scratch)]
 
-    pieces, tried = whisper_pieces(request, model, samples, scratch), set()
+    pieces, tried = speech_pieces(request, model, samples, scratch), set()
     for _ in range(4):
         missed = [r for r in missed_voice(levels, threshold, pieces, length) if r not in tried]
         if not missed:
