@@ -181,6 +181,12 @@ test('summary style defaults to counselling and custom instructions are saved',a
   await style.selectOption('custom');
   const box=page.getByLabel('Custom summary instructions',{exact:true});
   await expect(page.getByText('Until you write instructions, the Counselling style is used.',{exact:false})).toBeVisible();
+  // Examples for people who have never written instructions: one click fills the box, only after it says it replaces.
+  await page.getByText('How to write instructions, with examples',{exact:true}).click();
+  await expect(page.getByText('List the headings you want, in order.',{exact:true})).toBeVisible();
+  await page.getByRole('button',{name:'Use this: Case note',exact:true}).click();
+  await expect(box).toHaveValue(/^This is a one-to-one counselling session\. .*Leave out small talk\.$/);
+  await expect(page.getByRole('button',{name:'Replace mine with Team meeting',exact:true})).toBeVisible();
   await box.fill('List the goals the client named.');await expect(page.getByText('32 / 2,000',{exact:false})).toBeVisible();
   await page.setViewportSize({width:900,height:720});await page.screenshot({path:'test-results/summary-style.png',fullPage:true});
   await page.getByRole('button',{name:'Save settings',exact:true}).click();
@@ -199,12 +205,15 @@ test('first-run setup offers Standard or Accurate transcription',async({page})=>
   const dialog=page.getByRole('dialog');
   const choice=dialog.getByLabel('Transcription model',{exact:true});
   await expect(choice).toHaveValue('standard');
-  await expect(choice.locator('option')).toHaveText([/Standard · Fast default/,/Accurate · Fewer misheard words · \+600 MB/]);
+  await expect(choice.locator('option')).toHaveText([/Standard · Fast default · 148 MB/,/Accurate · Fewer misheard words · 600 MB/]);
+  const transcriptionSize=dialog.locator('.welcome-model',{has:page.getByLabel('Transcription model',{exact:true})}).locator('.welcome-size');
+  await expect(transcriptionSize).toHaveText('148 MB');
   await expect(dialog.getByText('About 3.6 GB in total',{exact:false})).toBeVisible();
   await choice.selectOption('accurate');
   await expect(dialog.getByText('Uses about 1 GB of memory while it writes each transcript.',{exact:false})).toBeVisible();
-  await expect(dialog.getByText('About 4.2 GB in total',{exact:false})).toBeVisible();
-  await expect(dialog.locator('.welcome-model',{has:page.getByLabel('Transcription model',{exact:true})}).locator('.welcome-size')).toHaveText('748 MB');
+  // Accurate is installed instead of Standard, not as well: 148 MB fewer than Standard + Accurate.
+  await expect(dialog.getByText('About 4.1 GB in total',{exact:false})).toBeVisible();
+  await expect(transcriptionSize).toHaveText('600 MB');
   await page.setViewportSize({width:900,height:720});
   await page.setViewportSize({width:900,height:720});
   await expect(dialog.getByRole('button',{name:'Download & set up',exact:true})).toBeInViewport({ratio:1});
@@ -264,6 +273,32 @@ test('updates are checked only when asked, and only the release page opens',asyn
   await expect(status).toHaveText("Couldn't reach GitHub. Check your internet connection and try again.");
   await expect(page.getByRole('button',{name:/Get VoxLoom/})).toBeHidden();
   await expect(check).toBeEnabled();
+});
+
+test('Accurate alone is a complete setup, and Standard can be added later',async({page})=>{
+  await page.addInitScript(()=>{
+    const models=[{id:'whisper',bytes:147964211,present:false},{id:'parakeet',bytes:600408576,present:true,optional:true,manual_only:true},{id:'embedding',bytes:484622336,present:true},{id:'summary_e2b',bytes:2841481184,present:true,optional:true}];
+    Object.assign(window,{isTauri:true,__TAURI_INTERNALS__:{transformCallback:()=>1,invoke:async(command:string,args:{action?:string;payload?:unknown})=>{
+      if(command.startsWith('plugin:event'))return 1;
+      switch(args?.action){case 'library':case 'jobs':case 'devices':return [];case 'status':return null;case 'runtime_status':return {inference:true,whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models};case 'settings':return {summary_profile:'e2b',transcription_profile:'accurate'};default:return null;}
+    }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
+  });
+  await page.goto('/');
+  await page.getByRole('button',{name:'New recording',exact:false}).first().click();
+  await expect(page.getByText('Offline transcription',{exact:true})).toBeVisible();
+  await page.getByRole('button',{name:'Settings',exact:true}).click();
+  await expect(page.getByText('Accurate uses about 1 GB of memory',{exact:false})).toBeVisible();
+  // Models and settings have loaded, and the missing Standard model asked for no setup.
+  await expect(page.getByRole('dialog')).toBeHidden();
+  await page.getByLabel('Transcription model',{exact:true}).selectOption('standard');
+  await expect(page.getByText('Download “Transcription” in Local intelligence below first. Until then, Accurate is used.',{exact:true})).toBeVisible();
+  await page.getByRole('button',{name:'Model setup',exact:true}).click();
+  // Setup opens on the choice just made: Standard alone is what it would download.
+  const dialog=page.getByRole('dialog');const transcriptionSize=dialog.locator('.welcome-model',{has:page.getByLabel('Transcription model',{exact:true})}).locator('.welcome-size');
+  await expect(transcriptionSize).toHaveText('148 MB');
+  await dialog.getByLabel('Transcription model',{exact:true}).selectOption('accurate');
+  await expect(transcriptionSize).toHaveText('Ready');
+  await expect(dialog.getByRole('button',{name:'Continue to VoxLoom',exact:true})).toBeVisible();
 });
 
 test('accurate transcription is an explicit download and setting',async({page})=>{

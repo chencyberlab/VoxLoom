@@ -15,8 +15,9 @@ fn offline_setup_installs_only_selected_models_and_saves_successful_choices() {
     // Tiny integrity-checked files exercise real provisioning, not inference.
     // /bin/true explicitly stubs the runtime readiness probe so no dependencies
     // or model weights are downloaded by this orchestration regression test.
-    // Transcription: no choice keeps the saved one; Accurate adds its model to
-    // Standard and is saved only once that model is installed.
+    // Transcription: no choice keeps the saved one; only the chosen model is
+    // installed (Accurate without Standard), and a choice is saved only once
+    // its model is installed.
     for (profile, core_only, missing, transcription, before) in [
         ("e2b", false, None, None, "standard"),
         ("e4b", false, None, None, "accurate"),
@@ -29,12 +30,15 @@ fn offline_setup_installs_only_selected_models_and_saves_successful_choices() {
         ("e4b", false, None, Some("accurate"), "standard"),
         ("e2b", false, None, Some("standard"), "accurate"),
         ("e2b", false, Some("parakeet"), Some("accurate"), "standard"),
+        // Accurate needs no Standard file; Standard alone still needs its own.
+        ("e2b", false, Some("whisper"), Some("accurate"), "standard"),
+        ("e2b", false, Some("whisper"), None, "standard"),
         ("e2b", false, None, Some("best"), "standard"),
     ] {
         let valid = ["e2b", "e4b"].contains(&profile)
             && transcription.is_none_or(|t| ["standard", "accurate"].contains(&t));
-        let accurate = transcription == Some("accurate");
-        let transcribed = valid && !(accurate && missing == Some("parakeet"));
+        let accurate = transcription.unwrap_or(before) == "accurate";
+        let transcribed = valid && missing != Some(if accurate { "parakeet" } else { "whisper" });
         let summary = format!("summary_{profile}");
         let summarised = transcribed && !core_only && missing != Some(summary.as_str());
         let expected = summarised.then_some(summary.as_str());
@@ -109,7 +113,8 @@ fn offline_setup_installs_only_selected_models_and_saves_successful_choices() {
         );
         for (id, filename, _) in files {
             let installed = match id {
-                "whisper" | "embedding" => valid,
+                "whisper" => transcribed && !accurate,
+                "embedding" => transcribed,
                 "parakeet" => transcribed && accurate,
                 _ => expected == Some(id),
             };

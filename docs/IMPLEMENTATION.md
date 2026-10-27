@@ -286,3 +286,10 @@ Release result: built by the Apps workflow when this version reaches main, on th
 Known limitations: checked in Chrome only; not yet run in WebKitGTK or on Windows.
 Next: the user checks in WebKitGTK that a jump after a failed part plays: make `<cache>/playback` read-only, open a recording (the copy fails), make it writable again, then click a transcript row in the first 30 seconds.
 
+
+Version 0.1.30: setup downloads only the chosen transcription model; examples for custom summary instructions
+Implemented: first-run setup and Settings → Model setup download only the transcription model chosen, Standard (148 MB) or Accurate (600 MB), instead of Standard always and Accurate as well. Either one alone is a complete setup: the start-up check, the studio and the transcript page accept either, and `Service::transcription_model` uses the other model while the chosen one is not downloaded (Settings → Transcription says so). Setup with Accurate is 4.1 GB in total instead of 4.2 GB. Under custom summary instructions, "How to write instructions, with examples" gives three tips and three examples (counselling case note, team meeting, training session); one click fills the box, and the button says "Replace mine" when the box already has text. Nothing is saved until Save settings.
+Verified: see TESTING.md, "Version 0.1.30".
+Release result: built by the Apps workflow when this version reaches main, on the draft release v0.1.30. Not built locally.
+Known limitations: an existing library keeps the Standard model it already has; remove it in Settings → Local intelligence to free 148 MB if Accurate is chosen. Only Chrome was used for the browser checks.
+Next: the user runs first-run setup with Accurate on a fresh profile (VOXLOOM_DATA_DIR pointing at an empty folder) and checks that only Parakeet and the search model download, and tries an example in Settings → Summary style → Custom.

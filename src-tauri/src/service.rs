@@ -169,6 +169,10 @@ mod tests {
             .dispatch("save_settings", json!({"transcription_profile":"standard"}))
             .unwrap();
         assert_eq!(chosen(&service), ("ggml-base.en.bin".into(), "whisper".into()));
+        // Setup installs only the chosen model: Accurate alone still
+        // transcribes when Standard is chosen later and not downloaded.
+        fs::remove_file(models.join("ggml-base.en.bin")).unwrap();
+        assert_eq!(chosen(&service), (PARAKEET_MODEL.into(), "parakeet".into()));
         service.shutdown();
     }
 
@@ -1054,16 +1058,22 @@ impl Service {
         }
         Ok(())
     }
-    /// The selected transcription model. Accurate falls back to the standard
-    /// model until it is downloaded, so a recording is always transcribed.
+    /// The selected transcription model. Setup installs only the chosen one,
+    /// so either works alone: while the chosen model is not downloaded the
+    /// other is used if it is there, and a recording is always transcribed.
     fn transcription_model(&self, db: &Db) -> PathBuf {
         let models =
             PathBuf::from(db.setting("models_dir", &self.data.join("models").to_string_lossy()));
-        let accurate = models.join(PARAKEET_MODEL);
-        if db.setting("transcription_profile", "standard") == "accurate" && accurate.is_file() {
-            accurate
+        let (standard, accurate) = (models.join("ggml-base.en.bin"), models.join(PARAKEET_MODEL));
+        let (chosen, other) = if db.setting("transcription_profile", "standard") == "accurate" {
+            (accurate, standard)
         } else {
-            models.join("ggml-base.en.bin")
+            (standard, accurate)
+        };
+        if !chosen.is_file() && other.is_file() {
+            other
+        } else {
+            chosen
         }
     }
     fn python(&self) -> String {
@@ -2121,8 +2131,8 @@ impl Service {
                 "e4b" => "summary_e4b",
                 _ => return Err("Choose a supported summary model: E2B or E4B.".into()),
             };
-            // Standard is always installed; it is the fallback Accurate needs.
-            // Without a choice (older callers) the saved one stays.
+            // Only the chosen transcription model is installed. Without a choice
+            // (older callers) the saved one stays and its model is installed.
             let transcription = p["transcription_profile"].as_str();
             if transcription.is_some_and(|t| !["standard", "accurate"].contains(&t)) {
                 return Err("Choose Standard or Accurate transcription.".into());
@@ -2165,16 +2175,19 @@ impl Service {
             } else {
                 "import"
             };
-            // Install core tools independently, then only the explicitly chosen
-            // summary model. E4B must never pull in the default E2B as well.
-            models.as_object_mut().unwrap().remove("model");
-            models["core_only"] = json!(true);
-            self.provision(model_mode, &models)?;
+            // One model at a time, each named: the chosen transcription model,
+            // search, then only the chosen summary model. Accurate never pulls
+            // in Standard, and E4B never pulls in the default E2B.
+            let profile = transcription.map_or_else(
+                || self.db.lock().unwrap().setting("transcription_profile", "standard"),
+                str::to_string,
+            );
+            models.as_object_mut().unwrap().remove("core_only");
+            for model in [if profile == "accurate" { "parakeet" } else { "whisper" }, "embedding"] {
+                models["model"] = json!(model);
+                self.provision(model_mode, &models)?;
+            }
             if let Some(profile) = transcription {
-                if profile == "accurate" {
-                    models["model"] = json!("parakeet");
-                    self.provision(model_mode, &models)?;
-                }
                 self.db
                     .lock()
                     .unwrap()
