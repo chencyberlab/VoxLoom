@@ -293,3 +293,10 @@ Verified: see TESTING.md, "Version 0.1.30".
 Release result: built by the Apps workflow when this version reaches main, on the draft release v0.1.30. Not built locally.
 Known limitations: an existing library keeps the Standard model it already has; remove it in Settings → Local intelligence to free 148 MB if Accurate is chosen. Only Chrome was used for the browser checks.
 Next: the user runs first-run setup with Accurate on a fresh profile (VOXLOOM_DATA_DIR pointing at an empty folder) and checks that only Parakeet and the search model download, and tries an example in Settings → Summary style → Custom.
+
+Version 0.1.31: fixes from the review of 0.1.30 (issue #14)
+Implemented: UI text no longer assumes Standard is installed. Removing a transcription model says which one keeps transcribing, or that transcription stops until one is downloaded again; Accurate is no longer called an optional upgrade; an empty transcript names the model that will run instead of requiring Whisper.
+Verified: see TESTING.md, "Version 0.1.31".
+Release result: built by the Apps workflow when this version reaches main, on the draft release v0.1.31. Not built locally.
+Known limitations: checked in Chrome only.
+Next: the user removes a transcription model in an Accurate-only library and reads the dialog.

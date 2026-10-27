@@ -301,6 +301,30 @@ test('Accurate alone is a complete setup, and Standard can be added later',async
   await expect(dialog.getByRole('button',{name:'Continue to VoxLoom',exact:true})).toBeVisible();
 });
 
+test('with Accurate alone, removing it and an empty transcript name the model actually in use',async({page})=>{
+  await page.addInitScript(()=>{
+    const meeting={id:'a',title:'Before setup',created_at:1,duration_ms:60000,status:'ready',notes:'',summary:''};
+    const models=[{id:'whisper',bytes:147964211,present:false},{id:'parakeet',bytes:600408576,disk_bytes:600408576,present:true,optional:true,manual_only:true},{id:'embedding',bytes:484622336,present:true}];
+    Object.assign(window,{isTauri:true,__TAURI_INTERNALS__:{transformCallback:()=>1,invoke:async(command:string,args:{action?:string;payload?:unknown})=>{
+      if(command.startsWith('plugin:event'))return 1;
+      switch(args?.action){case 'library':return [meeting];case 'jobs':case 'devices':return [];case 'status':return null;case 'runtime_status':return {inference:true,whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models};case 'settings':return {summary_profile:'e2b',transcription_profile:'accurate'};case 'detail':return {meeting,tracks:[],segments:[]};default:return null;}
+    }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
+  });
+  await page.goto('/');
+  await page.getByRole('button',{name:'Before setup',exact:false}).click();
+  await page.getByRole('button',{name:'Transcript',exact:true}).click();
+  await expect(page.getByText('Runs on this device with Accurate transcription.',{exact:true})).toBeVisible();
+  await expect(page.getByText('Whisper',{exact:false})).toHaveCount(0);
+  await page.getByRole('button',{name:'Settings',exact:true}).click();
+  const accurate=page.locator('article.model',{hasText:'Transcription · more accurate'});
+  await expect(accurate).not.toContainText('Optional upgrade');
+  await accurate.getByRole('button',{name:'Remove Transcription · more accurate',exact:true}).click();
+  // Standard is not on disk: removing Accurate leaves nothing to transcribe, and the dialog says so.
+  const dialog=page.getByRole('dialog');
+  await expect(dialog).toContainText('Transcription stops until you download a transcription model again.');
+  await expect(dialog).not.toContainText('goes back to Standard');
+});
+
 test('accurate transcription is an explicit download and setting',async({page})=>{
   await page.addInitScript(()=>{
     const models=[{id:'whisper',bytes:147964211,present:true},{id:'parakeet',bytes:600408576,present:false,optional:true,manual_only:true},{id:'embedding',bytes:484622336,present:true},{id:'summary_e2b',bytes:2841481184,present:true,optional:true}];
