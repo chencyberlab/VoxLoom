@@ -307,3 +307,10 @@ Verified: see TESTING.md, "Version 0.2.0".
 Release result: built by the Apps workflow when this version reaches main, on the draft release v0.2.0. Not built locally as a package.
 Known limitations: not yet used on a real Ubuntu Wayland desktop or on Windows; the XWayland switch and the Windows behaviour (transparency, the 64×64 size, dragging at other display scales) need a hands-on check.
 Next: the user floats the recorder on Ubuntu and Windows, drags it to each screen edge, opens and closes the bar, records, pauses and stops from it, and checks it stays above other windows.
+
+Version 0.2.1: fix from the review of 0.2.0 (issue #15)
+Implemented: the floating bubble captures the pointer at the press, on the element pressed, so a flick whose first move already leaves the 64 px window still drags it and its release ends the gesture; a bar button still gets its own click. A move with no button down never drags, and losing the capture ends the gesture, so a missed release can no longer leave the next hover moving the window.
+Verified: see TESTING.md, "Version 0.2.1".
+Release result: built by the Apps workflow when this version reaches main, on the draft release v0.2.1. Not built locally as a package.
+Known limitations: as 0.2.0: not yet used on a real Wayland desktop or Windows.
+Next: as 0.2.0, plus a quick flick from the bubble's edge on both systems.

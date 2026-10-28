@@ -38,9 +38,9 @@ def click(x, y):
     time.sleep(1.2)
 
 
-def drag(start, end):
-    # About 16 px per event, as a hand moves a mouse.
-    steps = max(4, max(abs(end[0] - start[0]), abs(end[1] - start[1])) // 16)
+def drag(start, end, step=16):
+    # About 16 px per event, as a hand moves a mouse; a flick moves much further.
+    steps = max(1, max(abs(end[0] - start[0]), abs(end[1] - start[1])) // step)
     xtst.XTestFakeMotionEvent(display, -1, start[0], start[1], 0)
     xtst.XTestFakeButtonEvent(display, 1, 1, 0)
     x11.XFlush(display)
@@ -126,9 +126,17 @@ with tempfile.TemporaryDirectory(prefix="voxloom-native-") as directory:
         assert 'VoxLoom · Recorder' in windows(), windows()
         assert '64x64' in windows(), windows()
         subprocess.run(["import", "-window", "root", "/tmp/voxloom-native-mini.png"], check=True)
-        # The floating bubble moves with a drag, which opens nothing.
-        drag((32, 32), (232, 132))
+        # The floating bubble moves with a drag, which opens nothing. A flick from
+        # its edge leaves the 64 px window in the first event and must still drag.
+        drag((58, 32), (258, 132), step=100)
         assert shows('64x64+200+100'), windows()
+        # Its release was seen: passing over the bubble with the button up moves nothing.
+        for x, y in ((180, 110), (232, 132), (290, 150)):
+            xtst.XTestFakeMotionEvent(display, -1, x, y, 0)
+            x11.XFlush(display)
+            time.sleep(.3)
+        time.sleep(.6)
+        assert '64x64+200+100' in windows(), windows()
         # Near the right edge its bar (200x64) opens leftwards, so the bubble's
         # tile stays put; closing the bar puts the bubble back where it was.
         drag((232, 132), (1232, 132))

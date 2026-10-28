@@ -669,7 +669,7 @@ const floatingHost=async(page:Page,capture:Record<string,unknown>|null)=>{
     const calls:unknown[]=[];
     Object.assign(window,{isTauri:true,__calls:calls,__TAURI_INTERNALS__:{transformCallback:()=>1,invoke:async(command:string,args:{action?:string;payload?:unknown})=>{
       if(command.startsWith('plugin:event'))return 1;
-      if(args?.action==='float_size'||args?.action==='float_move')calls.push([args.action,args.payload]);
+      if(['float_size','float_move','pause','resume','stop'].includes(args?.action||''))calls.push([args.action,args.payload]);
       switch(args?.action){case 'library':case 'jobs':case 'devices':return [];case 'status':return capture;case 'runtime_status':return {inference:true,whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models:[]};case 'settings':return {};case 'float_size':return {left:false};default:return null;}
     }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
   },capture);
@@ -686,9 +686,12 @@ test('the floating bubble opens and closes its controls, and shows the time whil
   await page.setViewportSize({width:200,height:64});
   await expect(page.getByRole('button',{name:'Stop recording'})).toBeVisible();await expect(page.getByRole('button',{name:'Pause'})).toBeVisible();
   expect(await page.locator('.mini').evaluate(e=>e.scrollWidth<=e.clientWidth)).toBe(true);
+  // The pointer is held on the pressed element, so a bar button still gets its click.
+  await page.getByRole('button',{name:'Pause'}).click();
+  await expect.poll(async()=>(await floatCalls(page)).some(c=>c[0]==='pause')).toBe(true);
   await page.getByRole('button',{name:'Recording, 12:34. Hide recorder controls'}).click();
   await expect(page.getByRole('button',{name:'Stop recording'})).toHaveCount(0);
-  expect(await floatCalls(page)).toEqual([['float_size',{bar:true}],['float_size',{bar:false}]]);
+  expect((await floatCalls(page)).filter(c=>c[0]==='float_size')).toEqual([['float_size',{bar:true}],['float_size',{bar:false}]]);
 });
 
 test('dragging the floating bubble moves the window and opens nothing',async({page})=>{
@@ -711,6 +714,22 @@ test('dragging the floating bubble moves the window and opens nothing',async({pa
   // The next plain click still opens the controls.
   await page.getByRole('button',{name:'VoxLoom recorder. Show recorder controls'}).click();
   await expect(page.getByRole('button',{name:'Expand recorder'})).toBeVisible();
+});
+
+test('a flick off the floating bubble still drags it, and a later hover moves nothing',async({page})=>{
+  await floatingHost(page,null);
+  await page.setViewportSize({width:64,height:64});await page.goto('/?mini=1');
+  await page.getByRole('button',{name:'VoxLoom recorder. Show recorder controls'}).waitFor();
+  await page.evaluate(()=>window.addEventListener('pointerdown',e=>Object.assign(window,{__offset:{x:e.screenX-e.clientX,y:e.screenY-e.clientY}}),{once:true}));
+  // Pressed near the bubble's right edge, the first move already leaves the 64 px window.
+  await page.mouse.move(58,32);await page.mouse.down();await page.mouse.move(90,32);await page.mouse.up();
+  const offset=await page.evaluate(()=>(window as unknown as {__offset:{x:number;y:number}}).__offset);
+  await expect.poll(async()=>(await floatCalls(page)).filter(c=>c[0]==='float_move').at(-1)?.[1]).toEqual({x:offset.x+90-58,y:offset.y});
+  const moves=(await floatCalls(page)).length;
+  // With the button up, passing over the bubble is only a hover.
+  await page.mouse.move(40,30);await page.mouse.move(20,20,{steps:4});await page.waitForTimeout(300);
+  expect((await floatCalls(page)).length).toBe(moves);
+  await expect(page.getByRole('button',{name:'Expand recorder'})).toHaveCount(0);
 });
 
 test('the floating controls close by themselves 4 s after the pointer leaves',async({page})=>{
