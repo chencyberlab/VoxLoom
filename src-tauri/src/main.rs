@@ -215,7 +215,14 @@ fn main() {
                         let _ = main.set_focus();
                     }
                 } else {
-                    window.state::<Arc<Service>>().shutdown();
+                    // People close windows by mistake: while something is running the
+                    // page asks first (Keep VoxLoom open / Quit anyway). With nothing
+                    // running, or a page that cannot be told, closing quits at once.
+                    let service = window.state::<Arc<Service>>();
+                    if service.busy() && window.emit("quit-requested", ()).is_ok() {
+                        return;
+                    }
+                    service.shutdown();
                     window.app_handle().exit(0);
                 }
             }

@@ -135,6 +135,27 @@ mod tests {
     }
 
     #[test]
+    fn quitting_asks_first_only_while_something_runs() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = Service::open(
+            temp.path().join("data"),
+            temp.path().join("cache"),
+            temp.path().into(),
+            Arc::new(|_| {}),
+        )
+        .unwrap();
+        assert!(!service.busy());
+        service.setup_active.store(true, Ordering::SeqCst);
+        assert!(service.busy());
+        service.setup_active.store(false, Ordering::SeqCst);
+        *service.running.lock().unwrap() = Some(("summarize".into(), 0));
+        assert!(service.busy());
+        *service.running.lock().unwrap() = None;
+        assert!(!service.busy());
+        service.shutdown();
+    }
+
+    #[test]
     fn accurate_transcription_falls_back_until_downloaded() {
         let temp = tempfile::tempdir().unwrap();
         let service = Service::open(
@@ -2642,6 +2663,13 @@ impl Service {
         fs::write(&target, content).map_err(err)?;
         platform::private_file(&target)?;
         Ok(Value::Null)
+    }
+    /// Something a quit would interrupt: a recording (paused included), a worker
+    /// (a transcript, search, a summary or a question) or setup.
+    pub fn busy(&self) -> bool {
+        self.capture.lock().unwrap().is_some()
+            || self.running.lock().unwrap().is_some()
+            || self.setup_active.load(Ordering::SeqCst)
     }
     pub fn shutdown(&self) {
         if self.quit.swap(true, Ordering::SeqCst) {

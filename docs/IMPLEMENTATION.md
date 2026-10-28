@@ -314,3 +314,10 @@ Verified: see TESTING.md, "Version 0.2.1".
 Release result: built by the Apps workflow when this version reaches main, on the draft release v0.2.1. Not built locally as a package.
 Known limitations: as 0.2.0: not yet used on a real Wayland desktop or Windows.
 Next: as 0.2.0, plus a quick flick from the bubble's edge on both systems.
+
+Version 0.2.2: a safe quit
+Implemented: Quit asks first when it would interrupt something, from the sidebar, the floating controls or the window's close button. "Quit VoxLoom?" lists in plain words what is still working and what happens to it: a recording (or a paused one) ends and keeps everything recorded so far; a transcript carries on from where it stopped next time; the summary model writing a summary starts it again from the beginning next time; preparing search runs again; the summary model answering a question stops and the answer is lost; a model download carries on from what is already downloaded. "Keep VoxLoom open" is the default (Enter and Escape keep it); "Quit anyway" quits. With nothing running Quit closes at once. The floating bar's Quit brings back the main window to ask. The close button asks only through the host's own check (`Service::busy`), so an idle app, or a page that cannot answer, still closes.
+Verified: see TESTING.md, "Version 0.2.2".
+Release result: built by the Apps workflow when this version reaches main, on the draft release v0.2.2. Not built locally as a package.
+Known limitations: the close button's question was not run natively (the test display has no window manager to click it, and nothing can be recording there); logging out or shutting down cannot be held by any app.
+Next: the user clicks Quit, and the window's close button, during a recording and during a summary, on Linux and Windows.

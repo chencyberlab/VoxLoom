@@ -746,6 +746,68 @@ test('the floating controls close by themselves 4 s after the pointer leaves',as
   expect((await floatCalls(page)).at(-1)).toEqual(['float_size',{bar:false}]);
 });
 
+// Quit asks first only when it would interrupt something, and says what happens to it.
+const quitHost=async(page:Page,host:{capture?:Record<string,unknown>|null;jobs?:Record<string,unknown>[];answer?:'hang'})=>{
+  await page.addInitScript(host=>{
+    const calls:unknown[]=[];const meeting={id:'m',title:'Session',created_at:1,duration_ms:60000,status:'ready',notes:'',summary:''};
+    Object.assign(window,{isTauri:true,__calls:calls,__TAURI_INTERNALS__:{transformCallback:()=>1,invoke:async(command:string,args:{action?:string;payload?:unknown})=>{
+      if(command.startsWith('plugin:event'))return 1;
+      if(['quit','window_mode','answer'].includes(args?.action||''))calls.push([args.action,args.payload]);
+      switch(args?.action){case 'library':return [meeting];case 'jobs':return host.jobs||[];case 'devices':return [];case 'status':return host.capture||null;case 'runtime_status':return {inference:true,whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models:[{id:'whisper',present:true},{id:'embedding',present:true},{id:'summary_e2b',present:true}]};case 'settings':return {summary_profile:'e2b'};
+        case 'search':return [{meeting_id:'m',title:'Session',created_at:1,start_ms:0,end_ms:3000,text:'We agreed to meet weekly.',modality:'text',source:'mic'}];
+        case 'answer':return host.answer==='hang'?new Promise(()=>{}):[];default:return null;}
+    }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
+  },host);
+};
+const quitCalls=(page:Page)=>page.evaluate(()=>(window as unknown as {__calls:[string,unknown][]}).__calls);
+const recording={meeting_id:'m',elapsed_ms:754000,paused:false,failed:false,levels:[]};
+
+test('Quit with nothing running quits at once',async({page})=>{
+  await quitHost(page,{});await page.goto('/');
+  await page.getByRole('button',{name:'Quit VoxLoom',exact:true}).click();
+  await expect.poll(async()=>(await quitCalls(page)).map(c=>c[0])).toEqual(['quit']);
+  await expect(page.getByRole('alertdialog')).toHaveCount(0);
+});
+
+test('Quit during a recording and a summary asks first and says what happens to each',async({page})=>{
+  await quitHost(page,{capture:recording,jobs:[{id:'j',meeting_id:'m',kind:'summarize',status:'running',progress:.45}]});await page.goto('/');
+  await page.getByRole('button',{name:'Quit VoxLoom',exact:true}).click();
+  const dialog=page.getByRole('alertdialog',{name:'Quit VoxLoom?'});
+  await expect(dialog).toContainText('A recording is in progress. Quitting ends it and keeps everything recorded so far.');
+  await expect(dialog).toContainText('The summary model is writing a summary (45%). It starts again from the beginning next time you open VoxLoom.');
+  // Keeping VoxLoom open is the default: Enter and Escape both keep it.
+  await expect(dialog.getByRole('button',{name:'Keep VoxLoom open'})).toBeFocused();
+  await page.keyboard.press('Enter');await expect(dialog).toHaveCount(0);
+  await page.getByRole('button',{name:'Quit VoxLoom',exact:true}).click();await expect(dialog).toBeVisible();
+  await page.keyboard.press('Escape');await expect(dialog).toHaveCount(0);
+  expect((await quitCalls(page)).some(c=>c[0]==='quit')).toBe(false);
+  await page.getByRole('button',{name:'Quit VoxLoom',exact:true}).click();
+  await dialog.getByRole('button',{name:'Quit anyway'}).click();
+  await expect.poll(async()=>(await quitCalls(page)).map(c=>c[0])).toEqual(['quit']);
+});
+
+test('Quit from the floating bar while recording brings back the main window to ask',async({page})=>{
+  await quitHost(page,{capture:{...recording,paused:true},jobs:[{id:'j',meeting_id:'m',kind:'transcribe',status:'running',progress:.3}]});
+  await page.setViewportSize({width:200,height:64});await page.goto('/?mini=1');
+  await page.getByRole('button',{name:'Paused, 12:34. Show recorder controls'}).click();
+  await page.getByRole('button',{name:'Quit VoxLoom and release models'}).click();
+  await page.setViewportSize({width:1240,height:820});
+  const dialog=page.getByRole('alertdialog',{name:'Quit VoxLoom?'});
+  await expect(dialog).toContainText('A recording is paused.');
+  await expect(dialog).toContainText('VoxLoom is writing a transcript (30%). It carries on from there next time you open VoxLoom.');
+  expect(await quitCalls(page)).toEqual([['window_mode',{compact:false}]]);
+});
+
+test('Quit while the summary model answers a question says so',async({page})=>{
+  await quitHost(page,{answer:'hang'});await page.goto('/');
+  await page.getByRole('button',{name:'Search',exact:true}).first().click();
+  await page.getByLabel('Search your conversations').fill('meetings');await page.keyboard.press('Enter');
+  await page.getByRole('button',{name:'Ask these recordings'}).click();
+  await expect.poll(async()=>(await quitCalls(page)).some(c=>c[0]==='answer')).toBe(true);
+  await page.getByRole('button',{name:'Quit VoxLoom',exact:true}).click();
+  await expect(page.getByRole('alertdialog',{name:'Quit VoxLoom?'})).toContainText('The summary model is answering your question. Quitting stops it, and the answer is lost.');
+});
+
 test('home visual and compact recorder have real actions and labels',async({page})=>{
   await page.goto('/');await page.screenshot({path:'test-results/home.png',fullPage:true});
   // Outside the desktop app, opening the bubble's controls already reports that it needs the app.

@@ -125,6 +125,8 @@ with tempfile.TemporaryDirectory(prefix="voxloom-native-") as directory:
                 break
         assert 'VoxLoom · Recorder' in windows(), windows()
         assert '64x64' in windows(), windows()
+        # The window is resized at once; give the page a moment to draw the bubble.
+        time.sleep(1)
         subprocess.run(["import", "-window", "root", "/tmp/voxloom-native-mini.png"], check=True)
         # The floating bubble moves with a drag, which opens nothing. A flick from
         # its edge leaves the 64 px window in the first event and must still drag.
