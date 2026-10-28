@@ -663,10 +663,75 @@ test('honest empty library, navigation, local assets and responsive layout',asyn
   await page.screenshot({path:'test-results/search.png',fullPage:true});
 });
 
+// The floating recorder: a bubble that opens a bar of controls on click, moves with a drag, and closes by itself.
+const floatingHost=async(page:Page,capture:Record<string,unknown>|null)=>{
+  await page.addInitScript(capture=>{
+    const calls:unknown[]=[];
+    Object.assign(window,{isTauri:true,__calls:calls,__TAURI_INTERNALS__:{transformCallback:()=>1,invoke:async(command:string,args:{action?:string;payload?:unknown})=>{
+      if(command.startsWith('plugin:event'))return 1;
+      if(args?.action==='float_size'||args?.action==='float_move')calls.push([args.action,args.payload]);
+      switch(args?.action){case 'library':case 'jobs':case 'devices':return [];case 'status':return capture;case 'runtime_status':return {inference:true,whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models:[]};case 'settings':return {};case 'float_size':return {left:false};default:return null;}
+    }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
+  },capture);
+};
+const floatCalls=(page:Page)=>page.evaluate(()=>(window as unknown as {__calls:[string,Record<string,unknown>][]}).__calls);
+
+test('the floating bubble opens and closes its controls, and shows the time while recording',async({page})=>{
+  await floatingHost(page,{meeting_id:'m',elapsed_ms:754000,paused:false,failed:false,levels:[]});
+  await page.setViewportSize({width:64,height:64});await page.goto('/?mini=1');
+  const bubble=page.getByRole('button',{name:'Recording, 12:34. Show recorder controls'});
+  await expect(bubble).toHaveText('12:34');await expect(bubble).toHaveClass(/is-live/);await expect(bubble).toHaveAttribute('title','Recording · 00:12:34');
+  await expect(page.getByRole('button',{name:'Stop recording'})).toHaveCount(0);
+  await bubble.click();
+  await page.setViewportSize({width:200,height:64});
+  await expect(page.getByRole('button',{name:'Stop recording'})).toBeVisible();await expect(page.getByRole('button',{name:'Pause'})).toBeVisible();
+  expect(await page.locator('.mini').evaluate(e=>e.scrollWidth<=e.clientWidth)).toBe(true);
+  await page.getByRole('button',{name:'Recording, 12:34. Hide recorder controls'}).click();
+  await expect(page.getByRole('button',{name:'Stop recording'})).toHaveCount(0);
+  expect(await floatCalls(page)).toEqual([['float_size',{bar:true}],['float_size',{bar:false}]]);
+});
+
+test('dragging the floating bubble moves the window and opens nothing',async({page})=>{
+  await floatingHost(page,null);
+  await page.setViewportSize({width:64,height:64});await page.goto('/?mini=1');
+  await page.getByRole('button',{name:'VoxLoom recorder. Show recorder controls'}).waitFor();
+  // Where the page sits on the screen, as pointer events report it (headless Chrome adds its hidden toolbar).
+  await page.evaluate(()=>window.addEventListener('pointerdown',e=>Object.assign(window,{__offset:{x:e.screenX-e.clientX,y:e.screenY-e.clientY}}),{once:true}));
+  await page.mouse.move(32,32);await page.mouse.down();
+  // Under 5 px is still a click; past it the window follows the pointer.
+  await page.mouse.move(35,33);await page.mouse.move(52,40,{steps:4});await page.mouse.up();
+  await expect.poll(async()=>(await floatCalls(page)).filter(c=>c[0]==='float_move').length).toBeGreaterThan(0);
+  const calls=await floatCalls(page);
+  expect(calls.some(c=>c[0]==='float_size')).toBe(false);
+  // Screen position = pointer on screen minus where it pressed inside the window.
+  const last=calls.filter(c=>c[0]==='float_move').at(-1)![1];
+  const offset=await page.evaluate(()=>(window as unknown as {__offset:{x:number;y:number}}).__offset);
+  expect(last).toEqual({x:offset.x+52-32,y:offset.y+40-32});
+  await expect(page.getByRole('button',{name:'Expand recorder'})).toHaveCount(0);
+  // The next plain click still opens the controls.
+  await page.getByRole('button',{name:'VoxLoom recorder. Show recorder controls'}).click();
+  await expect(page.getByRole('button',{name:'Expand recorder'})).toBeVisible();
+});
+
+test('the floating controls close by themselves 4 s after the pointer leaves',async({page})=>{
+  await page.clock.install();
+  await floatingHost(page,null);
+  await page.setViewportSize({width:200,height:64});await page.goto('/?mini=1');
+  await page.getByRole('button',{name:'VoxLoom recorder. Show recorder controls'}).click();
+  await expect(page.getByRole('button',{name:'Expand recorder'})).toBeVisible();
+  await page.locator('.mini').dispatchEvent('pointerout',{relatedTarget:null});
+  await page.clock.runFor(3000);
+  await expect(page.getByRole('button',{name:'Expand recorder'})).toBeVisible();
+  await page.clock.runFor(1500);
+  await expect(page.getByRole('button',{name:'Expand recorder'})).toHaveCount(0);
+  expect((await floatCalls(page)).at(-1)).toEqual(['float_size',{bar:false}]);
+});
+
 test('home visual and compact recorder have real actions and labels',async({page})=>{
   await page.goto('/');await page.screenshot({path:'test-results/home.png',fullPage:true});
-  await page.goto('/?mini=1');await expect(page.getByRole('button',{name:'Expand recorder'})).toBeVisible();await expect(page.getByRole('button',{name:'Quit VoxLoom and release models'})).toBeVisible();
-  await page.getByRole('button',{name:'Expand recorder'}).click();await expect(page.getByRole('alert')).toContainText('desktop application');
+  // Outside the desktop app, opening the bubble's controls already reports that it needs the app.
+  await page.goto('/?mini=1');await page.getByRole('button',{name:'VoxLoom recorder. Show recorder controls'}).click();await expect(page.getByRole('alert')).toContainText('desktop application');
+  await expect(page.getByRole('button',{name:'Expand recorder'})).toBeAttached();await expect(page.getByRole('button',{name:'Quit VoxLoom and release models'})).toBeAttached();
   await page.screenshot({path:'test-results/mini.png'});
 });
 

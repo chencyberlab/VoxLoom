@@ -300,3 +300,10 @@ Verified: see TESTING.md, "Version 0.1.31".
 Release result: built by the Apps workflow when this version reaches main, on the draft release v0.1.31. Not built locally.
 Known limitations: checked in Chrome only.
 Next: the user removes a transcription model in an Accurate-only library and reads the dialog.
+
+Version 0.2.0: a floating bubble
+Implemented: the floating recorder is a 64×64 bubble that stays on top: the VoxLoom logo, or the running time (m:ss, then h:mm:ss) on red while recording, or on green while paused. A click opens a 200×64 bar of controls as tall as the bubble (pause or resume, stop, open the studio, quit); a second click on the bubble, or 4 s after the pointer leaves, closes it. The bubble keeps one size whether idle or recording. The window follows the pointer itself instead of a system drag, so a click (under 5 px of movement) is told from a drag. Near the screen's right edge the bar opens leftwards, mirrored, and closing it puts the bubble back. Expand restores the studio centred on its screen, so it never opens off-screen from a bubble at the edge. On a Linux Wayland session VoxLoom now runs through XWayland (`GDK_BACKEND=x11`, unless the user set one), since Wayland lets no app keep a window on top or move it; the browser it opens does not inherit that. Bubble requests are ignored unless the window is floating, so a late close timer cannot shrink the studio. The idea and the drag approach follow OpenWhispr's floating pill (MIT).
+Verified: see TESTING.md, "Version 0.2.0".
+Release result: built by the Apps workflow when this version reaches main, on the draft release v0.2.0. Not built locally as a package.
+Known limitations: not yet used on a real Ubuntu Wayland desktop or on Windows; the XWayland switch and the Windows behaviour (transparency, the 64×64 size, dragging at other display scales) need a hands-on check.
+Next: the user floats the recorder on Ubuntu and Windows, drags it to each screen edge, opens and closes the bar, records, pauses and stops from it, and checks it stays above other windows.

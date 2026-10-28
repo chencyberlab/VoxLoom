@@ -54,6 +54,7 @@ for (const theme of ['light', 'dark'] as const) {
     await page.getByRole('button', { name: 'Model setup', exact: true }).click(); await shot('setup');
     await page.keyboard.press('Escape');
     await page.setViewportSize({ width: 900, height: 720 }); await page.getByRole('button', { name: 'Home', exact: true }).click(); await shot('home-narrow');
-    await page.setViewportSize({ width: 390, height: 92 }); await page.goto('/?mini=1'); await shot('mini');
+    await page.setViewportSize({ width: 64, height: 64 }); await page.goto('/?mini=1'); await shot('mini');
+    await page.locator('.mini-mark').click(); await page.setViewportSize({ width: 200, height: 64 }); await shot('mini-controls');
   });
 }

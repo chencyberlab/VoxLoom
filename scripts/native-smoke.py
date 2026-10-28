@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Real Tauri/WebKit smoke in an isolated Xvfb display; no private screen read.
 
-Tests main -> floating -> main -> Quit and asserts all observed descendants exit.
+Tests main -> floating bubble (drag, bar opening away from the screen edge) -> main -> Quit and asserts all observed descendants exit.
 Run xvfb-run -a python3 scripts/native-smoke.py <native executable>.
 """
 import ctypes
@@ -38,6 +38,24 @@ def click(x, y):
     time.sleep(1.2)
 
 
+def drag(start, end):
+    # About 16 px per event, as a hand moves a mouse.
+    steps = max(4, max(abs(end[0] - start[0]), abs(end[1] - start[1])) // 16)
+    xtst.XTestFakeMotionEvent(display, -1, start[0], start[1], 0)
+    xtst.XTestFakeButtonEvent(display, 1, 1, 0)
+    x11.XFlush(display)
+    time.sleep(.3)
+    for step in range(1, steps + 1):
+        x = start[0] + (end[0] - start[0]) * step // steps
+        y = start[1] + (end[1] - start[1]) * step // steps
+        xtst.XTestFakeMotionEvent(display, -1, x, y, 0)
+        x11.XFlush(display)
+        time.sleep(.03)
+    xtst.XTestFakeButtonEvent(display, 1, 0, 0)
+    x11.XFlush(display)
+    time.sleep(1.2)
+
+
 def windows():
     return subprocess.check_output(["xwininfo", "-root", "-tree"], text=True)
 
@@ -49,6 +67,16 @@ def shows(*texts, seconds=10):
             return False
         time.sleep(.2)
     return True
+
+
+def origin(title):
+    """Top-left corner of the window whose line in `windows()` names `title`."""
+    for line in windows().splitlines():
+        if title in line:
+            found = re.search(r"\d+x\d+\+(-?\d+)\+(-?\d+)", line)
+            if found:
+                return int(found.group(1)), int(found.group(2))
+    raise AssertionError(windows())
 
 
 def descendants(root):
@@ -93,17 +121,35 @@ with tempfile.TemporaryDirectory(prefix="voxloom-native-") as directory:
             if attempt == 0:
                 subprocess.run(["import", "-window", "root", "/tmp/voxloom-native-home.png"], check=True)
             click(1185, 34)
-            if shows('VoxLoom · Recorder', '390x92'):
+            if shows('VoxLoom · Recorder', '64x64'):
                 break
         assert 'VoxLoom · Recorder' in windows(), windows()
-        assert '390x92' in windows(), windows()
+        assert '64x64' in windows(), windows()
         subprocess.run(["import", "-window", "root", "/tmp/voxloom-native-mini.png"], check=True)
-        click(335, 46)
+        # The floating bubble moves with a drag, which opens nothing.
+        drag((32, 32), (232, 132))
+        assert shows('64x64+200+100'), windows()
+        # Near the right edge its bar (200x64) opens leftwards, so the bubble's
+        # tile stays put; closing the bar puts the bubble back where it was.
+        drag((232, 132), (1232, 132))
+        assert shows('64x64+1200+100'), windows()
+        click(1232, 132)
+        assert shows('200x64+1064+100'), windows()
+        subprocess.run(["import", "-window", "root", "/tmp/voxloom-native-bar.png"], check=True)
+        click(1232, 132)
+        assert shows('64x64+1200+100'), windows()
+        click(1232, 132)
+        assert shows('200x64+1064+100'), windows()
+        # The leftward bar is mirrored: Expand sits 52 px from its left edge.
+        click(1064 + 52, 132)
         assert shows('"VoxLoom"', '1240x820'), windows()
+        # Back from the screen edge, the studio opens centred and whole.
+        left, top = origin('"VoxLoom"')
+        assert (left, top) == (20, 102), windows()
         peak = max(peak, measure.sample(app.pid)[0])
         # Main restored; explicit Quit in the sidebar.
         for attempt in range(2):
-            click(179, 791)
+            click(left + 179, top + 791)
             try:
                 app.wait(timeout=10)
                 break

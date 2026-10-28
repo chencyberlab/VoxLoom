@@ -182,6 +182,18 @@ pub fn use_bundled_tools(resources: &Path) {
     let _ = resources;
 }
 
+/// Linux Wayland lets no app keep its window on top or move it, and the floating
+/// recorder needs both, so VoxLoom runs through XWayland there, as other floating
+/// recorders do. Called before the webview starts; a GDK_BACKEND the user set wins.
+pub fn prefer_x11() {
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("GDK_BACKEND").is_none()
+        && std::env::var("XDG_SESSION_TYPE").is_ok_and(|s| s == "wayland")
+    {
+        std::env::set_var("GDK_BACKEND", "x11");
+    }
+}
+
 /// Opens a web page in the user's browser. Windows: Explorer hands the page
 /// to the running shell, so the browser does not start inside the app's Job
 /// Object and close with VoxLoom. Linux: xdg-open runs without the process
@@ -189,6 +201,9 @@ pub fn use_bundled_tools(resources: &Path) {
 pub fn open_in_browser(url: &str) -> Result<()> {
     let mut child = crate::process::hidden(if cfg!(windows) { "explorer" } else { "xdg-open" })
         .arg(url)
+        // A browser started from here runs as it would from the desktop, not through
+        // the XWayland that prefer_x11 chose for VoxLoom itself.
+        .env_remove("GDK_BACKEND")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -221,5 +236,28 @@ mod tests {
             None
         );
         assert!(free_disk_bytes(&std::env::temp_dir()).is_some());
+    }
+
+    // The only test that touches these variables, so it cannot race another.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn wayland_sessions_run_through_xwayland_unless_the_user_chose() {
+        let saved = (std::env::var_os("GDK_BACKEND"), std::env::var_os("XDG_SESSION_TYPE"));
+        std::env::remove_var("GDK_BACKEND");
+        std::env::set_var("XDG_SESSION_TYPE", "x11");
+        prefer_x11();
+        assert_eq!(std::env::var_os("GDK_BACKEND"), None);
+        std::env::set_var("XDG_SESSION_TYPE", "wayland");
+        prefer_x11();
+        assert_eq!(std::env::var("GDK_BACKEND").as_deref(), Ok("x11"));
+        std::env::set_var("GDK_BACKEND", "wayland");
+        prefer_x11();
+        assert_eq!(std::env::var("GDK_BACKEND").as_deref(), Ok("wayland"));
+        for (name, value) in [("GDK_BACKEND", saved.0), ("XDG_SESSION_TYPE", saved.1)] {
+            match value {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
+            }
+        }
     }
 }
