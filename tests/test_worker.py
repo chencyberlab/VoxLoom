@@ -567,6 +567,24 @@ class Provisioning(unittest.TestCase):
             provision.install(self.model, models)
         self.assertTrue(provision.valid(models / "model.bin", self.model))
 
+    def test_runtime_install_starts_from_an_empty_venv(self):
+        import subprocess
+        import setup_runtime
+        venv = self.root / "runtimes/inference"
+        runs = []
+        def install(prefix=sys.prefix):
+            runs.clear()
+            with patch.object(subprocess, "run", side_effect=lambda argv, **_: runs.append(argv) or subprocess.CompletedProcess(argv, 0)), \
+                 patch.object(sys, "argv", ["setup_runtime.py", "--install", "--directory", str(venv)]), \
+                 patch.object(sys, "prefix", prefix), patch.object(os, "umask"), patch("builtins.print"):
+                self.assertEqual(setup_runtime.main(), 0)
+            return runs[0][1:]
+        # A quit or cancelled install can leave a half-written package that pip
+        # would count as installed: the next install empties the venv first.
+        self.assertEqual(install(), ["-m", "venv", "--clear", str(venv)])
+        # Run from that venv (a checkout on Windows), it is never cleared under itself.
+        self.assertEqual(install(prefix=str(venv)), ["-m", "venv", str(venv)])
+
     def test_pinned_manifest_has_only_full_embedding_and_manual_gemma4(self):
         models = json.loads(provision.MANIFEST.read_text())["models"]
         embedding = next(m for m in models if m["id"] == "embedding")

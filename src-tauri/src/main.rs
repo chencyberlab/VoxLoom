@@ -3,9 +3,10 @@
 use std::{
     path::PathBuf,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
+    time::Duration,
 };
 use tauri::{Emitter, Manager};
 use voxloom_core::service::Service;
@@ -20,6 +21,12 @@ static BAR_LEFT: AtomicBool = AtomicBool::new(false);
 /// The window is the floating recorder. Bubble requests that arrive after it
 /// became the studio again (a bar's close timer) must not shrink the studio.
 static FLOATING: AtomicBool = AtomicBool::new(false);
+/// Closes the page was asked about while something ran, and the last one whose
+/// question it showed. Tauri's emit succeeds even when no page listens (it is
+/// still starting, or stuck), so a close the page does not answer in time quits.
+static QUIT_ASKED: AtomicU64 = AtomicU64::new(0);
+static QUIT_HEARD: AtomicU64 = AtomicU64::new(0);
+const QUIT_ANSWER: Duration = Duration::from_secs(3);
 fn float_size(main: &tauri::WebviewWindow, (width, height): (f64, f64)) -> tauri::Result<()> {
     let size = tauri::LogicalSize::new(width, height);
     main.set_max_size(None::<tauri::LogicalSize<f64>>)?;
@@ -37,6 +44,11 @@ async fn dispatch(
     if action == "quit" {
         service.shutdown();
         app.exit(0);
+        return Ok(serde_json::Value::Null);
+    }
+    if action == "quit_heard" {
+        let ask = payload.and_then(|p| p["ask"].as_u64()).unwrap_or(0);
+        QUIT_HEARD.fetch_max(ask, Ordering::SeqCst);
         return Ok(serde_json::Value::Null);
     }
     if action == "float_size" || action == "float_move" {
@@ -217,10 +229,22 @@ fn main() {
                 } else {
                     // People close windows by mistake: while something is running the
                     // page asks first (Keep VoxLoom open / Quit anyway). With nothing
-                    // running, or a page that cannot be told, closing quits at once.
+                    // running, closing quits at once; so does a close the page has not
+                    // answered within QUIT_ANSWER.
                     let service = window.state::<Arc<Service>>();
-                    if service.busy() && window.emit("quit-requested", ()).is_ok() {
-                        return;
+                    if service.busy() {
+                        let ask = QUIT_ASKED.fetch_add(1, Ordering::SeqCst) + 1;
+                        if window.emit("quit-requested", ask).is_ok() {
+                            let app = window.app_handle().clone();
+                            std::thread::spawn(move || {
+                                std::thread::sleep(QUIT_ANSWER);
+                                if QUIT_HEARD.load(Ordering::SeqCst) < ask {
+                                    app.state::<Arc<Service>>().shutdown();
+                                    app.exit(0);
+                                }
+                            });
+                            return;
+                        }
                     }
                     service.shutdown();
                     window.app_handle().exit(0);

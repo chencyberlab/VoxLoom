@@ -747,19 +747,27 @@ test('the floating controls close by themselves 4 s after the pointer leaves',as
 });
 
 // Quit asks first only when it would interrupt something, and says what happens to it.
-const quitHost=async(page:Page,host:{capture?:Record<string,unknown>|null;jobs?:Record<string,unknown>[];answer?:'hang'})=>{
+// Its events reach the page's listeners through __emit, as the host's would.
+const quitHost=async(page:Page,host:{capture?:Record<string,unknown>|null;jobs?:Record<string,unknown>[];answer?:'hang';runtime?:false;models?:false})=>{
   await page.addInitScript(host=>{
     const calls:unknown[]=[];const meeting={id:'m',title:'Session',created_at:1,duration_ms:60000,status:'ready',notes:'',summary:''};
-    Object.assign(window,{isTauri:true,__calls:calls,__TAURI_INTERNALS__:{transformCallback:()=>1,invoke:async(command:string,args:{action?:string;payload?:unknown})=>{
+    const callbacks:((event:unknown)=>void)[]=[];let listeners:{event:string;handler:number;id:number}[]=[];let next=0;const present=host.models!==false;
+    Object.assign(window,{isTauri:true,__calls:calls,__failJobs:false,
+      __emit:(event:string,payload:unknown)=>{const heard=listeners.filter(l=>l.event===event);heard.forEach(l=>callbacks[l.handler-1]({event,id:0,payload}));return heard.length;},
+      __TAURI_INTERNALS__:{transformCallback:(callback:(event:unknown)=>void)=>callbacks.push(callback),invoke:async(command:string,args:{action?:string;payload?:unknown;event?:string;handler?:number;eventId?:number})=>{
+      if(command==='plugin:event|listen'){listeners.push({event:args.event||'',handler:args.handler||0,id:++next});return next;}
+      if(command==='plugin:event|unlisten'){listeners=listeners.filter(l=>l.id!==args.eventId);return null;}
       if(command.startsWith('plugin:event'))return 1;
-      if(['quit','window_mode','answer'].includes(args?.action||''))calls.push([args.action,args.payload]);
-      switch(args?.action){case 'library':return [meeting];case 'jobs':return host.jobs||[];case 'devices':return [];case 'status':return host.capture||null;case 'runtime_status':return {inference:true,whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models:[{id:'whisper',present:true},{id:'embedding',present:true},{id:'summary_e2b',present:true}]};case 'settings':return {summary_profile:'e2b'};
+      if(command==='plugin:dialog|open')return '/tmp/model files';
+      if(['quit','quit_heard','window_mode','answer','setup'].includes(args?.action||''))calls.push([args.action,args.payload]);
+      switch(args?.action){case 'library':return [meeting];case 'jobs':if((window as unknown as {__failJobs:boolean}).__failJobs)throw 'The library is busy.';return host.jobs||[];case 'devices':return [];case 'status':return host.capture||null;case 'runtime_status':return {inference:host.runtime!==false,whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models:[{id:'whisper',bytes:147964211,present},{id:'embedding',bytes:484622336,present},{id:'summary_e2b',bytes:2841481184,present,optional:true}]};case 'settings':return {summary_profile:'e2b'};
         case 'search':return [{meeting_id:'m',title:'Session',created_at:1,start_ms:0,end_ms:3000,text:'We agreed to meet weekly.',modality:'text',source:'mic'}];
         case 'answer':return host.answer==='hang'?new Promise(()=>{}):[];default:return null;}
     }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
   },host);
 };
 const quitCalls=(page:Page)=>page.evaluate(()=>(window as unknown as {__calls:[string,unknown][]}).__calls);
+const hostEmit=(page:Page,event:string,payload:unknown)=>page.evaluate(([event,payload])=>(window as unknown as {__emit:(event:string,payload:unknown)=>number}).__emit(event as string,payload),[event,payload]);
 const recording={meeting_id:'m',elapsed_ms:754000,paused:false,failed:false,levels:[]};
 
 test('Quit with nothing running quits at once',async({page})=>{
@@ -806,6 +814,60 @@ test('Quit while the summary model answers a question says so',async({page})=>{
   await expect.poll(async()=>(await quitCalls(page)).some(c=>c[0]==='answer')).toBe(true);
   await page.getByRole('button',{name:'Quit VoxLoom',exact:true}).click();
   await expect(page.getByRole('alertdialog',{name:'Quit VoxLoom?'})).toContainText('The summary model is answering your question. Quitting stops it, and the answer is lost.');
+});
+
+test('Closing the window while recording asks first, and tells the host once the question shows',async({page})=>{
+  await quitHost(page,{capture:recording});await page.goto('/');
+  // The host keeps the window open only for a close whose question showed; one it does not hear about quits.
+  await expect.poll(()=>hostEmit(page,'quit-requested',4)).toBe(1);
+  await expect(page.getByRole('alertdialog',{name:'Quit VoxLoom?'})).toContainText('A recording is in progress.');
+  await expect.poll(()=>quitCalls(page)).toEqual([['quit_heard',{ask:4}]]);
+  // The in-page Quit buttons have no close to answer.
+  await page.keyboard.press('Escape');await page.getByRole('button',{name:'Quit VoxLoom',exact:true}).click();
+  await expect(page.getByRole('alertdialog',{name:'Quit VoxLoom?'})).toBeVisible();
+  expect(await quitCalls(page)).toEqual([['quit_heard',{ask:4}]]);
+});
+
+test('A quit that cannot check what is running still asks, and can still quit',async({page})=>{
+  await quitHost(page,{capture:recording});await page.goto('/');
+  await page.evaluate(()=>{(window as unknown as {__failJobs:boolean}).__failJobs=true;});
+  await expect.poll(()=>hostEmit(page,'quit-requested',1)).toBe(1);
+  const dialog=page.getByRole('alertdialog',{name:'Quit VoxLoom?'});
+  await expect(dialog).toContainText('VoxLoom could not check what is still running. Quitting stops anything that is.');
+  await expect.poll(()=>quitCalls(page)).toEqual([['quit_heard',{ask:1}]]);
+  await dialog.getByRole('button',{name:'Quit anyway'}).click();
+  await expect.poll(async()=>(await quitCalls(page)).map(c=>c[0])).toEqual(['quit_heard','quit']);
+});
+
+test('Quit during setup names the setup that is running',async({page})=>{
+  await quitHost(page,{runtime:false});await page.goto('/');
+  const dialog=page.getByRole('alertdialog',{name:'Quit VoxLoom?'});const quitButton=page.getByRole('button',{name:'Quit VoxLoom',exact:true});
+  await page.getByRole('button',{name:'Set up later · you can still record'}).click();
+  await page.getByRole('button',{name:'Settings',exact:true}).click();
+  await page.getByText('More setup options').click();await page.getByRole('button',{name:'Install search runtime'}).click();
+  await quitButton.click();
+  await expect(dialog).toContainText('The search runtime is being installed. Quitting stops it, and setup installs it again from the start next time.');
+  await expect(dialog).not.toContainText('download');
+  await dialog.getByRole('button',{name:'Keep VoxLoom open'}).click();
+  await hostEmit(page,'voxloom',{type:'setup_done'});
+  await page.getByRole('button',{name:'Import',exact:true}).first().click();
+  await expect.poll(async()=>(await quitCalls(page)).filter(c=>c[0]==='setup').map(c=>(c[1] as {mode:string}).mode)).toEqual(['runtime','import']);
+  await quitButton.click();
+  await expect(dialog).toContainText('A model is being imported from your files. Quitting stops it; import the file again next time.');
+  await expect(dialog).not.toContainText('download');
+});
+
+test('Closing during first-run setup follows its steps: the runtime install, then the downloads',async({page})=>{
+  await quitHost(page,{runtime:false,models:false});await page.goto('/');
+  await page.getByRole('dialog').getByRole('button',{name:'Download & set up',exact:true}).click();
+  await hostEmit(page,'voxloom',{type:'setup_progress',value:{model:'runtime',status:'installing_pinned_dependencies'}});
+  await expect.poll(()=>hostEmit(page,'quit-requested',1)).toBe(1);
+  const dialog=page.getByRole('alertdialog',{name:'Quit VoxLoom?'});
+  await expect(dialog).toContainText('The search runtime is being installed.');
+  await dialog.getByRole('button',{name:'Keep VoxLoom open'}).click();
+  await hostEmit(page,'voxloom',{type:'setup_progress',value:{model:'whisper',status:'downloading',received:1e6,total:147964211}});
+  await hostEmit(page,'quit-requested',2);
+  await expect(dialog).toContainText('Models are downloading. Setup carries on from what is already downloaded when you run it again.');
 });
 
 test('home visual and compact recorder have real actions and labels',async({page})=>{

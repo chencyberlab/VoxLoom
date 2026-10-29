@@ -321,3 +321,10 @@ Verified: see TESTING.md, "Version 0.2.2".
 Release result: built by the Apps workflow when this version reaches main, on the draft release v0.2.2. Not built locally as a package.
 Known limitations: the close button's question was not run natively (the test display has no window manager to click it, and nothing can be recording there); logging out or shutting down cannot be held by any app.
 Next: the user clicks Quit, and the window's close button, during a recording and during a summary, on Linux and Windows.
+
+Version 0.2.3: fixes from the review of 0.2.2 (issue #16)
+Implemented: the window's close button can no longer be lost. While something runs, the host asks the page and now keeps the window open only when the page answers that its question is showing (`quit_heard`); a close it does not answer within 3 seconds quits as before. Tauri's emit succeeds even when nothing is listening, so 0.2.2 swallowed a close made while the page was still starting (a resumed transcript makes VoxLoom busy from its first moment) or while it waited on a slow host call. If the page cannot read what is running, it still asks, saying so, and Quit anyway still quits. "Quit VoxLoom?" names the setup that is actually running: a model download carries on from what is downloaded, a model import must be chosen again, and the search runtime installs again from the start. The runtime install now always starts from an empty venv (`venv --clear`), so a cancelled or quit install cannot leave a half-written package that pip would count as installed.
+Verified: see TESTING.md, "Version 0.2.3".
+Release result: built by the Apps workflow when this version reaches main, on the draft release v0.2.3. Not built locally as a package.
+Known limitations: a close the page has not answered keeps the window up to 3 seconds before quitting; the close button was checked under Xvfb by sending the window manager's close message, not on a desktop with a window manager, and not on Windows.
+Next: the user closes the window during a recording, a summary and a model download, on Linux and Windows.

@@ -43,7 +43,12 @@ def main():
             raise RuntimeError("Runtime setup failed. Check available disk space and the internet connection, or retry using an offline wheels folder. The Linux package requires python3-venv.")
 
     emit("creating_environment")
-    run([sys.executable, "-m", "venv", str(args.directory)])
+    # Setup runs only while LiteRT is not ready. A cancelled or quit install can
+    # leave a half-written package that pip would count as installed, so every
+    # install starts from an empty venv (wheels stay in the cache). A checkout
+    # on Windows may be running this from that venv: never clear it under us.
+    clear = Path(sys.prefix).resolve() != args.directory.resolve()
+    run([sys.executable, "-m", "venv", *(["--clear"] if clear else []), str(args.directory)])
     python = str(args.directory / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python"))
     lock = Path(__file__).resolve().with_name("requirements.lock.txt")
     emit("installing_pinned_dependencies")

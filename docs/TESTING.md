@@ -18,6 +18,22 @@ Meaningful unit checks cover pause-aligned chunk planning, skipped-speech retrie
 
 Version 0.1.1 added a first-run 1B/E2B summary selector. Six browser tests pass, including the request payload, displayed estimate and locked selection during setup for 1B, E2B and no summaries. These use an explicitly mocked bridge, without downloading models. A separate Rust regression executes the real offline provisioning script with tiny SHA-256-checked fixture files and a stubbed runtime readiness probe. It verifies core plus only the chosen summary model, saved E2B selection after success, core-only setup, missing-summary failure without changing the saved selection, and rejection of an unknown profile. Native checks on the final 0.1.1 package also passed launch, compact/expand and Quit, with all three observed processes released. The setup action remains fully visible at 900×720 in the browser checks. No user library or installed app data is reset during updates.
 
+## Version 0.2.3: fixes from the review of 0.2.2 (issue #16)
+
+Both findings were confirmed before fixing. Tauri 2.12.4's `emit_js_filter` sends an event only to webviews with a listener for it and returns `Ok` either way, so `emit(...).is_ok()` never meant the question was shown. The native check below reproduced the lost close on 0.2.2's host.
+
+- **Native close button (new, `scripts/native-close-check.py`):** the debug app under Xvfb with throwaway data; the close is the `WM_DELETE_WINDOW` message a window manager sends. A pending summary job whose stand-in worker only sleeps keeps VoxLoom busy from start-up.
+  - Idle, the close quits at once (0.0 s).
+  - Busy, with the page running, the window was still open 5 s later behind "Quit VoxLoom?" ("The summary model is writing a summary (0%)…", screenshot checked). "Quit anyway" stopped the worker and left the job `pending`.
+  - Busy, closed 0.16 s after launch, before the page listens: it quit after 3.7 s, with the worker stopped and the job `pending`. The same close on 0.2.2's host was still open 10 s later.
+  - While the start-up Python check hung (holding the library, so the page could not read what runs), the page could not show its question and the close quit after 3.2 s. An earlier version of the fix answered as soon as the event arrived and swallowed this close; it now answers only once the question shows.
+- **Browser checks (new):** a close event makes the page show the question and answer `quit_heard` with the close's number; the sidebar's Quit sends no answer. With `jobs` failing, the question still shows ("VoxLoom could not check what is still running…") and Quit anyway quits. Installing the search runtime from Settings shows the runtime sentence and an import shows the import sentence, neither mentioning a download. In first-run setup, a runtime progress event gives the runtime sentence, and a model's download progress then gives the download sentence.
+- **Python unit check (new):** the runtime install creates its venv with `--clear`, and without it when run from that same venv.
+- **Native launch check:** passed (launch, float and expand, Quit exit 0, three processes released).
+
+Validation: TypeScript/privacy/version (0.2.3), 56 Python checks, 41 browser checks (2 visual-tour checks skipped), 38 Rust unit checks plus the offline setup integration check, clippy, the native launch check and the native close check. Not run: Wayland, Windows, a desktop with a window manager.
+
+
 ## Version 0.2.2: a safe quit
 
 What a quit does to each kind of work was read from the code before writing the dialog's words: `shutdown` ends a recording through `finish_capture`, which keeps it and queues its transcript; a worker stopped by Quit is set back to pending in `tick` (and `Db::open` re-queues any job left running), so a transcript resumes from its checkpoint and a summary or search preparation runs again from the start; a question (`answer`) is a direct call and is not resumed; setup downloads resume from their partial files.
