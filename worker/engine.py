@@ -11,6 +11,7 @@ import json
 import math
 import os
 from pathlib import Path
+import random
 import re
 import signal
 import subprocess
@@ -757,7 +758,11 @@ def final_response(reply, allow_plain=False):
     # token. Accept that completion when a small model omits the closing wrapper.
     if not match and "[end of text]" in reply:
         match = re.search(r"<voxloom_result>\s*(.*?)\s*\[end of text\]", reply, flags=re.S)
-    candidate=match[1] if match else reply.split('[end of text]',1)[0] if allow_plain and '[end of text]' in reply else ''
+    candidate = match[1] if match else ""
+    if not candidate.strip() and allow_plain and "[end of text]" in reply:
+        # Finished notes without the wrapper, or with it misplaced: E2B wrote a
+        # 37-minute podcast's notes and then the opening tag just before the end.
+        candidate = re.sub(r"</?voxloom_result>", "", reply.split("[end of text]", 1)[0])
     if not candidate.strip() or re.search(r"<\|[^>]*>|<think>|Thinking Process:|Analyze the Request", candidate, flags=re.I):
         raise ValueError("The model did not return a finished summary. Please try again or select the other summary model.")
     return candidate.strip()
@@ -877,10 +882,19 @@ def generate(request, content, scratch, meeting_notes=False, title=False, notes=
             + ("<NOTES>\n" + notes + "\n</NOTES>\n" if meeting_notes and notes else "") + content)
     path = scratch / "prompt.txt"
     path.write_text(text, encoding="utf-8")
-    result = run([request["llama_cli"], "-m", model, "-f", str(path), "-n", "768", "-c", "4096", "-t", str(request["threads"]),
-                  "-ngl", "0", "-b", "512", "-ub", "128", "--temp", "0.1", "--seed", "42",
-                  "--offline", "--jinja", "--reasoning", "off", "--no-display-prompt", "--simple-io", "--single-turn"], timeout=600)
-    reply = final_response(result.decode("utf-8", errors="replace"), allow_plain=meeting_notes)[:12000]
+    argv = [request["llama_cli"], "-m", model, "-f", str(path), "-n", "768", "-c", "4096", "-t", str(request["threads"]),
+            "-ngl", "0", "-b", "512", "-ub", "128", "--temp", "0.1",
+            "--offline", "--jinja", "--reasoning", "off", "--no-display-prompt", "--simple-io", "--single-turn"]
+    # A seed decodes the same reply every time, so Retry alone would repeat a
+    # rejected one word for word. Another seed usually finishes it.
+    for attempt in range(2):
+        result = run([*argv, "--seed", str(random.randrange(1, 1 << 31) if attempt else 42)], timeout=600)
+        try:
+            reply = final_response(result.decode("utf-8", errors="replace"), allow_plain=meeting_notes)[:12000]
+            break
+        except ValueError:
+            if attempt:
+                raise
     if meeting_notes:
         # Small models occasionally close the wrapper with a misspelt tag.
         reply = re.sub(r"</?[A-Za-z_]*_result>", "", reply)

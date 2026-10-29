@@ -342,3 +342,10 @@ Verified: see TESTING.md, "Version 0.2.5".
 Release result: built by the Apps workflow when this version reaches main, on the draft release v0.2.5. Not built locally as a package. 0.2.4 has no draft, since its Linux check failed.
 Known limitations: the out-of-order landing was not reproduced locally (well over 200 flicks and 8 launch checks on debug and release builds, some under full CPU load); the fix removes the only way found for it, and a browser check proves the ordering.
 Next: the user drags the bubble quickly on Linux and Windows.
+
+Version 0.2.6: long summaries no longer fail on a misplaced wrapper
+Implemented: a summary pass whose notes end with the model's own end-of-generation marker is accepted even when the requested `<voxloom_result>` wrapper is missing or misplaced. Gemma 4 E2B wrote a whole merge pass of a 37-minute podcast and then the opening tag just before the end, and the empty text after the tag was rejected, failing the whole summary. Answers to questions still need the wrapper. A rejected reply is now decoded once more with a random seed before the job fails: with the fixed seed alone, every Retry repeated the same reply word for word.
+Verified: see TESTING.md, "Version 0.2.6". The user's failing recording now summarises completely (15 passes, 15.6 minutes on two threads).
+Release result: built by the Apps workflow when this version reaches main, on the draft release v0.2.6. Not built locally as a package.
+Known limitations: long recordings still take one model pass per 5,000 transcript characters plus a merge pass for each pair, about a minute each on a 4-core laptop, and merging favours what every slice repeats (a sponsor read got its own section). Summary memory is unchanged: E2B holds 1.15 GiB private plus the mapped model file (2.66 GiB resident when memory is free).
+Next: the user summarises the podcast again in the app on Linux and Windows.

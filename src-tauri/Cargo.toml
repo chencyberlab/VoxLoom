@@ -1,6 +1,6 @@
 [package]
 name = "voxloom"
-version = "0.2.5"
+version = "0.2.6"
 description = "Private, offline meeting memory for Linux"
 license = "MIT"
 edition = "2021"

@@ -13,7 +13,7 @@ Measurements are from the actual Ubuntu 24.04 x86_64 development machine, not mo
 | Python CPU inference environment | About 159 MiB installed; no Torch/Transformers |
 | Standard model weights | 3,474,067,731 bytes including Gemma 4 E2B (1,353,012,147 bytes with Gemma 3 1B before 0.1.8), excluding generated caches |
 | Core model weights | 632,586,547 bytes |
-| Optional E2B model | 2,841,481,184 bytes. One real summary in the installed app (2.5-minute transcript, two threads): 58.4 s, llama peak RSS 3,970,744 KiB, process-tree peak 4,494,220 KiB |
+| Optional E2B model | 2,841,481,184 bytes. One real summary in the installed app (2.5-minute transcript, two threads): 58.4 s, llama peak RSS 3,970,744 KiB, process-tree peak 4,494,220 KiB. Of that RSS only about 1.15 GiB is private; the rest is the memory-mapped model file, which the system can drop under pressure (0.2.6, 37-minute podcast: 15 passes, 935 s) |
 | Optional E4B model | 4,590,807,392 bytes; not installed or run. Estimated from E2B: about 6 GB peak memory and roughly twice the time |
 | LiteRT compiled caches for the search model | About 370 MiB in the cache folder; rebuilt on next use; removed with the search model |
 | Final Linux `.deb`, including CPU engines, excluding model weights | 14,977,428 bytes (14.28 MiB), version 0.1.3 |

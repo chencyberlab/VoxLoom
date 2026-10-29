@@ -20,6 +20,28 @@ class MeetingNotesTests(unittest.TestCase):
         for reply in ['Overview\ncut off','<|channel>thought unfinished [end of text]']:
             with self.assertRaises(ValueError):engine.final_response(reply,allow_plain=True)
 
+    def test_finished_notes_with_misplaced_wrapper_are_kept(self):
+        # E2B's reply on a merge pass of a 37-minute podcast, shortened.
+        reply='Overview\nThe congress in Brno.\n\nDecisions\nNo formal decisions were made.\n\n<voxloom_result> [end of text]\n\n'
+        self.assertEqual(engine.final_response(reply,allow_plain=True),'Overview\nThe congress in Brno.\n\nDecisions\nNo formal decisions were made.')
+        self.assertEqual(engine.final_response('<voxloom_result></voxloom_result>\nOverview\nA call. [end of text]',allow_plain=True),'Overview\nA call.')
+        with self.assertRaises(ValueError):engine.final_response(reply)
+        with self.assertRaises(ValueError):engine.final_response('Overview\ncut off <voxloom_result>',allow_plain=True)
+
+    def test_rejected_reply_is_decoded_once_more_with_another_seed(self):
+        seeds=[]
+        def run(argv,**_):
+            seeds.append(argv[argv.index('--seed')+1])
+            return b'<|channel>thought unfinished' if len(seeds)==1 else b'<voxloom_result>Overview\nThe workshop was approved.</voxloom_result>'
+        request={'models':{'summary':'fixture'},'llama_cli':'fixture','threads':2,'summary_style':'meeting'}
+        with tempfile.TemporaryDirectory() as directory,patch.object(engine,'ensure_model',return_value='fixture'),patch.object(engine,'run',side_effect=run):
+            self.assertIn('The workshop was approved.',engine.generate(request,'<EVIDENCE>The workshop was approved.</EVIDENCE>',Path(directory),meeting_notes=True))
+            self.assertEqual(seeds[0],'42')
+            self.assertNotEqual(seeds[1],'42')
+        with tempfile.TemporaryDirectory() as directory,patch.object(engine,'ensure_model',return_value='fixture'),patch.object(engine,'run',return_value=b'<|channel>thought unfinished') as stuck:
+            with self.assertRaisesRegex(ValueError,'finish'):engine.generate(request,'<EVIDENCE>x</EVIDENCE>',Path(directory),meeting_notes=True)
+            self.assertEqual(stuck.call_count,2)
+
     def test_normalise_outputs_plain_notes_and_omits_empty_or_unraised_questions(self):
         result=normalise_meeting_notes('**Overview**\nA workshop.\n\n**Action items**\n- **Sarah** drafts the guide.\n\nOpen questions\nA made up question?\n\nDecisions\nNone.',include_questions=False)
         self.assertEqual(result,'## Overview\nA workshop.\n\n## Action items\n• Sarah drafts the guide.')
