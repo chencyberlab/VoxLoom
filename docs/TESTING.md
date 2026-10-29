@@ -18,6 +18,16 @@ Meaningful unit checks cover pause-aligned chunk planning, skipped-speech retrie
 
 Version 0.1.1 added a first-run 1B/E2B summary selector. Six browser tests pass, including the request payload, displayed estimate and locked selection during setup for 1B, E2B and no summaries. These use an explicitly mocked bridge, without downloading models. A separate Rust regression executes the real offline provisioning script with tiny SHA-256-checked fixture files and a stubbed runtime readiness probe. It verifies core plus only the chosen summary model, saved E2B selection after success, core-only setup, missing-summary failure without changing the saved selection, and rejection of an unknown profile. Native checks on the final 0.1.1 package also passed launch, compact/expand and Quit, with all three observed processes released. The setup action remains fully visible at 900×720 in the browser checks. No user library or installed app data is reset during updates.
 
+## Version 0.2.4: fixes from the review of 0.2.3 (issue #17)
+
+The finding was confirmed in the code: `runtime_status` held the library mutex for the whole `python -c` probe, and 0.2.3's own native check had seen the effect (with the probe hung, the question could not show and the close fell to the fallback after 3.2 s). Every host call that runs an external program was then checked for the same pattern; Word and audio export were the others.
+
+- **Rust unit check (new):** `a_slow_python_check_leaves_the_library_free`. With a stand-in Python that takes 2 s, `jobs` answers in under 1 s while `runtime_status` runs, and the check reports LiteRT as not ready. With the lock held as in 0.2.3 the same test fails (`jobs` waited for the probe).
+- **Native close check (extended):** a fourth case where every Python call hangs, the start-up check included, with a summary job running. The close now keeps the window open behind "Quit VoxLoom?" (screenshot checked) and "Quit anyway" stops everything; in 0.2.3 this case quit after 3.2 s without asking. The three earlier cases gave the same results as 0.2.3 (idle 0.0 s; busy asks, job left `pending`; a close before the page listens quits after 3.7 s).
+- **Not run:** a real recording (no audio devices in the test environment). The recording path differs only in what `shutdown` stops, and `finish_capture` now takes the library only for its brief writes.
+
+Validation: TypeScript/privacy/version (0.2.4), 56 Python checks, 41 browser checks (2 visual-tour checks skipped), 39 Rust unit checks plus the offline setup integration check, clippy, the native launch check and the native close check. Not run: Wayland, Windows, a desktop with a window manager.
+
 ## Version 0.2.3: fixes from the review of 0.2.2 (issue #16)
 
 Both findings were confirmed before fixing. Tauri 2.12.4's `emit_js_filter` sends an event only to webviews with a listener for it and returns `Ok` either way, so `emit(...).is_ok()` never meant the question was shown. The native check below reproduced the lost close on 0.2.2's host.

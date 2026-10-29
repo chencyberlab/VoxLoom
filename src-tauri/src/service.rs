@@ -155,6 +155,41 @@ mod tests {
         service.shutdown();
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_slow_python_check_leaves_the_library_free() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let service = Service::open(
+            temp.path().join("data"),
+            temp.path().join("cache"),
+            temp.path().into(),
+            Arc::new(|_| {}),
+        )
+        .unwrap();
+        // Stands in for a Python that antivirus or a cold disk keeps starting.
+        let slow = temp.path().join("slow-python");
+        fs::write(&slow, "#!/bin/sh\nsleep 2\nexit 1\n").unwrap();
+        fs::set_permissions(&slow, fs::Permissions::from_mode(0o700)).unwrap();
+        service
+            .db
+            .lock()
+            .unwrap()
+            .set_setting("python", slow.to_str().unwrap())
+            .unwrap();
+        let checking = {
+            let service = service.clone();
+            std::thread::spawn(move || service.dispatch("runtime_status", Value::Null))
+        };
+        std::thread::sleep(Duration::from_millis(300));
+        // What the quit question reads must answer meanwhile (issue #17).
+        let started = Instant::now();
+        service.dispatch("jobs", Value::Null).unwrap();
+        assert!(started.elapsed() < Duration::from_secs(1), "{:?}", started.elapsed());
+        assert!(!checking.join().unwrap().unwrap()["inference"].as_bool().unwrap());
+        service.shutdown();
+    }
+
     #[test]
     fn accurate_transcription_falls_back_until_downloaded() {
         let temp = tempfile::tempdir().unwrap();
@@ -1792,7 +1827,13 @@ impl Service {
                     let path = self.tool(&db, tool);
                     Path::new(&path).is_file() || platform::on_path(path)
                 };
+                let (whisper, transcribe, llama) =
+                    (available("whisper_cli"), available("transcribe_cli"), available("llama_cli"));
                 let python = self.tool(&db, "python");
+                // Python can take seconds to start (antivirus, a cold disk) or hang: never
+                // hold the library meanwhile, or nothing else (the quit question
+                // included) can read it (issue #17).
+                drop(db);
                 let inference = process::python(&python)
                     .args([
                         "-I",
@@ -1805,7 +1846,7 @@ impl Service {
                     .map(|s| s.success())
                     .unwrap_or(false);
                 Ok(
-                    json!({"inference":inference,"whisper":available("whisper_cli"),"transcribe":available("transcribe_cli"),"llama":available("llama_cli"),"python":python,"storage":self.data,"disk_free_bytes":platform::free_disk_bytes(&self.data)}),
+                    json!({"inference":inference,"whisper":whisper,"transcribe":transcribe,"llama":llama,"python":python,"storage":self.data,"disk_free_bytes":platform::free_disk_bytes(&self.data)}),
                 )
             }
             "setup" => {
@@ -2553,6 +2594,11 @@ impl Service {
         let format = text(p, "format")?;
         let detail = db.detail(id)?;
         let segments = db.segments(id)?;
+        let tracks = db.tracks(id)?;
+        let helper = self.helper_python(&db);
+        // Word and audio exports run a program for seconds on a long recording:
+        // the library stays free for everything else meanwhile.
+        drop(db);
         if format == "summary_docx" || format == "docx" {
             let summary = format == "summary_docx";
             let body = if summary {
@@ -2571,7 +2617,7 @@ impl Service {
                     .collect::<String>()
             };
             let mut child = process::spawn(
-                process::python(self.helper_python(&db))
+                process::python(helper)
                     .arg(self.resources.join("worker/export_docx.py"))
                     .arg(&target)
                     .stdin(Stdio::piped())
@@ -2643,7 +2689,6 @@ impl Service {
                 }
             }
             "audio" => {
-                let tracks = db.tracks(id)?;
                 let track = tracks
                     .iter()
                     .find(|t| Some(t.id.as_str()) == p["track_id"].as_str())

@@ -148,7 +148,7 @@ Real-engine checks are opt-in. They need models and fixtures, and they never dow
 | Real capture through a temporary PipeWire test sink (removed afterwards; defaults unchanged) | `VOXLOOM_TEST_MODELS=<models> VOXLOOM_TEST_WHISPER_CLI=<whisper-cli> python3 scripts/test-capture.py` |
 | Full import → transcribe → index → search → summary → export → delete | see `docs/TESTING.md`, "Real local engines and full workflow" |
 | Packaged app launches, floats/expands and quits cleanly (hidden Xvfb display, throwaway data) | `xvfb-run -a python3 scripts/native-smoke.py <path>/usr/bin/voxloom` |
-| The window's close button: idle quits at once, busy asks first, a close the page cannot answer yet still quits (throwaway data, a fake worker that sleeps) | `xvfb-run -a python3 scripts/native-close-check.py <path>/usr/bin/voxloom` |
+| The window's close button: idle quits at once, busy asks first, a close the page cannot answer yet still quits, and a hung Python check does not stop the question (throwaway data, a fake worker that sleeps) | `xvfb-run -a python3 scripts/native-close-check.py <path>/usr/bin/voxloom` |
 | Engines, summaries, clipboard | `scripts/probe-engines.py`, `scripts/test-meeting-notes.py`, `scripts/test-native-notes.py` |
 
 `<whisper-cli>` can be `.local-data/runtimes/whisper/bin/whisper-cli` or the installed `/usr/lib/voxloom/engines/whisper-cli`; `<transcribe-cli>` likewise (`.local-data/runtimes/transcribe/bin/transcribe-cli`). The real-engine workflow test runs its Accurate pass when `VOXLOOM_TEST_TRANSCRIBE_CLI` and the Parakeet model are there.
@@ -229,6 +229,7 @@ Add `src-tauri/migrations/00N.sql`. Make it idempotent (`IF NOT EXISTS`) and end
 - Match the surrounding code. `App.tsx` and parts of `service.rs` are deliberately dense; don't reformat files you aren't changing.
 - Comments explain why (constraints, failure modes found in testing), not what.
 - The worker stays standard-library Python apart from LiteRT. FFmpeg does audio work; pure Python handles small per-frame maths.
+- Never hold the library (`self.db`) while an external program runs: read what it needs, drop the lock, then run it (`runtime_status`'s Python check, Word and audio export). Python can take seconds to start on a laptop with antivirus, or hang, and every other call waits for the library meanwhile, the quit question included (issue #17).
 - OS differences live in `process.rs`, `platform.rs` and the `audio/` backends, behind `cfg`. Start child processes with `process::command` / `hidden` / `python`, never a bare `Command::new`, so Windows gets no console windows and Linux keeps its process groups. A child that `kill_tree` may have to end starts with `process::spawn`; call `process::finished(pid)` after waiting for one that exited on its own. In the worker, start engines with `child_options()`, and give every text read or write `encoding="utf-8"` (Windows Python defaults to the ANSI code page). A worker script that imports another worker module must first put its own folder on `sys.path`: the embeddable Python bundled on Windows leaves it off.
 - New dependencies, runtimes or model downloads need a clear reason and the user's agreement. Anything downloaded must be pinned (version + SHA-256).
 - User-facing text is plain and short; technical detail belongs under Advanced settings.

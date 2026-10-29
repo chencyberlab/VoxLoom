@@ -7,7 +7,9 @@ Throwaway data. A pending summary job whose "worker" only sleeps keeps VoxLoom
 busy from start-up. Checks: an idle close quits at once; a busy close keeps the
 window open behind "Quit VoxLoom?" and "Quit anyway" stops the worker, leaving
 the job to run again; a busy close while the page is still starting (it cannot
-answer yet) quits by itself after a few seconds instead of being lost.
+answer yet) quits by itself after a few seconds instead of being lost; and a
+busy close while the start-up Python check hangs still asks first, since that
+check no longer holds the library the question reads (issue #17).
 """
 import ctypes
 import os
@@ -115,10 +117,26 @@ with tempfile.TemporaryDirectory(prefix="voxloom-close-") as directory:
         result["starting_page_close_quit_s"] = round(time.time() - started, 1)
         result["starting_page_close_stopped_worker"] = not worker_running()
         result["job_after_start_up_close"] = job_status(directory)
+
+        # Now every Python call hangs, the start-up runtime check included.
+        worker.write_text("#!/bin/sh\nexec sleep 117\n")
+        app = launch()
+        time.sleep(8)
+        assert worker_running(), "The busy job did not start"
+        close()
+        time.sleep(5)
+        assert app.poll() is None, "A busy close must still ask while the runtime check hangs"
+        subprocess.run(["import", "-window", "root", "/tmp/voxloom-close-stuck-check.png"], check=True)
+        key(0xff09)
+        key(0xff0d)
+        app.wait(timeout=10)
+        result["hung_python_check_close_asked"] = "PASS"
+        result["hung_python_check_quit_stopped_all"] = not worker_running()
     finally:
         if app.poll() is None:
             app.kill()
         subprocess.run(["pkill", "-fx", "sleep 117"])
 print(result)
 assert result["quit_anyway_stopped_worker"] and result["starting_page_close_stopped_worker"], result
+assert result["hung_python_check_quit_stopped_all"], result
 assert result["job_after_quit"] == result["job_after_start_up_close"] == "pending", result

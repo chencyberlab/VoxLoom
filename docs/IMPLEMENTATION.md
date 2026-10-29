@@ -328,3 +328,10 @@ Verified: see TESTING.md, "Version 0.2.3".
 Release result: built by the Apps workflow when this version reaches main, on the draft release v0.2.3. Not built locally as a package.
 Known limitations: a close the page has not answered keeps the window up to 3 seconds before quitting; the close button was checked under Xvfb by sending the window manager's close message, not on a desktop with a window manager, and not on Windows.
 Next: the user closes the window during a recording, a summary and a model download, on Linux and Windows.
+
+Version 0.2.4: fixes from the review of 0.2.3 (issue #17)
+Implemented: the start-up runtime check no longer holds the library while Python starts. It ran `python -c …` with the library locked, so a slow Python (antivirus, a cold disk) or a hung one stopped every other call, including the two the quit question reads; a close during a recording then fell to the 3 second fallback, which stopped the microphones and waited for the library before it could record the stop or quit. The check (run again after every setup) now reads its paths, releases the library, then starts Python. Word and audio export likewise release the library before their program runs. The fallback itself is unchanged: with nothing holding the library for long, it finishes the recording and quits as before.
+Verified: see TESTING.md, "Version 0.2.4".
+Release result: built by the Apps workflow when this version reaches main, on the draft release v0.2.4. Not built locally as a package.
+Known limitations: a hung Python still leaves the start-up check itself waiting, and the buttons it holds stay disabled until VoxLoom is restarted; a real recording could not be closed in the test environment, which has no audio devices.
+Next: the user closes the window during a recording right after a setup finishes, on Linux and Windows.
