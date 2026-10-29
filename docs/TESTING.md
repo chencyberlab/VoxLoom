@@ -18,6 +18,16 @@ Meaningful unit checks cover pause-aligned chunk planning, skipped-speech retrie
 
 Version 0.1.1 added a first-run 1B/E2B summary selector. Six browser tests pass, including the request payload, displayed estimate and locked selection during setup for 1B, E2B and no summaries. These use an explicitly mocked bridge, without downloading models. A separate Rust regression executes the real offline provisioning script with tiny SHA-256-checked fixture files and a stubbed runtime readiness probe. It verifies core plus only the chosen summary model, saved E2B selection after success, core-only setup, missing-summary failure without changing the saved selection, and rejection of an unknown profile. Native checks on the final 0.1.1 package also passed launch, compact/expand and Quit, with all three observed processes released. The setup action remains fully visible at 900×720 in the browser checks. No user library or installed app data is reset during updates.
 
+## Version 0.2.5: a drag of the floating bubble always ends where it was let go
+
+The Apps workflow's Linux launch check for 0.2.4 failed at the bubble's flick (press at (58, 32), two moves to (258, 132)): the bubble ended at +100+50, exactly its first move, instead of +200+100. The page sent one `float_move` per animation frame without waiting, and Tauri runs async commands side by side, so nothing kept two moves in order.
+
+- **Reproduction attempts, before the fix:** on the debug build, 90 flicks (2, 4 and 8 steps) idle and 60 with every core busy; on an optimized release build (as Apps tests), 90 flicks, 30 of them under load, and 5 runs of `native-smoke.py`. None failed, so the cause is the ordering gap found in the code, not a reproduced run.
+- **Browser check (new):** a drag on a host that answers no move until told to. With 0.2.4's page, 11 moves were sent while the first was unanswered; now only one is, then the newest, which is where the pointer was let go, and nothing more is sent after it.
+- **Native checks on the release build with the fix:** `native-smoke.py` three times, 30 two-step flicks and 20 eight-step flicks, all at the expected positions.
+
+Validation: TypeScript/privacy/version (0.2.5), 56 Python checks, 42 browser checks (2 visual-tour checks skipped), 39 Rust unit checks plus the offline setup integration check, clippy, and the native launch check. Not run: Wayland, Windows.
+
 ## Version 0.2.4: fixes from the review of 0.2.3 (issue #17)
 
 The finding was confirmed in the code: `runtime_status` held the library mutex for the whole `python -c` probe, and 0.2.3's own native check had seen the effect (with the probe hung, the question could not show and the close fell to the fallback after 3.2 s). Every host call that runs an external program was then checked for the same pattern; Word and audio export were the others.

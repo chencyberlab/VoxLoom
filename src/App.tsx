@@ -89,14 +89,18 @@ useEffect(()=>{const onStorage=(e:StorageEvent)=>{if(e.key!=='voxloom-appearance
   // Floating recorder: a bubble (the logo, or the time while recording) whose click opens a bar of controls.
   // The window follows the pointer itself rather than starting a system drag, so a click can be told from a drag.
   const [barOpen,setBarOpen]=useState(false);const [barLeft,setBarLeft]=useState(false);const barTimer=useRef<number|undefined>(undefined);
-  const drag=useRef<{x:number;y:number;moving:boolean;to?:{x:number;y:number};frame?:number}|null>(null);const dragged=useRef(false);
+  const drag=useRef<{x:number;y:number;moving:boolean}|null>(null);const dragged=useRef(false);
+  // One move in flight at a time, then the newest position: the host runs calls side by side, so two in flight could
+  // land in either order and leave the bubble short of the pointer (a flick in the Linux app check stopped half-way).
+  const move=useRef<{to?:{x:number;y:number};sending:boolean}>({sending:false});
+  const sendMove=()=>{const m=move.current;if(m.sending||!m.to)return;const to=m.to;m.to=undefined;m.sending=true;void api('float_move',to).catch(()=>{}).finally(()=>{m.sending=false;sendMove();});};
   const openBar=async(open:boolean)=>{window.clearTimeout(barTimer.current);if(!open)setBarOpen(false);try{const r=await api<{left?:boolean}|null>('float_size',{bar:open});setBarLeft(open&&!!r?.left);}catch(e){setError(String(e));}if(open)setBarOpen(true);};
   // The pointer is held from the press, so a first move that already leaves the 64 px window, and its release, still
   // reach the bubble; held on the element pressed, so a button still gets its own click. A move with no button down
   // never drags: a release the bubble missed must not leave the next hover moving the window.
   const dragStart=(e:React.PointerEvent)=>{dragged.current=false;drag.current=null;if(e.button!==0)return;try{(e.target as Element).setPointerCapture(e.pointerId);}catch{return;}drag.current={x:e.clientX,y:e.clientY,moving:false};};
   const dragMove=(e:React.PointerEvent)=>{const d=drag.current;if(!d)return;if(!(e.buttons&1)){drag.current=null;return;}if(!d.moving){if(Math.hypot(e.clientX-d.x,e.clientY-d.y)<5)return;d.moving=dragged.current=true;}
-    d.to={x:e.screenX-d.x,y:e.screenY-d.y};d.frame??=requestAnimationFrame(()=>{d.frame=undefined;if(d.to)void api('float_move',d.to).catch(()=>{});});};
+    move.current.to={x:e.screenX-d.x,y:e.screenY-d.y};sendMove();};
   const dragEnd=()=>{drag.current=null;};
   // A drag ends with a click on whatever is under the pointer: it must not open the bar or press a button.
   const afterDrag=(e:React.MouseEvent)=>{if(dragged.current){dragged.current=false;e.preventDefault();e.stopPropagation();}};

@@ -335,3 +335,10 @@ Verified: see TESTING.md, "Version 0.2.4".
 Release result: built by the Apps workflow when this version reaches main, on the draft release v0.2.4. Not built locally as a package.
 Known limitations: a hung Python still leaves the start-up check itself waiting, and the buttons it holds stay disabled until VoxLoom is restarted; a real recording could not be closed in the test environment, which has no audio devices.
 Next: the user closes the window during a recording right after a setup finishes, on Linux and Windows.
+
+Version 0.2.5: a drag of the floating bubble always ends where it was let go
+Implemented: the floating bubble sends one move at a time, then the newest position, instead of one move every frame. The host runs calls side by side, so two moves in flight could land in either order. The Apps workflow's Linux launch check for 0.2.4 failed this way: a two-step flick left the bubble exactly half-way, at its first position. The package itself built; the Windows apps passed.
+Verified: see TESTING.md, "Version 0.2.5".
+Release result: built by the Apps workflow when this version reaches main, on the draft release v0.2.5. Not built locally as a package. 0.2.4 has no draft, since its Linux check failed.
+Known limitations: the out-of-order landing was not reproduced locally (well over 200 flicks and 8 launch checks on debug and release builds, some under full CPU load); the fix removes the only way found for it, and a browser check proves the ordering.
+Next: the user drags the bubble quickly on Linux and Windows.
