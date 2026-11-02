@@ -356,3 +356,10 @@ Verified: see TESTING.md, "Version 0.3.0".
 Release result: release/voxloom_0.3.0_amd64.deb (19,141,512 bytes, SHA-256 4c5e13c59e37b84d671619f63798e0fc2c4bfa87f6592e47ddc3c3baea6672fb) passed the native launch and close checks, and keyword search was used in it. Windows: GitHub's CI on push; the Apps workflow builds both apps when this version reaches main.
 Known limitations: no stemming or typo tolerance: "budget" does not find "budgets" (use `budget*`), and a word Whisper misheard is found only as it was written. A `?` or `*` right after a word's first letter reads most of the library (354 ms on 500 synthetic hours). Only transcripts are searched, not notes or titles. An existing install keeps `runtimes/inference` and `embeddinggemma-2-740m.litertlm` on disk until the user deletes them.
 Next: the user searches real recordings on Linux and Windows; consider word-ending forms (budget/budgets) if they miss results.
+
+Version 0.3.2: names with ø, ł or đ are found (issue #18)
+Implemented: search folds letters exactly as the index does. 0.3.0 folded ø ł đ ħ ı ŀ ŉ ŧ to o l d h i l n t, but the index (FTS5's unicode61) keeps them, since they have no accent to remove; the prefilter then asked the index for "soren" and every row with "Søren", "Łukasz" or "Đặng" was dropped, even when the query was spelled as transcribed. Those eight letters now stay as they are, so "Søren", "søren" and "sør*" find Søren. Common accents still do not matter ("cafe" finds "Café", "malmo" finds "Malmö").
+Verified: see TESTING.md, "Version 0.3.2".
+Release result: built by the Apps workflow when this version reaches main, on the draft release v0.3.2. Not built locally as a package.
+Known limitations: "soren" does not find "Søren", and "dang" does not find "Đặng" (letters with two accents are kept by the index too). VoxLoom is built for English; making these fold would mean rebuilding the index with another tokenizer, not done.
+Next: the user searches real recordings for names.

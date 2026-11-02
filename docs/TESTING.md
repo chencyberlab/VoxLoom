@@ -18,6 +18,15 @@ Meaningful unit checks cover pause-aligned chunk planning, skipped-speech retrie
 
 Version 0.1.1 added a first-run 1B/E2B summary selector. Six browser tests pass, including the request payload, displayed estimate and locked selection during setup for 1B, E2B and no summaries. These use an explicitly mocked bridge, without downloading models. A separate Rust regression executes the real offline provisioning script with tiny SHA-256-checked fixture files and a stubbed runtime readiness probe. It verifies core plus only the chosen summary model, saved E2B selection after success, core-only setup, missing-summary failure without changing the saved selection, and rejection of an unknown profile. Native checks on the final 0.1.1 package also passed launch, compact/expand and Quit, with all three observed processes released. The setup action remains fully visible at 900×720 in the browser checks. No user library or installed app data is reset during updates.
 
+## Version 0.3.2: names with ø, ł or đ are found (issue #18)
+
+The finding was confirmed against the bundled SQLite before fixing. Each letter of 0.3.0's fold table, in small and capital form, was put in a row of an FTS5 table and searched by its folded spelling: 14 were not found, đ ħ ı ŀ ł ŉ ø ŧ and Đ Ħ Ŀ Ł Ø Ŧ. Every other letter of the table matched. Those letters have no decomposition, so unicode61 keeps them, while the search folded them before asking the index.
+
+- **Rust checks (new):** `names_are_found_as_transcribed` puts "Meet Søren, Łukasz and Đặng about the budget at the Café in Malmö." in a library and finds it by Søren, søren, SØREN, sør*, "Meet Søren", the phrase "meet søren", budget Søren, Łukasz, łukasz, Đặng, đặng, Café, cafe, Malmo and MALMÖ; soren does not find it. `every_folded_letter_is_found_both_ways` searches a library for each of the 80 letters the search folds, small and capital, by its own spelling and by its folded one. Both tests fail with 0.3.0's table.
+- **Tried and not taken:** rebuilding the index with `remove_diacritics 2` and folding the eight letters in its triggers, so that "soren" would also find "Søren" and "dang" "Đặng". It needs a migration that rebuilds every library's index; VoxLoom is built for English, so the search keeps to what the index folds.
+
+Validation: TypeScript/privacy/version (0.3.2), 55 Python checks, 43 browser checks (2 visual-tour checks skipped), 43 Rust unit checks plus the offline setup integration check, and clippy. Not run: the native checks (search runs in the host, unchanged apart from the table), Windows.
+
 ## Version 0.3.0: keyword search; no search model
 
 The search model (EmbeddingGemma 2 740M on LiteRT) and everything that served it are removed: the model, the Linux LiteRT venv and its setup step, LiteRT in the Windows package's Python, the indexing job, the embedding tables, and the Meaning / Both search modes. Search is keyword search over the transcript rows (`search.rs::keyword`).

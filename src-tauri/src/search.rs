@@ -15,25 +15,29 @@ const TERMS: usize = 24;
 
 type Word = Vec<char>;
 
-/// Lower case without accents, as unicode61 compares letters. English
-/// transcripts rarely need more than Latin-1 and Latin Extended-A.
+/// Lower case without accents, exactly as unicode61 folds letters: the
+/// index keeps whatever it does not fold, so a letter folded here but kept
+/// there is never found, even spelled as transcribed (issue #18: Søren,
+/// Łukasz). That is why ø ł đ ħ ı ŀ ŉ ŧ, which have no accent to remove,
+/// stay as they are. English transcripts rarely need more than Latin-1 and
+/// Latin Extended-A; `every_folded_letter_is_found_both_ways` checks each.
 fn fold(c: char) -> char {
     const GROUPS: [(&str, char); 19] = [
         ("àáâãäåāăą", 'a'),
         ("çćĉċč", 'c'),
-        ("ďđ", 'd'),
+        ("ď", 'd'),
         ("èéêëēĕėęě", 'e'),
         ("ĝğġģ", 'g'),
-        ("ĥħ", 'h'),
-        ("ìíîïĩīĭįı", 'i'),
+        ("ĥ", 'h'),
+        ("ìíîïĩīĭį", 'i'),
         ("ĵ", 'j'),
         ("ķ", 'k'),
-        ("ĺļľŀł", 'l'),
-        ("ñńņňŉ", 'n'),
-        ("òóôõöøōŏő", 'o'),
+        ("ĺļľ", 'l'),
+        ("ñńņň", 'n'),
+        ("òóôõöōŏő", 'o'),
         ("ŕŗř", 'r'),
         ("śŝşš", 's'),
-        ("ţťŧ", 't'),
+        ("ţť", 't'),
         ("ùúûüũūŭůűų", 'u'),
         ("ŵ", 'w'),
         ("ýÿŷ", 'y'),
@@ -295,6 +299,36 @@ mod tests {
         // FTS5 syntax typed by the person is only text.
         assert!(search("budget OR NEAR(x) AND -", json!({}))["hits"].as_array().unwrap().is_empty());
         assert_eq!(search("\"approved again\"", json!({}))["hits"].as_array().unwrap().len(), LIMIT);
+    }
+
+    #[test]
+    fn names_are_found_as_transcribed() {
+        let (_dir, db) = library();
+        db.conn.execute("INSERT INTO transcript_segments(meeting_id,start_ms,end_ms,text,source) VALUES('quiet',1000,1900,'Meet Søren, Łukasz and Đặng about the budget at the Café in Malmö.','mic')", []).unwrap();
+        let found = |q: &str| keyword(&db, q, &json!({})).unwrap()["hits"].as_array().unwrap().iter().filter(|h| h["start_ms"] == 1000).count();
+        for query in ["Søren", "søren", "SØREN", "sør*", "Meet Søren", "\"meet søren\"", "budget Søren", "Łukasz", "łukasz", "Đặng", "đặng", "Café", "cafe", "Malmo", "MALMÖ"] {
+            assert_eq!(found(query), 1, "{query}");
+        }
+        // These letters are not accented forms of o, l or d: the index keeps them.
+        assert_eq!(found("soren"), 0);
+    }
+
+    #[test]
+    fn every_folded_letter_is_found_both_ways() {
+        // A letter folded here but kept by the index would hide every word
+        // that has it; each one, in capitals too, must be found by itself and
+        // by the letter it folds to.
+        let (_dir, db) = library();
+        let letters: Vec<char> = (0xC0..0x250).filter_map(char::from_u32).filter(|c| fold(*c) != *c).collect();
+        assert_eq!(letters.len(), 80);
+        for c in letters.iter().copied().chain(letters.iter().flat_map(|c| c.to_uppercase()).filter(|c| !c.is_ascii())) {
+            db.conn.execute("DELETE FROM transcript_segments WHERE meeting_id='quiet'", []).unwrap();
+            db.conn.execute("INSERT INTO transcript_segments(meeting_id,start_ms,end_ms,text,source) VALUES('quiet',0,900,?,'mic')", [format!("q{c}z")]).unwrap();
+            let base = format!("q{}z", c.to_lowercase().map(fold).collect::<String>());
+            for query in [format!("q{c}z"), base] {
+                assert_eq!(keyword(&db, &query, &json!({})).unwrap()["hits"].as_array().unwrap().len(), 1, "{c}: {query}");
+            }
+        }
     }
 
     #[test]
