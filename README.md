@@ -22,7 +22,7 @@ VoxLoom records a conversation on your own computer and keeps the words so you c
 
 **Open it.** After VoxLoom is installed, it appears in the applications menu on Linux or the Start menu on Windows.
 
-**First time.** Choose **Download & set up** if you want transcripts, search and notes. That download happens once, and only when you ask. You can skip it and still record; the text can be prepared later.
+**First time.** Choose **Download & set up** if you want transcripts and summaries. That download happens once, and only when you ask. You can skip it and still record; the text can be prepared later.
 
 **Record.** Choose **New recording**, then **Microphone** (people in the room), **System audio** (a call or a video playing on this computer), or **Both**. On Windows, allow desktop apps to use the microphone in Settings → Privacy & security → Microphone → **Let desktop apps access your microphone**; VoxLoom offers to open that page if it is off. People should know you are recording. Type notes in the studio while you listen if you like. Press **Stop** when you are done: VoxLoom then writes the transcript, which takes a few minutes for an hour of speech.
 
@@ -30,11 +30,11 @@ VoxLoom records a conversation on your own computer and keeps the words so you c
 
 **Notes, and a summary only if you ask.** Each recording has one page of notes: type whatever you want there, during the recording or after. **Summarise** adds a summary of the transcript below your notes, guided by what you wrote, and never replaces them; you can edit all of it. Copy the notes formatted for Word or your case notes, or as Markdown. Starting or importing a recording never writes a summary by itself.
 
-**Find something later.** **Search** looks through what was said, on this computer.
+**Find something later.** **Search** finds the words that were said, in every transcript on this computer. Every word you type must appear; `*` stands for any letters (`invoic*` finds invoice and invoices), `?` for one letter, and words in "quotes" must appear together, in that order. Capitals and accents don't matter, the matching words are highlighted, and the newest recordings come first.
 
 **Light or dark.** The icon beside **Quit** in the sidebar switches the theme. **Settings** has the same choice, including **System**, which follows the desktop.
 
-Current build: a functional development preview on both platforms. Real Whisper, native-audio EmbeddingGemma 2 740M retrieval and on-demand Gemma 4 E2B summaries have been exercised on both; Linux synthetic dual capture has also been exercised. Windows has been tested end to end on machines without audio devices, so real microphones, loopback and headset switching still need a Windows 11 laptop. Business meeting quality, physical-device behaviour and multi-hour reliability still need wider testing. See [testing and measurements](docs/TESTING.md) and [VoxLoom on Windows](docs/WINDOWS.md).
+Current build: a functional development preview on both platforms. Real Whisper and Parakeet transcription, keyword search and on-demand Gemma 4 E2B summaries have been exercised on both; Linux synthetic dual capture has also been exercised. Windows has been tested end to end on machines without audio devices, so real microphones, loopback and headset switching still need a Windows 11 laptop. Business meeting quality, physical-device behaviour and multi-hour reliability still need wider testing. See [testing and measurements](docs/TESTING.md) and [VoxLoom on Windows](docs/WINDOWS.md).
 
 ## Install a release
 
@@ -48,7 +48,7 @@ Install `voxloom_<version>_amd64.deb`, replacing `<version>` with the release nu
 sudo apt install ./voxloom_<version>_amd64.deb
 ```
 
-Open VoxLoom from the applications menu. On first run, **Download & set up** installs the private search runtime and the models you choose (about 3.6 GB with the default E2B summary model). You can skip setup and still record; the text can be prepared later. Upgrades keep your recordings, models and settings.
+Open VoxLoom from the applications menu. On first run, **Download & set up** installs the models you choose: one transcription model (148 MB Standard or 600 MB Accurate) and, if you want summaries, one summary model (about 3.0 GB in total with Standard and the default E2B summary model). You can skip setup and still record; the text can be prepared later. Upgrades keep your recordings, models and settings.
 
 If you built the app in this checkout, the package is in `release/`; install it the same way.
 
@@ -59,7 +59,7 @@ VoxLoom requires 64-bit Windows 11. Download `VoxLoom-<version>-windows-x64-setu
 - **for you only** in `%LOCALAPPDATA%\Programs\VoxLoom`, which needs no administrator rights, or
 - **for everyone on the computer** in `C:\Program Files\VoxLoom`, which needs an administrator.
 
-It includes everything the app needs: VoxLoom, FFmpeg, its own Python with LiteRT, and the speech and summary engines. Nothing else has to be installed, and WebView2 is part of Windows 11. Only models are downloaded, through first-run setup or an offline import.
+It includes everything the app needs: VoxLoom, FFmpeg, its own Python, and the speech and summary engines. Nothing else has to be installed, and WebView2 is part of Windows 11. Only models are downloaded, through first-run setup or an offline import.
 
 The installer and preview zip are not code-signed yet, so Windows SmartScreen may warn on first run: choose **More info → Run anyway**. Managed laptops may block them until IT allows them; each release includes a list of every installed program file with its SHA-256 to help with that.
 
@@ -106,14 +106,14 @@ To build again after pulling changes, run `bash scripts/build-app.sh`. Later bui
 System packages the script installs or checks (to install them yourself):
 
 ```bash
-sudo apt-get install -y --no-install-recommends build-essential cmake pkg-config curl libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev patchelf ffmpeg pulseaudio-utils python3 python3-venv
+sudo apt-get install -y --no-install-recommends build-essential cmake pkg-config curl libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev patchelf ffmpeg pulseaudio-utils python3
 ```
 
 ### Windows
 
 The Windows package bundles a runtime that is cross-built on Linux from pinned sources. Release builds are made by the Apps workflow (Actions → Apps), which builds and checks the installer and preview zip on GitHub's Windows machines. To build locally:
 
-1. **Build the runtime on Linux.** With `mingw-w64`, `cmake`, `make`, `nasm`, `curl` and `python3-venv` installed:
+1. **Build the runtime on Linux.** With `mingw-w64`, `cmake`, `make`, `nasm`, `curl` and `python3` installed:
 
    ```bash
    bash scripts/build-windows-runtime.sh
@@ -171,7 +171,7 @@ VOXLOOM_DATA_DIR="$PWD/.local-data" bash scripts/setup-runtimes.sh
 npm run desktop
 ```
 
-On Linux, the development launcher also finds the project-local `.toolchain/` Rust installation when present. Source-local `.venv/` and `.runtimes/` are discovered automatically in development; an installed build finds the XDG runtime paths created by the setup script. On Windows, debug and release builds use the runtime staged in `src-tauri/`. Settings allows executable/model path overrides. The optional E2B profile requires a current compatible llama.cpp; the pinned runtime contains Gemma 4 support, and short E2B generation has been exercised with user-provisioned local weights.
+On Linux, the development launcher also finds the project-local `.toolchain/` Rust installation when present. Source-local `.runtimes/` are discovered automatically in development, and the worker uses the system `python3`; an installed build finds the XDG runtime paths created by the setup script. On Windows, debug and release builds use the runtime staged in `src-tauri/`. Settings allows executable/model path overrides. The optional E2B profile requires a current compatible llama.cpp; the pinned runtime contains Gemma 4 support, and short E2B generation has been exercised with user-provisioned local weights.
 
 On Windows, the packaged runtime supplies Python, FFmpeg and the engines; there is no system Python or FFmpeg requirement. WebView2 is included with Windows 11.
 
@@ -183,11 +183,11 @@ bash scripts/desktop.sh build --debug --no-bundle
 npm run desktop:build
 ```
 
-`npm run desktop:build` builds a Linux `.deb` under `src-tauri/target/release/bundle/deb/`; on Windows, `npx tauri build` builds the installer. Both packages include optimized CPU audio/summary executables plus generic CPU fallbacks, and Windows also bundles its Python with LiteRT and FFmpeg. AI weights remain separate. The first-run **Download & set up** button installs the selected models (and, on Linux, the private search runtime); ordinary users do not compile engines or run terminal commands. No AppImage or macOS package is provided.
+`npm run desktop:build` builds a Linux `.deb` under `src-tauri/target/release/bundle/deb/`; on Windows, `npx tauri build` builds the installer. Both packages include optimized CPU audio/summary executables plus generic CPU fallbacks, and Windows also bundles its Python and FFmpeg. AI weights remain separate. The first-run **Download & set up** button installs the selected models; ordinary users do not compile engines or run terminal commands. No AppImage or macOS package is provided.
 
 ## Model setup and offline use
 
-Use the first-run wizard or Settings → Model setup. Choose optional summaries and select **Gemma 4 E2B** (recommended, 2.84 GB) or **Gemma 4 E4B** (largest, 4.59 GB) before setup. The wizard explains the tradeoff and updates the total download estimate. **Download & set up** handles local runtime support, the core models and only your selected summary model automatically, with plain-language progress and cancellation. The summary selection is saved after successful setup. Technical paths and runtime diagnostics are collapsed under Advanced settings. **Use files from this device** accepts an offline setup folder (`models/` plus `wheels/` when search support is not already installed). Recording is available if setup is skipped. Download buttons are explicit network approval; app startup never downloads anything. Offline import verifies the exact model file against the pinned manifest. Gemma terms are linked before download/import. No credentials are requested; gated access must be completed through the model repository before importing a file.
+Use the first-run wizard or Settings → Model setup. Choose optional summaries and select **Gemma 4 E2B** (recommended, 2.84 GB) or **Gemma 4 E4B** (largest, 4.59 GB) before setup. The wizard explains the tradeoff and updates the total download estimate. **Download & set up** handles the chosen transcription model and only your selected summary model automatically, with plain-language progress and cancellation. The summary selection is saved after successful setup. Technical paths and runtime diagnostics are collapsed under Advanced settings. **Use files from this device** accepts an offline setup folder with a `models/` folder inside. Recording is available if setup is skipped. Download buttons are explicit network approval; app startup never downloads anything. Offline import verifies the exact model file against the pinned manifest. Gemma terms are linked before download/import. No credentials are requested; gated access must be completed through the model repository before importing a file.
 
 For developers or offline administrators on Linux, equivalent model-only CLI actions (standard weights, including Gemma 4 E2B, total about 3.47 GB; core-only about 633 MB):
 
@@ -211,7 +211,7 @@ bash scripts/provision-models.sh --download --model summary_e4b
 
 Select **Gemma 4 E2B** (default) or **Gemma 4 E4B** in Settings → Summary model, then **Save settings**. Neither is loaded until Summarise or Q&A is requested. To compare, export the first summary before switching and regenerating. Gemma 3 1B was removed in 0.1.8 because it listed next steps nobody had agreed; a library that had it selected now uses E2B, and an existing 1B file appears in Settings as "No longer used by VoxLoom" with **Remove**. One real E2B summary of a 2.5-minute transcript took 58 s and peaked at about 4 GB of memory with two threads. E4B is the same model family at about twice the size: expect about 6 GB of free memory and roughly twice the time. It has not been run in VoxLoom yet. Google's AI Edge Gallery offers a 3.41 GB LiteRT build of the same E4B model; VoxLoom's summary engine (llama.cpp) needs the GGUF file instead.
 
-**Free up space:** Settings → Local intelligence shows **Remove** next to every downloaded model, and **Free up space → Remove all models** deletes them all at once. Removal also deletes unfinished downloads and the search model's compiled caches (about 370 MB). Recordings, transcripts, summaries and settings stay. VoxLoom refuses while recording, while a job is queued or running, or during setup. Download again at any time from Settings → Model setup. A custom GGUF chosen in Settings is your own file and is never deleted.
+**Free up space:** Settings → Local intelligence shows **Remove** next to every downloaded model, and **Free up space → Remove all models** deletes them all at once. Removal also deletes unfinished downloads. Recordings, transcripts, summaries and settings stay. VoxLoom refuses while recording, while a job is queued or running, or during setup. Download again at any time from Settings → Model setup. A custom GGUF chosen in Settings is your own file and is never deleted.
 
 ## Where your data lives
 
@@ -232,7 +232,7 @@ The Windows data folder is local, not roaming, so it is not synced to a server o
 - Import WAV/MP3/FLAC/OGG/M4A/OPUS or local MP4/MKV/WebM/MOV. FFmpeg stores only the extracted audio as FLAC. No YouTube URL downloader is included. You can capture a video's browser playback instead.
 - **Notes:** each recording has one notes page, the first thing it opens on. Type in the studio while recording, or on the recording's **Notes** tab afterwards; it saves as you type. Headings start with `## ` and bullets with `- `. Click the notes (or **Edit**) to change them and **Done** to see them formatted. **Summarise** works once the transcript is written: it adds a **Summary** section below everything already there, so your notes and any earlier summary stay as they are, and you can edit or delete any of it. The summary model is shown what you typed (not earlier summaries) to see what mattered to you; it covers those topics from the transcript and never presents your own thoughts as something that was said. Summarising again adds another section.
 - Review/edit the saved transcript, then click **Summarise** if wanted. Settings → **Summary style** chooses what the notes focus on: **Counselling or support session** (default: main concerns, feelings and experiences, strengths and supports, agreed next steps; no diagnosis, labels or advice that was not said), **Service conversation** (reason for contact, information shared, support discussed, agreed follow-up), **Meeting** (discussion points, decisions, actions), or **Custom instructions** you write yourself (up to 2,000 characters; VoxLoom still keeps to what was said and adds no timestamps). **How to write instructions, with examples**, under the box, shows three tips and ready-made examples (a counselling case note, a team meeting, a training session) to use as they are or change. Notes are grouped by topic, without source timestamps. **Copy notes** pastes the whole notes page, your notes and the summary, with formatted headings, paragraphs and bullets into Word, Outlook or a case-notes system; **Copy Markdown** copies the same notes as Markdown (`# Summary`, `## ` headings, `- ` bullets) for note apps and wikis. If the recording is still called "Untitled recording", the same Summarise run also gives it a short title (for example "Staff Induction Workshop Planning"); a title you typed or an imported file's name is never changed. Stopping/importing never generates summaries automatically. Transcription and search preparation start automatically when their local tools are installed. Corrections invalidate the old search data; Prepare search updates it after review. Exact search remains available without embeddings.
-- **Progress:** transcription, search preparation and summaries show their progress in the top bar, which stays in place while you scroll a long transcript. Click it to see every job, its recording and **Cancel**. It shows **All done** when work finishes, and turns red with **Retry** if a job fails. While you record, it shows **Waits until you stop recording**: nothing runs until you stop.
+- **Progress:** transcription and summaries show their progress in the top bar, which stays in place while you scroll a long transcript. Click it to see every job, its recording and **Cancel**. It shows **All done** when work finishes, and turns red with **Retry** if a job fails. While you record, it shows **Waits until you stop recording**: nothing runs until you stop.
 - **Appearance:** System (follows the desktop), Light or Dark in Settings → Appearance; the small button beside Quit in the sidebar cycles through them.
 - Timestamp buttons seek the appropriate source on the recording timeline. Playback advances through that source's chunks; audio export joins its chunks into one FLAC. The normal export choices are Word documents, plain text and subtitles. Transcript timestamps remain in the Transcript tab. A synchronized microphone+system playback/export mix remains future work.
 - Delete removes the managed recording and derived data. User-created exports are independent files.

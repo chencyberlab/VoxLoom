@@ -6,11 +6,11 @@
 #   engines/llama-completion.exe, llama-completion-generic.exe   llama.cpp, patched
 #   engines/transcribe-cli.exe, transcribe-cli-generic.exe  transcribe.cpp (Accurate transcription)
 #   engines/ffmpeg.exe, ffprobe.exe                          minimal LGPL FFmpeg, only what VoxLoom uses
-#   python/                                                  embeddable CPython + LiteRT (requirements.windows.lock.txt)
+#   python/                                                  embeddable CPython, as it ships (the worker needs only its standard library)
 #
 # Executables are static (only Windows' own DLLs) and carry a manifest that
 # makes their ANSI code page UTF-8, so paths like C:\Users\Zoë\… reach them intact.
-# Needs mingw-w64, cmake, make, nasm, python3-venv, curl.
+# Needs mingw-w64, cmake, make, nasm, python3, curl.
 # Usage: scripts/build-windows-runtime.sh [--parts engines,ffmpeg,python] [output folder]
 # (default: all parts into .local-data/windows-runtime). CI builds and caches each part.
 set -euo pipefail
@@ -141,20 +141,12 @@ cp "$work/ffmpeg-src/LICENSE.md" "$out/licenses/FFmpeg-LICENSE.md"
 )
 fi
 
-# Python: the embeddable package with LiteRT installed into it.
+# Python: the embeddable package as it ships. The worker, setup and the update
+# check use only its standard library, so nothing is installed into it.
 if wants python; then
 fetch "https://www.python.org/ftp/python/$python_version/python-$python_version-embed-amd64.zip" "$python_sha256" "$work/python-$python_version-embed-amd64.zip"
 rm -rf "$out/python" && mkdir -p "$out/python"
 python3 -m zipfile -e "$work/python-$python_version-embed-amd64.zip" "$out/python"
-pth="$(ls "$out"/python/python3*._pth)"
-# Embeddable Python ignores site-packages unless its ._pth file lists it.
-printf 'python313.zip\n.\nLib\\site-packages\nimport site\n' > "$pth"
-rm -rf "$work/pip-venv" && python3 -m venv "$work/pip-venv"
-"$work/pip-venv/bin/pip" install --quiet --disable-pip-version-check --no-input --no-deps --require-hashes \
-  --only-binary=:all: --platform win_amd64 --python-version 3.13 --implementation cp --abi cp313 \
-  --target "$out/python/Lib/site-packages" -r "$repo/worker/requirements.windows.lock.txt"
-# pip writes Linux launcher scripts for the CLIs; the app never uses them.
-rm -rf "$out/python/Lib/site-packages/bin"
 fi
 
 # Everything must run on a clean Windows: only DLLs that ship with Windows.
@@ -181,6 +173,5 @@ FFmpeg $ffmpeg_version (LGPL 2.1 or later): https://ffmpeg.org/releases/ffmpeg-$
   source (https://github.com/chencyberlab/VoxLoom). Licence: FFmpeg-COPYING.LGPLv2.1.txt, FFmpeg-LICENSE.md
 CPython $python_version embeddable package (PSF License): https://www.python.org/downloads/release/python-${python_version//./}/
   Licence: python\LICENSE.txt
-LiteRT-LM and the Python packages it needs: their licences are in python\Lib\site-packages\*.dist-info
 EOF
 printf 'Windows runtime in %s\n' "$out"

@@ -18,7 +18,7 @@ NODE_VERSION=24.22.0
 NODE_SHA256=cc2f601cee82d9a5a233302fe307abc600727035fd7d2c3a3571755989e95008
 RUST_VERSION=1.99.0
 PACKAGES=(build-essential cmake pkg-config curl libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev
-          libayatana-appindicator3-dev patchelf ffmpeg pulseaudio-utils python3 python3-venv)
+          libayatana-appindicator3-dev patchelf ffmpeg pulseaudio-utils python3)
 
 install_deps=0 run_checks=0 release_dir="$repo/release"
 while [[ $# -gt 0 ]]; do

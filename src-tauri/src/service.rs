@@ -155,41 +155,6 @@ mod tests {
         service.shutdown();
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn a_slow_python_check_leaves_the_library_free() {
-        use std::os::unix::fs::PermissionsExt;
-        let temp = tempfile::tempdir().unwrap();
-        let service = Service::open(
-            temp.path().join("data"),
-            temp.path().join("cache"),
-            temp.path().into(),
-            Arc::new(|_| {}),
-        )
-        .unwrap();
-        // Stands in for a Python that antivirus or a cold disk keeps starting.
-        let slow = temp.path().join("slow-python");
-        fs::write(&slow, "#!/bin/sh\nsleep 2\nexit 1\n").unwrap();
-        fs::set_permissions(&slow, fs::Permissions::from_mode(0o700)).unwrap();
-        service
-            .db
-            .lock()
-            .unwrap()
-            .set_setting("python", slow.to_str().unwrap())
-            .unwrap();
-        let checking = {
-            let service = service.clone();
-            std::thread::spawn(move || service.dispatch("runtime_status", Value::Null))
-        };
-        std::thread::sleep(Duration::from_millis(300));
-        // What the quit question reads must answer meanwhile (issue #17).
-        let started = Instant::now();
-        service.dispatch("jobs", Value::Null).unwrap();
-        assert!(started.elapsed() < Duration::from_secs(1), "{:?}", started.elapsed());
-        assert!(!checking.join().unwrap().unwrap()["inference"].as_bool().unwrap());
-        service.shutdown();
-    }
-
     #[test]
     fn accurate_transcription_falls_back_until_downloaded() {
         let temp = tempfile::tempdir().unwrap();
@@ -531,11 +496,8 @@ mod tests {
         fs::create_dir_all(&cache).unwrap();
         fs::write(models.join("ggml-base.en.bin"), b"base").unwrap();
         fs::write(models.join("gemma-4-E4B-it-Q4_0.gguf.part"), b"half").unwrap();
-        fs::write(models.join("embeddinggemma-2-740m.litertlm"), b"embed").unwrap();
         fs::write(models.join("my-own.gguf"), b"custom").unwrap();
         fs::write(models.join("gemma-3-1b-it-qat-Q4_0.gguf"), b"old 1b").unwrap();
-        let compiled = cache.join("embeddinggemma-2-740m.litertlm_1_5.text_encoder.xnnpack_cache");
-        fs::write(&compiled, b"compiled").unwrap();
         fs::write(cache.join("last-inference-metrics.json"), b"{}").unwrap();
         let on_disk = |s: &Arc<Service>, id: &str| {
             s.dispatch("models", json!({})).unwrap()["models"]
@@ -568,14 +530,12 @@ mod tests {
             .conn
             .execute("UPDATE jobs SET status='cancelled'", [])
             .unwrap();
-        let freed = remove(&service, json!(["whisper", "summary_e4b", "embedding", "summary_1b"])).unwrap();
-        assert_eq!(freed["freed_bytes"], 4 + 4 + 5 + 8 + 6);
+        let freed = remove(&service, json!(["whisper", "summary_e4b", "summary_1b"])).unwrap();
+        assert_eq!(freed["freed_bytes"], 4 + 4 + 6);
         assert!(!models.join("gemma-3-1b-it-qat-Q4_0.gguf").exists());
         assert!(!service.dispatch("models", json!({})).unwrap()["models"].as_array().unwrap().iter().any(|m| m["id"] == "summary_1b"));
         assert!(!models.join("ggml-base.en.bin").exists());
         assert!(!models.join("gemma-4-E4B-it-Q4_0.gguf.part").exists());
-        assert!(!models.join("embeddinggemma-2-740m.litertlm").exists());
-        assert!(!compiled.exists());
         assert!(models.join("my-own.gguf").exists());
         assert!(cache.join("last-inference-metrics.json").exists());
         assert_eq!(on_disk(&service, "summary_e4b"), 0);
@@ -1136,8 +1096,8 @@ impl Service {
         self.tool(&self.db.lock().unwrap(), "python")
     }
     /// The interpreter for setup and Word export, which need only the standard
-    /// library. Linux uses the system python3, which also creates the LiteRT
-    /// venv; the Windows package bundles one interpreter for everything.
+    /// library. Linux uses the system python3; the Windows package bundles one
+    /// interpreter for everything.
     /// Takes the locked library: callers already hold it.
     /// Asks GitHub for the latest published release, only because the user
     /// clicked Check for updates. The worker sends nothing but the version.
@@ -1198,12 +1158,21 @@ impl Service {
         })
     }
     fn default_tool(&self, tool: &str) -> String {
+        // The worker needs only the standard library: the system python3 on
+        // Linux, the bundled interpreter on Windows (a checkout stages it
+        // under src-tauri/ for debug builds).
+        if tool == "python" {
+            if cfg!(windows) {
+                for folder in [self.resources.join("python"), self.resources.join("src-tauri/python")] {
+                    if folder.join("python.exe").is_file() {
+                        return folder.join("python.exe").to_string_lossy().to_string();
+                    }
+                }
+                return "python".into();
+            }
+            return "python3".into();
+        }
         let (dev, installed, fallback) = match tool {
-            "python" => (
-                platform::venv_python(Path::new(".venv")),
-                platform::venv_python(Path::new("runtimes/inference")),
-                if cfg!(windows) { "python" } else { "python3" },
-            ),
             "whisper_cli" => (
                 Path::new(".runtimes/whisper-build/bin").join(platform::exe("whisper-cli")),
                 Path::new("runtimes/whisper/bin").join(platform::exe("whisper-cli")),
@@ -1222,14 +1191,12 @@ impl Service {
         };
         let optimized = platform::optimized_cpu();
         let engines = self.resources.join("engines");
-        let bundled = match tool {
-            // The Windows package ships its own interpreter with LiteRT installed.
-            "python" if cfg!(windows) => self.resources.join("python").join("python.exe"),
-            "python" => engines.join(fallback),
-            _ if !optimized => engines.join(platform::exe(&format!("{fallback}-generic"))),
-            _ => engines.join(platform::exe(fallback)),
+        let bundled = if optimized {
+            engines.join(platform::exe(fallback))
+        } else {
+            engines.join(platform::exe(&format!("{fallback}-generic")))
         };
-        if tool != "python" && !optimized {
+        if !optimized {
             let generic = self
                 .resources
                 .join(".runtimes/generic")
@@ -1257,7 +1224,7 @@ impl Service {
             PathBuf::from(db.setting("models_dir", &self.data.join("models").to_string_lossy()));
         let transcription = self.transcription_model(&db);
         let asr_engine = if transcription.ends_with(PARAKEET_MODEL) { "parakeet" } else { "whisper" };
-        let mut v = json!({"kind":kind,"cache_dir":self.cache,"models":{"whisper":transcription,"embedding":models.join("embeddinggemma-2-740m.litertlm"),"summary":""},"threads":db.setting("threads","2").parse::<u32>().unwrap_or(2).clamp(1,8),"language":db.setting("language","en"),"asr_engine":asr_engine,"whisper_cli":self.tool(&db,"whisper_cli"),"transcribe_cli":self.tool(&db,"transcribe_cli"),"llama_cli":self.tool(&db,"llama_cli")});
+        let mut v = json!({"kind":kind,"cache_dir":self.cache,"models":{"whisper":transcription,"summary":""},"threads":db.setting("threads","2").parse::<u32>().unwrap_or(2).clamp(1,8),"language":db.setting("language","en"),"asr_engine":asr_engine,"whisper_cli":self.tool(&db,"whisper_cli"),"transcribe_cli":self.tool(&db,"transcribe_cli"),"llama_cli":self.tool(&db,"llama_cli")});
         if kind == "summarize" {
             v["summary_style"] = json!(db.setting("summary_style", "counselling"));
             v["summary_prompt"] = json!(db.setting("summary_prompt", ""));
@@ -1325,23 +1292,6 @@ impl Service {
             }
             v["tracks"] = json!(tracks);
             v["segments"] = json!(db.segments(m)?);
-            if kind == "index" {
-                db.conn.execute("DELETE FROM embedding_items WHERE meeting_id=? AND (revision<>? OR dimensions<>768 OR chunk_version<>1 OR backend<>'litert-lm-cpu')",params![m,search::REVISION]).map_err(err)?;
-                let mut stmt=db.conn.prepare("SELECT modality,track_id,start_ms,end_ms FROM embedding_items WHERE meeting_id=?").map_err(err)?;
-                let rows = stmt
-                    .query_map([m], |r| {
-                        Ok(json!([
-                            r.get::<_, String>(0)?,
-                            r.get::<_, Option<String>>(1)?,
-                            r.get::<_, i64>(2)?,
-                            r.get::<_, i64>(3)?
-                        ]))
-                    })
-                    .map_err(err)?;
-                v["indexed"] = json!(rows
-                    .collect::<std::result::Result<Vec<_>, _>>()
-                    .map_err(err)?);
-            }
         }
         Ok(v)
     }
@@ -1366,7 +1316,7 @@ impl Service {
         }
         let next: Option<(String, String, String)> = {
             let db = self.db.lock().unwrap();
-            db.conn.query_row("SELECT id,meeting_id,kind FROM jobs WHERE status='pending' ORDER BY CASE kind WHEN 'transcribe' THEN 0 WHEN 'index' THEN 1 ELSE 2 END,created_at,rowid LIMIT 1",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().ok().flatten()
+            db.conn.query_row("SELECT id,meeting_id,kind FROM jobs WHERE status='pending' ORDER BY CASE kind WHEN 'transcribe' THEN 0 ELSE 1 END,created_at,rowid LIMIT 1",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().ok().flatten()
         };
         let Some((job, meeting, kind)) = next else {
             return;
@@ -1426,17 +1376,6 @@ impl Service {
                             "UPDATE meetings SET status='ready' WHERE id=? AND status='interrupted'",
                             [&meeting],
                         );
-                    }
-                    if !recording
-                        && remaining == 0
-                        && kind == "transcribe"
-                        && PathBuf::from(
-                            db.setting("models_dir", &self.data.join("models").to_string_lossy()),
-                        )
-                        .join("embeddinggemma-2-740m.litertlm")
-                        .is_file()
-                    {
-                        let _ = db.enqueue(&meeting, "index");
                     }
                 }
                 Err(e) => {
@@ -1552,8 +1491,7 @@ impl Service {
                                             .to_string(),
                                     )
                                 }
-                                "segment" | "asr_batch" | "track_duration" | "embedding"
-                                | "summary" => {
+                                "segment" | "asr_batch" | "track_duration" | "summary" => {
                                     if let Some((meeting, _)) = ingest {
                                         self.ingest(meeting, &v)?;
                                         (self.notify)(
@@ -1639,23 +1577,6 @@ impl Service {
             }
             "segment" => {
                 db.conn.execute("INSERT INTO transcript_segments(meeting_id,start_ms,end_ms,text,source) SELECT ?,?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM transcript_segments WHERE meeting_id=? AND source=? AND start_ms=?)",params![meeting,v["start_ms"].as_i64(),v["end_ms"].as_i64(),v["text"].as_str(),v["source"].as_str(),meeting,v["source"].as_str(),v["start_ms"].as_i64()]).map_err(err)?;
-            }
-            "embedding" => {
-                let vector: Vec<f32> = serde_json::from_value(v["vector"].clone()).map_err(err)?;
-                let vector = search::normalized(&vector)?;
-                let item = format!(
-                    "{meeting}:{}:{}:{}:{}",
-                    v["track_id"], v["modality"], v["start_ms"], v["end_ms"]
-                );
-                let tx = db.conn.transaction().map_err(err)?;
-                tx.execute("INSERT INTO model_registry(id,revision,path,dimensions) VALUES(?,?,?,768) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,path=excluded.path,dimensions=excluded.dimensions",params![search::MODEL_ID,search::REVISION,"embeddinggemma-2-740m.litertlm"]).map_err(err)?;
-                tx.execute("INSERT OR REPLACE INTO embedding_items(id,meeting_id,track_id,modality,start_ms,end_ms,text,model_id,revision,backend,dimensions,chunk_version) VALUES(?,?,?,?,?,?,?,?,?,'litert-lm-cpu',768,1)",params![item,meeting,v["track_id"].as_str(),v["modality"].as_str(),v["start_ms"].as_i64(),v["end_ms"].as_i64(),v["text"].as_str(),search::MODEL_ID,search::REVISION]).map_err(err)?;
-                tx.execute(
-                    "INSERT OR REPLACE INTO embedding_vectors(item_id,vector) VALUES(?,?)",
-                    params![item, search::bytes(&vector)],
-                )
-                .map_err(err)?;
-                tx.commit().map_err(err)?;
             }
             "summary" => {
                 // Added below the notes, never in their place: what the
@@ -1763,9 +1684,6 @@ impl Service {
                     return Err("A correction cannot be empty".into());
                 }
                 db.conn.execute("UPDATE transcript_segments SET text=?,edited=1 WHERE id=? AND meeting_id=?",params![correction,p["id"].as_i64(),m]).map_err(err)?;
-                db.conn
-                    .execute("DELETE FROM embedding_items WHERE meeting_id=?", [m])
-                    .map_err(err)?;
                 Ok(Value::Null)
             }
             "enqueue" => {
@@ -1780,15 +1698,6 @@ impl Service {
                         .execute("INSERT OR IGNORE INTO restart_jobs(job_id) VALUES(?)", [&job])
                         .map_err(err)?;
                 }
-                Ok(json!(job))
-            }
-            "rebuild_index" => {
-                let db = self.db.lock().unwrap();
-                let id = text(&p, "id")?;
-                let job = db.enqueue(id, "index")?;
-                db.conn
-                    .execute("DELETE FROM embedding_items WHERE meeting_id=?", [id])
-                    .map_err(err)?;
                 Ok(json!(job))
             }
             "cancel" => {
@@ -1830,37 +1739,16 @@ impl Service {
                 let (whisper, transcribe, llama) =
                     (available("whisper_cli"), available("transcribe_cli"), available("llama_cli"));
                 let python = self.tool(&db, "python");
-                // Python can take seconds to start (antivirus, a cold disk) or hang: never
-                // hold the library meanwhile, or nothing else (the quit question
-                // included) can read it (issue #17).
                 drop(db);
-                let inference = process::python(&python)
-                    .args([
-                        "-I",
-                        "-c",
-                        "import importlib.metadata as m; assert m.version('litert-lm') == '0.18.0'",
-                    ])
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status()
-                    .map(|s| s.success())
-                    .unwrap_or(false);
                 Ok(
-                    json!({"inference":inference,"whisper":whisper,"transcribe":transcribe,"llama":llama,"python":python,"storage":self.data,"disk_free_bytes":platform::free_disk_bytes(&self.data)}),
+                    json!({"whisper":whisper,"transcribe":transcribe,"llama":llama,"python":python,"storage":self.data,"disk_free_bytes":platform::free_disk_bytes(&self.data)}),
                 )
             }
             "setup" => {
                 let s = self.clone();
                 let mode = text(&p, "mode")?.to_string();
-                if ![
-                    "check",
-                    "download",
-                    "import",
-                    "runtime",
-                    "recommended",
-                    "offline_bundle",
-                ]
-                .contains(&mode.as_str())
+                if !["check", "download", "import", "recommended", "offline_bundle"]
+                    .contains(&mode.as_str())
                 {
                     return Err("Invalid setup action".into());
                 }
@@ -2068,12 +1956,8 @@ impl Service {
             "ready",
         )?;
         db.add_track(&id, &target, "imported", 0)?;
-        let models =
-            PathBuf::from(db.setting("models_dir", &self.data.join("models").to_string_lossy()));
         if self.transcription_model(&db).is_file() {
             let _ = db.enqueue(&id, "transcribe");
-        } else if models.join("embeddinggemma-2-740m.litertlm").is_file() {
-            let _ = db.enqueue(&id, "index");
         }
         Ok(json!({"id":id}))
     }
@@ -2110,9 +1994,8 @@ impl Service {
         }
         Ok(manifest)
     }
-    /// Frees disk space by deleting pinned model files, unfinished downloads
-    /// and the compiled caches LiteRT keeps for them. A custom GGUF is the
-    /// user's own file and is never touched. Recordings, transcripts and
+    /// Frees disk space by deleting pinned model files and unfinished
+    /// downloads. A custom GGUF is the user's own file and is never touched. Recordings, transcripts and
     /// settings stay, and setup can download the models again.
     fn remove_models(&self, p: &Value) -> Result<Value> {
         let ids: Vec<&str> = p["ids"]
@@ -2165,20 +2048,10 @@ impl Service {
                 _ => Ok(0),
             }
         };
-        let caches: Vec<PathBuf> = fs::read_dir(&self.cache)
-            .map(|entries| entries.flatten().map(|e| e.path()).collect())
-            .unwrap_or_default();
         let mut freed = 0;
         for model in chosen {
             let path = PathBuf::from(model["path"].as_str().unwrap());
             freed += remove(&path)? + remove(&part_path(&path))?;
-            let prefix = format!("{}_", model["filename"].as_str().unwrap());
-            for cache in &caches {
-                let name = cache.file_name().unwrap_or_default().to_string_lossy();
-                if name.starts_with(&prefix) && name.ends_with(".xnnpack_cache") {
-                    freed += remove(cache)?;
-                }
-            }
         }
         Ok(json!({"freed_bytes":freed}))
     }
@@ -2199,32 +2072,6 @@ impl Service {
             if transcription.is_some_and(|t| !["standard", "accurate"].contains(&t)) {
                 return Err("Choose Standard or Accurate transcription.".into());
             }
-            let python = self.python();
-            let ready = process::python(&python)
-                .args([
-                    "-I",
-                    "-c",
-                    "import importlib.metadata as m; assert m.version('litert-lm') == '0.18.0'",
-                ])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false);
-            if !ready {
-                if cfg!(windows) {
-                    return Err("VoxLoom's search engine is missing or damaged. Reinstall VoxLoom, then run setup again.".into());
-                }
-                let mut runtime = json!({});
-                if mode == "offline_bundle" {
-                    let wheels = Path::new(text(p, "path")?).join("wheels");
-                    if !wheels.is_dir() {
-                        return Err("These setup files are missing search support. Connect once and choose Download & set up, or choose a complete offline setup folder.".into());
-                    }
-                    runtime["wheelhouse"] = json!(wheels);
-                }
-                self.provision("runtime", &runtime)?;
-            }
             let mut models = p.clone();
             if mode == "offline_bundle" {
                 let folder = Path::new(text(p, "path")?).join("models");
@@ -2238,17 +2085,15 @@ impl Service {
                 "import"
             };
             // One model at a time, each named: the chosen transcription model,
-            // search, then only the chosen summary model. Accurate never pulls
-            // in Standard, and E4B never pulls in the default E2B.
+            // then only the chosen summary model. Accurate never pulls in
+            // Standard, and E4B never pulls in the default E2B.
             let profile = transcription.map_or_else(
                 || self.db.lock().unwrap().setting("transcription_profile", "standard"),
                 str::to_string,
             );
             models.as_object_mut().unwrap().remove("core_only");
-            for model in [if profile == "accurate" { "parakeet" } else { "whisper" }, "embedding"] {
-                models["model"] = json!(model);
-                self.provision(model_mode, &models)?;
-            }
+            models["model"] = json!(if profile == "accurate" { "parakeet" } else { "whisper" });
+            self.provision(model_mode, &models)?;
             if let Some(profile) = transcription {
                 self.db
                     .lock()
@@ -2271,19 +2116,9 @@ impl Service {
             .unwrap()
             .setting("models_dir", &self.data.join("models").to_string_lossy());
         let mut cmd = process::python(self.helper_python(&self.db.lock().unwrap()));
-        if mode == "runtime" {
-            cmd.arg(self.resources.join("worker/setup_runtime.py"))
-                .arg("--install")
-                .arg("--directory")
-                .arg(self.data.join("runtimes/inference"));
-            if let Some(wheelhouse) = p["wheelhouse"].as_str() {
-                cmd.arg("--wheelhouse").arg(wheelhouse);
-            }
-        } else {
-            cmd.arg(self.resources.join("worker/provision.py"))
-                .arg("--directory")
-                .arg(directory);
-        }
+        cmd.arg(self.resources.join("worker/provision.py"))
+            .arg("--directory")
+            .arg(directory);
         match mode {
             "check" => {
                 cmd.arg("--check");
@@ -2294,14 +2129,13 @@ impl Service {
             "import" => {
                 cmd.arg("--offline-import").arg(text(p, "path")?);
             }
-            "runtime" => {}
             _ => return Err("Invalid setup mode".into()),
         }
-        if mode != "runtime" && p["core_only"] == true {
+        if p["core_only"] == true {
             cmd.arg("--core-only");
         }
         if let Some(model) = p["model"].as_str() {
-            if !["whisper", "parakeet", "embedding", "summary_e2b", "summary_e4b"].contains(&model) {
+            if !["whisper", "parakeet", "summary_e2b", "summary_e4b"].contains(&model) {
                 return Err("Unknown model".into());
             }
             cmd.arg("--model").arg(model);
@@ -2323,58 +2157,18 @@ impl Service {
         process::finished(child.id());
         *self.running.lock().unwrap() = None;
         if !success {
-            if mode == "runtime" {
-                return Err("Local search runtime setup did not finish. Check the connection and disk space, then retry or import offline wheels.".into());
-            }
             return Err("Model setup did not finish. Review status, then retry or import a file matching the manifest.".into());
-        }
-        if mode == "runtime" {
-            self.db.lock().unwrap().set_setting(
-                "python",
-                &platform::venv_python(&self.data.join("runtimes/inference")).to_string_lossy(),
-            )?;
         }
         Ok(())
     }
+    /// Keyword search reads only the library, so it works while recording and
+    /// while a job runs.
     fn search(&self, p: &Value) -> Result<Value> {
         let query = text(p, "query")?.trim();
-        if query.is_empty() {
-            return Ok(json!([]));
-        }
         if query.len() > 2000 {
             return Err("Search query is too long".into());
         }
-        let mode = p["mode"].as_str().unwrap_or("exact");
-        let filter = &p["filter"];
-        let exact = if mode != "semantic" {
-            search::exact(&self.db.lock().unwrap(), query, filter)?
-        } else {
-            vec![]
-        };
-        if mode == "exact" {
-            return Ok(json!(search::dedup(exact, 40)));
-        }
-        if self.capture.lock().unwrap().is_some() {
-            return Err("Semantic search waits while recording. Exact search is available.".into());
-        }
-        let _guard = self
-            .inference
-            .try_lock()
-            .map_err(|_| "Inference is busy. Exact search is available while jobs finish.")?;
-        let mut request = self.request("query", None)?;
-        request["query"] = json!(query);
-        let results = self.run_worker("interactive", &request, None)?;
-        let vector = results
-            .iter()
-            .find(|v| v["type"] == "query")
-            .ok_or("Embedding runtime returned no query vector")?;
-        let v: Vec<f32> = serde_json::from_value(vector["vector"].clone()).map_err(err)?;
-        let semantic = search::semantic(&self.db.lock().unwrap(), &v, filter)?;
-        Ok(json!(if mode == "combined" {
-            search::combined(exact, semantic)
-        } else {
-            semantic
-        }))
+        search::keyword(&self.db.lock().unwrap(), query, &p["filter"])
     }
     fn record(&self, p: Value) -> Result<Value> {
         let mut capture = self.capture.lock().unwrap();
@@ -2425,8 +2219,8 @@ impl Service {
         // Recording outranks every other job, so a worker in progress is
         // stopped; its job waits for the recording to end, and a
         // transcription resumes from its last checkpoint. Setup is left
-        // alone: killing pip or a model download half-way can leave a broken
-        // venv.
+        // alone: a model download or import is light work, and stopping it
+        // would only mean doing it again.
         if let Some((job, pid)) = self.running.lock().unwrap().as_ref() {
             if job != "setup" {
                 process::kill_tree(*pid);

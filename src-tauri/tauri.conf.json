@@ -40,13 +40,10 @@
       "../worker/export_docx.py": "worker/export_docx.py",
       "../worker/provision.py": "worker/provision.py",
       "../worker/updates.py": "worker/updates.py",
-      "../worker/requirements.txt": "worker/requirements.txt",
-      "../worker/requirements.lock.txt": "worker/requirements.lock.txt",
       "../models/manifest.json": "models/manifest.json",
       "../scripts/setup-runtimes.sh": "scripts/setup-runtimes.sh",
       "../scripts/patch-llama-completion.py": "scripts/patch-llama-completion.py",
       "../docs/MODEL_SOURCES.md": "docs/MODEL_SOURCES.md",
-      "../worker/setup_runtime.py": "worker/setup_runtime.py",
       "engines/": "engines/"
     },
     "category": "Productivity",
@@ -57,7 +54,6 @@
           "ffmpeg",
           "pulseaudio-utils",
           "python3",
-          "python3-venv",
           "libgomp1",
           "libstdc++6"
         ],

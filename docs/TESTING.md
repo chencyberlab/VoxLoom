@@ -14,9 +14,34 @@ cargo clippy --manifest-path src-tauri/Cargo.toml --offline -- -D warnings
 
 The project-local Rust launcher is `scripts/desktop.sh`; for direct cargo commands with that toolchain, export `RUSTUP_HOME="$PWD/.toolchain/rustup"`, `CARGO_HOME="$PWD/.toolchain/cargo"`, and add `.toolchain/cargo/bin` to PATH. No cargo clean is needed. Native dependencies and compiler prerequisites are in README. Playwright uses the available Chrome binary at `/opt/google/chrome/chrome`; adjust the config on a different development machine. No cloud API keys or external test service is required.
 
-Meaningful unit checks cover pause-aligned chunk planning, skipped-speech retries, sentence carry-over, chunk tail/time offsets, asymmetric task prefixes, 768-d normalization/finite checks, FTS insert/edit/delete triggers, SQLite reopen/migration, vector serialization, nearby-result deduplication, integrity validation, private imports with spaces/non-ASCII paths, corrupt imports, and empty-evidence behavior. The UI tests check empty/error states, normal navigation, onboarding's one-click action, hidden technical details, optional summaries, responsive overflow, local asset requests and compact control labels. Browser preview is explicitly labeled and cannot access user files; it has no simulated recordings.
+Meaningful unit checks cover pause-aligned chunk planning, skipped-speech retries, sentence carry-over, chunk tail/time offsets, keyword search (words, wildcards, phrases, accents, highlight offsets, filters before the cap), FTS insert/edit/delete triggers, SQLite reopen/migration, integrity validation, private imports with spaces/non-ASCII paths, corrupt imports, and empty-evidence behavior. The UI tests check empty/error states, normal navigation, onboarding's one-click action, hidden technical details, optional summaries, responsive overflow, local asset requests and compact control labels. Browser preview is explicitly labeled and cannot access user files; it has no simulated recordings.
 
 Version 0.1.1 added a first-run 1B/E2B summary selector. Six browser tests pass, including the request payload, displayed estimate and locked selection during setup for 1B, E2B and no summaries. These use an explicitly mocked bridge, without downloading models. A separate Rust regression executes the real offline provisioning script with tiny SHA-256-checked fixture files and a stubbed runtime readiness probe. It verifies core plus only the chosen summary model, saved E2B selection after success, core-only setup, missing-summary failure without changing the saved selection, and rejection of an unknown profile. Native checks on the final 0.1.1 package also passed launch, compact/expand and Quit, with all three observed processes released. The setup action remains fully visible at 900×720 in the browser checks. No user library or installed app data is reset during updates.
+
+## Version 0.3.0: keyword search; no search model
+
+The search model (EmbeddingGemma 2 740M on LiteRT) and everything that served it are removed: the model, the Linux LiteRT venv and its setup step, LiteRT in the Windows package's Python, the indexing job, the embedding tables, and the Meaning / Both search modes. Search is keyword search over the transcript rows (`search.rs::keyword`).
+
+- **Query rules, unit-checked:** every word must appear; `budg*`, `*port`, `r*t` and `appro?ed` match as wildcards and `appro?d` does not (`?` is one letter); `"budget report"` matches in that order only, `"the * report"` takes any one word in the middle, and an unclosed quote runs to the end; `we'll` and `re-port` match as FTS5 reads them (two words together); `zoe cafe` finds "Zoë's café"; wildcards alone match nothing. Typed FTS5 syntax (`OR`, `NEAR(x)`, `-`) is only text. Highlight offsets are UTF-16 units (an emoji before the word counts two) and overlapping matches merge. The FTS5 prefilter never excludes a match: a word with a wildcard narrows only by its letters before the wildcard, and one that starts with a wildcard reads every row. Source, recording and date filters apply before the 100-row cap (600 matching rows in a newer recording, one in an older recording that is searched), and an edited row is found by its new words only.
+- **The user's library, copied and deleted afterwards (counts only, no text read):** 11 recordings, 829 rows, 60,140 characters; 977 embedding items and 3.0 MB of vectors from 0.2.6. Opened by 0.3.0, migration 005 dropped the embedding tables and the 14 index jobs. Release build, every query under 2 ms: `the` 0.8 ms (100+), `budget` 0.1 ms (2), `go*` 0.4 ms (82), `*ing` 1.1 ms (100+), `"i think"` 0.2 ms (19).
+- **A synthetic library 360 times larger:** 500 one-hour calls, a row every 6 s (300,000 rows, a 6,000-word vocabulary plus 20 common words), release build:
+
+| Query | Matches | Time |
+|---|---|---|
+| a rare word (`w4242`) | 100+ | 1.0 ms |
+| `budget` (in about a third of the rows) | 100+ | 80 ms |
+| `"next steps"` | 100+ | 42 ms |
+| `budget approved invoice` | 100+ | 25 ms |
+| `w42*` | 100+ | 26 ms |
+| `w4*` / `*42` (leading wildcard: every row read) | 100+ | 135 / 130 ms |
+| `w?2` (`?` after the first letter) | 100+ | 354 ms |
+| `budget` in one recording | 100 | 35 ms |
+| a word in no row | 0 | 0.1 ms |
+
+- **In the packaged app (WebKitGTK, Xvfb, a throwaway library of synthetic rows):** typed queries reached the host and came back highlighted, newest recording first, with the source on each card (`budg* next steps`, `*port`, accented words). The setup dialog's total for Standard and E2B is "About 3.0 GB" (3.6 GB before, plus the 160 MB venv), and below 1 GB it is shown in MB.
+- **Package:** `voxloom_0.3.0_amd64.deb`, 19,141,512 bytes, depends on ffmpeg, pulseaudio-utils, python3, libgomp1, libstdc++6 (no python3-venv); it carries no `setup_runtime.py` or requirement files. Native launch check: launch, floating bubble, expand and Quit passed, idle tree peak 449,240 KiB, 3 processes released. Close check: idle close 0.1 s, busy close kept open, Quit anyway stopped the worker, a close while the page starts quit after 3.2 s, the hung-Python case asked and stopped everything.
+
+Validation: TypeScript/privacy/version (0.3.0), 55 Python checks (search-model tests removed, the manifest now holds exactly the two transcription and two summary models), 43 browser checks (2 visual-tour checks skipped; new: what a search sends, the 100+ notice, highlights and source labels; the quit checks now cover a model import and a first-run download), 41 Rust unit checks (5 new for search, 1 for migration 005) plus the offline setup integration check, clippy, the native launch and close checks on the package, and the visual tour in both themes. Not run locally: the real-engine workflow (no models in this checkout; it now searches with keywords and uses a summary for its shutdown check) and Windows (no mingw-w64 here); both run in GitHub's CI on push, which also rebuilds the Windows runtime without LiteRT.
 
 ## Version 0.2.6: long summaries no longer fail on a misplaced wrapper
 
@@ -710,18 +735,20 @@ Generate public synthetic fixtures; no real/private recording is committed:
 
 ```bash
 bash scripts/make-fixtures.sh
-.venv/bin/python scripts/probe-engines.py --models .local-data/models \
-  --speech /tmp/voxloom-budget.wav --unrelated /tmp/voxloom-garden.wav \
-  --whisper-cli "$PWD/.runtimes/whisper-build/bin/whisper-cli" \
-  --llama-cli "$PWD/.runtimes/llama-build/bin/llama-completion"
+python3 scripts/probe-engines.py --models .local-data/models \
+  --speech /tmp/voxloom-budget.wav \
+  --whisper-cli "$PWD/.local-data/runtimes/whisper/bin/whisper-cli" \
+  --llama-cli "$PWD/.local-data/runtimes/llama/bin/llama-completion"
 VOXLOOM_TEST_ROOT="$PWD" VOXLOOM_TEST_REPORT=/tmp/voxloom-stage-memory.json \
+  VOXLOOM_TEST_WHISPER_CLI="$PWD/.local-data/runtimes/whisper/bin/whisper-cli" \
+  VOXLOOM_TEST_LLAMA_CLI="$PWD/.local-data/runtimes/llama/bin/llama-completion" \
   cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --offline \
   real_offline -- --ignored --nocapture
 ```
 
 `probe-engines.py` prints `SKIPPED: model files not provisioned` with setup instructions when weights are absent. The Rust engine/device tests are explicitly ignored by the default unit run; opt in only with the supplied fixtures and weights. A skipped real engine is never evidence of successful inference. After the successful runs below, all development model weights and `.local-data/` setup state were deliberately removed at the user's request. Reprovision before repeating engine acceptance.
 
-Observed passes with actual pinned weights:
+Observed passes with actual pinned weights (before 0.3.0, when VoxLoom still had a search model; since 0.3.0 the workflow searches the real transcript by keyword and wildcard, checks the highlighted word, and uses a summary job for the shutdown check):
 
 - Whisper recognized the budget/invoice/Friday sentence from synthesized speech, persisted timestamped segments and exported TXT/MD/SRT/JSON.
 - LiteRT 0.18.0 produced finite 768-dimensional query, document and native audio vectors from the full 740M checkpoint. The budget document scored 0.872 versus 0.616 for unrelated garden text. Native budget speech scored 0.772 versus 0.558 for garden speech. Audio inference consumed WAV directly, independently of transcript matching.

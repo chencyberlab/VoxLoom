@@ -57,7 +57,7 @@ impl Db {
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .map_err(err)?;
-        if version > 4 {
+        if version > 5 {
             return Err("This library was created by a newer VoxLoom version".into());
         }
         conn.execute_batch(include_str!("../migrations/001.sql"))
@@ -67,6 +67,8 @@ impl Db {
         conn.execute_batch(include_str!("../migrations/003.sql"))
             .map_err(err)?;
         conn.execute_batch(include_str!("../migrations/004.sql"))
+            .map_err(err)?;
+        conn.execute_batch(include_str!("../migrations/005.sql"))
             .map_err(err)?;
         conn.execute_batch("PRAGMA secure_delete=ON;")
             .map_err(err)?;
@@ -161,7 +163,7 @@ impl Db {
         Ok(json!(items))
     }
     pub fn enqueue(&self, meeting: &str, kind: &str) -> Result<String> {
-        if !["transcribe", "index", "summarize"].contains(&kind) {
+        if !["transcribe", "summarize"].contains(&kind) {
             return Err("Unknown inference job".into());
         }
         let count: i64 = self
@@ -172,7 +174,7 @@ impl Db {
                 |r| r.get(0),
             )
             .map_err(err)?;
-        // The cap keeps the user from piling up summaries and re-indexes. A
+        // The cap keeps the user from piling up summaries. A
         // transcription is how a recording's words reach the transcript, so
         // it is never turned away: at most one is pending per recording.
         if count >= 8 && kind != "transcribe" {
@@ -195,15 +197,13 @@ impl Db {
         Ok(job)
     }
     /// Transcribe asked to start over (`restart_jobs`): only now, as its job
-    /// starts, do the rows it wrote go, with the search index and the
-    /// checkpoint. The user's edited rows stay. A Transcribe cancelled before
+    /// starts, do the rows it wrote go, with the checkpoint. The user's edited rows stay. A Transcribe cancelled before
     /// it started never gets here, so the transcript stays as it was.
     pub fn start_over(&mut self, job: &str, meeting: &str) -> Result<()> {
         let tx = self.conn.transaction().map_err(err)?;
         if tx.execute("DELETE FROM restart_jobs WHERE job_id=?", [job]).map_err(err)? > 0 {
             for sql in [
                 "DELETE FROM transcript_segments WHERE meeting_id=? AND edited=0",
-                "DELETE FROM embedding_items WHERE meeting_id=?",
                 "DELETE FROM asr_progress WHERE meeting_id=?",
                 "UPDATE audio_tracks SET transcribed=0 WHERE meeting_id=?",
             ] {
@@ -299,8 +299,28 @@ mod tests {
             .collect::<std::result::Result<Vec<_>, _>>().unwrap();
         // One pending transcription per recording; the old failure is gone.
         assert_eq!(jobs, [("1".into(), "transcribe".into(), "pending".into()), ("3".into(), "transcribe".into(), "pending".into())]);
-        assert_eq!(db.conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 4);
+        assert_eq!(db.conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 5);
         assert!(db.enqueue("a", "transcribe_live").is_err());
+    }
+
+    #[test]
+    fn the_search_index_of_an_older_version_goes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.db");
+        {
+            let db = Db::open(&path).unwrap();
+            db.create("a", "Meeting", 1000, "ready").unwrap();
+            db.conn.execute_batch("CREATE TABLE embedding_items(id TEXT PRIMARY KEY); CREATE TABLE embedding_vectors(item_id TEXT PRIMARY KEY); CREATE TABLE model_registry(id TEXT PRIMARY KEY);
+                INSERT INTO embedding_items VALUES('x'); INSERT INTO jobs(id,meeting_id,kind,status,created_at) VALUES('1','a','index','failed',0),('2','a','transcribe','pending',0);
+                PRAGMA user_version = 4;").unwrap();
+        }
+        let db = Db::open(&path).unwrap();
+        let count = |sql: &str| db.conn.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
+        assert_eq!(count("SELECT count(*) FROM sqlite_master WHERE name IN ('embedding_items','embedding_vectors','model_registry')"), 0);
+        assert_eq!(count("SELECT count(*) FROM jobs WHERE kind='index'"), 0);
+        assert_eq!(count("SELECT count(*) FROM jobs"), 1);
+        assert_eq!(db.conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 5);
+        assert!(db.enqueue("a", "index").is_err());
     }
 
     #[test]

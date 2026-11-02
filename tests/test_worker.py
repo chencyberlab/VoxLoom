@@ -94,12 +94,8 @@ class InferenceUnits(unittest.TestCase):
             self.assertEqual([t['id'] for s in streams for t, _, _ in s['tracks']], ['a'])
             # Only audio that exists is cached: a stub is measured again, never trusted as 0.
             self.assertEqual(events, [{'type': 'track_duration', 'track_id': 'a', 'duration_ms': 2000}])
-            # Search preparation runs after that pass with the cached length for
-            # the real file and none for the stub; it must not fail on the stub,
-            # and the stub adds no audio windows.
-            lengths = engine.track_lengths([dict(tracks[0], duration_ms=2000), tracks[1], tracks[2]])
-            self.assertEqual(lengths, [2000, 0, 0])
-            self.assertEqual([len(list(engine.windows(length))) for length in lengths], [1, 0, 0])
+            # Measured again, the stub is still empty, never an error.
+            self.assertEqual([engine.stored_length(t['path']) for t in tracks], [2000, 0, 0])
             # A file the user imported still reports that it cannot be read.
             broken = root / 'import.flac'
             broken.write_bytes(whole.read_bytes()[:200])
@@ -118,20 +114,6 @@ class InferenceUnits(unittest.TestCase):
                 self.assertGreaterEqual(result.getnframes(),17600)
             with wave.open(str(source)) as original:
                 self.assertEqual(original.getnframes(),3200)
-    def test_chunks_no_gaps_tail(self):
-        self.assertEqual(list(engine.windows(65000)), [(0, 30000), (28000, 58000), (56000, 65000)])
-        self.assertEqual(list(engine.windows(30000)), [(0, 30000)])
-        self.assertEqual(list(engine.windows(0)), [])
-
-    def test_prefixes_and_normalization(self):
-        self.assertEqual(engine.prompt("  budget \n", True), "task: search query | text: budget")
-        self.assertEqual(engine.prompt("  budget "), "task: search result | text: budget")
-        v = engine.normalize([2] * 768)
-        self.assertAlmostEqual(sum(x*x for x in v), 1)
-        for invalid in [[0] * 768, [float("nan")] * 768, [1] * 767]:
-            with self.assertRaises(ValueError):
-                engine.normalize(invalid)
-
     def test_timestamp_over_an_hour(self):
         self.assertEqual(engine.stamp(3661001), "01:01:01")
 
@@ -196,7 +178,7 @@ class InferenceUnits(unittest.TestCase):
     def test_empty_evidence_does_not_load_model(self):
         rows = []
         engine.execute({"kind":"answer", "evidence":[]}, lambda **v: rows.append(v), Path("/tmp"))
-        self.assertIn("no supporting evidence", rows[0]["text"])
+        self.assertIn("nothing to answer from", rows[0]["text"])
 
     def test_scripts_run_without_their_folder_on_sys_path(self):
         # -P is what the embeddable Python bundled on Windows does: the
@@ -209,7 +191,7 @@ class InferenceUnits(unittest.TestCase):
             result = subprocess.run([sys.executable, "-P", str(worker / "engine.py"), "--request", str(request), "--response", str(response)],
                                     capture_output=True, timeout=60)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("no supporting evidence", response.read_text(encoding="utf-8"))
+            self.assertIn("nothing to answer from", response.read_text(encoding="utf-8"))
             target = Path(directory) / "Zoë notes.docx"
             result = subprocess.run([sys.executable, "-P", str(worker / "export_docx.py"), str(target)],
                                     input=json.dumps({"title": "Café", "text": "## Overview\nZoë agreed."}).encode(), capture_output=True, timeout=60)
@@ -567,29 +549,10 @@ class Provisioning(unittest.TestCase):
             provision.install(self.model, models)
         self.assertTrue(provision.valid(models / "model.bin", self.model))
 
-    def test_runtime_install_starts_from_an_empty_venv(self):
-        import subprocess
-        import setup_runtime
-        venv = self.root / "runtimes/inference"
-        runs = []
-        def install(prefix=sys.prefix):
-            runs.clear()
-            with patch.object(subprocess, "run", side_effect=lambda argv, **_: runs.append(argv) or subprocess.CompletedProcess(argv, 0)), \
-                 patch.object(sys, "argv", ["setup_runtime.py", "--install", "--directory", str(venv)]), \
-                 patch.object(sys, "prefix", prefix), patch.object(os, "umask"), patch("builtins.print"):
-                self.assertEqual(setup_runtime.main(), 0)
-            return runs[0][1:]
-        # A quit or cancelled install can leave a half-written package that pip
-        # would count as installed: the next install empties the venv first.
-        self.assertEqual(install(), ["-m", "venv", "--clear", str(venv)])
-        # Run from that venv (a checkout on Windows), it is never cleared under itself.
-        self.assertEqual(install(prefix=str(venv)), ["-m", "venv", str(venv)])
-
-    def test_pinned_manifest_has_only_full_embedding_and_manual_gemma4(self):
+    def test_pinned_manifest_has_no_search_model_and_manual_gemma4(self):
         models = json.loads(provision.MANIFEST.read_text())["models"]
-        embedding = next(m for m in models if m["id"] == "embedding")
-        self.assertEqual(embedding["dimensions"], 768)
-        self.assertIn("740m", embedding["filename"])
+        # Search reads the transcript's words: two kinds of model, transcription and summaries.
+        self.assertEqual({m["id"] for m in models}, {"whisper", "parakeet", "summary_e2b", "summary_e4b"})
         # E2B is the standard summary model; E4B is an explicit, opt-in download.
         for model_id, filename, manual in [("summary_e2b", "gemma-4-E2B-it-Q4_0.gguf", False), ("summary_e4b", "gemma-4-E4B-it-Q4_0.gguf", True)]:
             model = next(m for m in models if m["id"] == model_id)

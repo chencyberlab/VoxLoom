@@ -1,5 +1,5 @@
-// Linux setup installs LiteRT into a venv with the system python3, stubbed here
-// with /bin/true. The Windows package bundles its runtime and needs its own test.
+// Linux setup runs provision.py with the system python3. The Windows package
+// runs it with its bundled interpreter, which this test does not have.
 #![cfg(unix)]
 use serde_json::{json, Value};
 use std::{
@@ -12,9 +12,8 @@ use voxloom_core::service::Service;
 
 #[test]
 fn offline_setup_installs_only_selected_models_and_saves_successful_choices() {
-    // Tiny integrity-checked files exercise real provisioning, not inference.
-    // /bin/true explicitly stubs the runtime readiness probe so no dependencies
-    // or model weights are downloaded by this orchestration regression test.
+    // Tiny integrity-checked files exercise real provisioning, not inference:
+    // no model weights are downloaded by this orchestration regression test.
     // Transcription: no choice keeps the saved one; only the chosen model is
     // installed (Accurate without Standard), and a choice is saved only once
     // its model is installed.
@@ -55,7 +54,6 @@ fn offline_setup_installs_only_selected_models_and_saves_successful_choices() {
         .unwrap();
         let files = [
             ("whisper", "ggml-base.en.bin", false),
-            ("embedding", "embeddinggemma-2-740m.litertlm", false),
             ("summary_e2b", "gemma-4-E2B-it-Q4_0.gguf", true),
             ("summary_e4b", "gemma-4-E4B-it-Q4_0.gguf", true),
             ("parakeet", "parakeet-tdt-0.6b-v2-Q6_K.gguf", true),
@@ -84,7 +82,7 @@ fn offline_setup_installs_only_selected_models_and_saves_successful_choices() {
         service
             .dispatch(
                 "save_settings",
-                json!({"python":"/bin/true","summary_profile":"e2b","transcription_profile":before}),
+                json!({"summary_profile":"e2b","transcription_profile":before}),
             )
             .unwrap();
         let mut request = json!({"mode":"offline_bundle","path":bundle,"summary_profile":profile,"core_only":core_only});
@@ -114,7 +112,6 @@ fn offline_setup_installs_only_selected_models_and_saves_successful_choices() {
         for (id, filename, _) in files {
             let installed = match id {
                 "whisper" => transcribed && !accurate,
-                "embedding" => transcribed,
                 "parakeet" => transcribed && accurate,
                 _ => expected == Some(id),
             };

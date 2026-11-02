@@ -30,35 +30,6 @@ try:
 except ImportError:  # Windows: the host measures the whole process tree there.
     resource = None
 
-os.environ.update(HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1", HF_HUB_DISABLE_TELEMETRY="1", DO_NOT_TRACK="1")
-DIM = 768
-
-
-def normalize(values):
-    values = [float(v) for v in values]
-    if len(values) != DIM or not all(math.isfinite(v) for v in values):
-        raise ValueError("Expected 768 finite embedding dimensions")
-    norm = math.sqrt(sum(v * v for v in values))
-    if norm < 1e-12:
-        raise ValueError("Zero embedding returned by runtime")
-    return [v / norm for v in values]
-
-
-def prompt(text, query=False):
-    return f"task: search {'query' if query else 'result'} | text: {text.strip()}"
-
-
-def windows(duration, size=30000, overlap=2000):
-    if duration <= 0 or size <= overlap or overlap < 0:
-        return
-    start = 0
-    while start < duration:
-        end = min(duration, start + size)
-        yield start, end
-        if end == duration:
-            break
-        start = end - overlap
-
 
 def parent_death():
     ctypes.CDLL(None).prctl(1, signal.SIGKILL)
@@ -251,14 +222,6 @@ def stored_length(path):
         if not SEGMENTED.match(Path(path).name):
             raise
         return 0
-
-
-def track_lengths(tracks):
-    """Lengths transcription already measured, else measured now. Every
-    later job over a recording's files must go through here: a segment that
-    holds no audio has no cached length on purpose, and `duration()` on it
-    would fail the job on every retry."""
-    return [t.get("duration_ms") or stored_length(t["path"]) for t in tracks]
 
 
 def decode_pcm(path, start=0, length=None):
@@ -700,53 +663,6 @@ def transcribe(request, emit, scratch):
             commit(cursor, [state.pop("pending")])
 
 
-def embedding_engine(request, audio=False):
-    from litert_lm import Backend, EmbeddingEngine
-    model = ensure_model(request["models"]["embedding"])
-    cpu = Backend.CPU(thread_count=request["threads"])
-    # Explicit None avoids loading the vision encoder for meeting retrieval.
-    return EmbeddingEngine(model, backend=cpu, vision_backend=None,
-                           audio_backend=cpu if audio else None,
-                           cache_dir=str(Path(request["cache_dir"]).resolve()))
-
-
-def index(request, emit, scratch):
-    from litert_lm import Content
-    segments = request.get("segments", [])
-    tracks = request["tracks"]
-    # Transcription already measured every segment file; decoding each one
-    # again just to count windows cost about as long as embedding them.
-    lengths = track_lengths(tracks)
-    total = len(segments) + sum(len(list(windows(d))) for d in lengths)
-    done = 0
-    completed = {tuple(item) for item in request.get("indexed", [])}
-    with embedding_engine(request, audio=True) as engine:
-        for segment in segments:
-            key = ("text", None, segment["start_ms"], segment["end_ms"])
-            if key in completed:
-                done += 1
-                continue
-            vector = normalize(engine.compute_embedding(prompt(segment["text"])).embedding)
-            emit(type="embedding", modality="text", start_ms=segment["start_ms"], end_ms=segment["end_ms"],
-                 text=segment["text"], track_id=None, vector=vector)
-            done += 1
-            emit(type="progress", progress=done / max(1, total))
-        for track, length in zip(tracks, lengths):
-            for start, end in windows(length):
-                key = ("audio", track["id"], start + track["offset_ms"], end + track["offset_ms"])
-                if key in completed:
-                    done += 1
-                    continue
-                wav = scratch / "embedding.wav"
-                clip(track["path"], wav, start, end, minimum_ms=1100)
-                vector = normalize(engine.compute_embedding(Content.AudioFile(str(wav))).embedding)
-                text = " ".join(s["text"] for s in segments if s["end_ms"] > start + track["offset_ms"] and s["start_ms"] < end + track["offset_ms"])
-                emit(type="embedding", modality="audio", start_ms=start + track["offset_ms"], end_ms=end + track["offset_ms"],
-                     text=text[:1200], track_id=track["id"], vector=vector)
-                done += 1
-                emit(type="progress", progress=done / max(1, total))
-
-
 def final_response(reply, allow_plain=False):
     """Accept a completed result, never a partial analysis or model channel."""
     reply = re.sub(r"<think>.*?</think>", "", reply, flags=re.S | re.I)
@@ -971,17 +887,12 @@ def execute(request, emit, scratch):
     kind = request["kind"]
     if kind == "transcribe":
         transcribe(request, emit, scratch)
-    elif kind == "index":
-        index(request, emit, scratch)
-    elif kind == "query":
-        with embedding_engine(request) as engine:
-            emit(type="query", vector=normalize(engine.compute_embedding(prompt(request["query"], True)).embedding))
     elif kind == "summarize":
         summarize(request, emit, scratch)
     elif kind == "answer":
         evidence = request.get("evidence", [])[:6]
         if not evidence:
-            emit(type="answer", text="There is no supporting evidence in your indexed recordings.", citations=[])
+            emit(type="answer", text="Search found nothing to answer from. Try other words.", citations=[])
         else:
             context = "\n".join(f"[{stamp(v['start_ms'])}] {v['title']}: {v['text'][:650]}" for v in evidence)
             answer = generate(request, "Question: " + request["query"][:500] + "\n<EVIDENCE>\n" + context + "\n</EVIDENCE>", scratch)

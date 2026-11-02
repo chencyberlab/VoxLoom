@@ -3,7 +3,8 @@
 
 Every bundled program starts; FFmpeg writes and reads the 30-second-style FLAC
 segments capture produces, from raw PCM on stdin, in a folder with spaces and
-non-ASCII letters; the bundled Python loads LiteRT and the worker modules.
+non-ASCII letters; the bundled Python runs the worker modules and has the
+standard library they use (ssl for model downloads and the update check).
 Run python scripts/windows-runtime-smoke.py <folder with engines/ and python/>
 (src-tauri in a checkout, or a Windows preview folder).
 """
@@ -68,17 +69,17 @@ with tempfile.TemporaryDirectory() as directory:
     assert probe.returncode == 0 and 2.9 < float(probe.stdout) < 3.1, (probe.returncode, probe.stdout, probe.stderr)
     results["ffmpeg_segment_samples_unicode_path"] = samples
 
-result = run(python, "-I", "-c", "import importlib.metadata as m; assert m.version('litert-lm') == '0.18.0'; "
-             "from litert_lm import Backend, EmbeddingEngine, Content; assert callable(EmbeddingEngine.compute_embedding)")
+result = run(python, "-I", "-c", "import ctypes, difflib, hashlib, ssl, urllib.request, wave, zipfile, xml.etree.ElementTree; "
+             "assert ssl.create_default_context().verify_mode == ssl.CERT_REQUIRED")
 assert result.returncode == 0, result.stderr[-800:]
-results["python_litert"] = "loads"
+results["python_standard_library"] = "loads"
 # The worker and Word export, started the way the app starts them.
 with tempfile.TemporaryDirectory() as directory:
     request, response = Path(directory) / "request.json", Path(directory) / "response.jsonl"
     request.write_text(json.dumps({"kind": "answer", "evidence": []}), encoding="utf-8")
     result = run(python, worker / "engine.py", "--request", request, "--response", response)
     assert result.returncode == 0, result.stderr[-800:]
-    assert "no supporting evidence" in response.read_text(encoding="utf-8"), response.read_text(encoding="utf-8")
+    assert "nothing to answer from" in response.read_text(encoding="utf-8"), response.read_text(encoding="utf-8")
     target = Path(directory) / "Zoë's notes.docx"
     result = run(python, worker / "export_docx.py", target, data=json.dumps({"title": "Café", "text": "## Overview\nZoë agreed."}).encode())
     assert result.returncode == 0 and target.read_bytes().startswith(b"PK"), result.stderr[-800:]

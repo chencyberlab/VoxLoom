@@ -144,15 +144,6 @@ pub fn exe(name: &str) -> String {
     }
 }
 
-/// The interpreter inside a Python virtual environment.
-pub fn venv_python(venv: &Path) -> PathBuf {
-    if cfg!(windows) {
-        venv.join("Scripts").join("python.exe")
-    } else {
-        venv.join("bin").join("python")
-    }
-}
-
 /// Windows: puts the bundled FFmpeg and engines first on PATH, for the app and
 /// every worker it starts. `resources/engines` is the installed layout;
 /// `src-tauri/engines` is a checkout's staged copy (debug builds).

@@ -4,7 +4,7 @@
 //   VOXLOOM_TEST_MODELS    models folder (default ROOT/.local-data/models)
 //   VOXLOOM_TEST_FIXTURES  folder of scripts/make-fixtures.sh output (default /tmp)
 //   VOXLOOM_TEST_PYTHON, VOXLOOM_TEST_WHISPER_CLI, VOXLOOM_TEST_LLAMA_CLI  engines
-//                          (default: the Linux checkout layout under ROOT)
+//                          (default: python3 and the Linux checkout layout under ROOT)
 //   VOXLOOM_TEST_TRANSCRIBE_CLI  Accurate's engine; that pass runs only when it
 //                          and the Parakeet model are present
 use serde_json::json;
@@ -72,7 +72,7 @@ fn await_jobs(s: &Arc<Service>) {
 
 #[test]
 #[ignore = "requires provisioned local models and generated speech fixtures"]
-fn real_offline_import_transcribe_index_search_restart_export_delete() {
+fn real_offline_import_transcribe_search_restart_export_delete() {
     let Ok(root) = std::env::var("VOXLOOM_TEST_ROOT") else {
         eprintln!("SKIPPED: model files not provisioned; set VOXLOOM_TEST_ROOT to run real engine acceptance");
         return;
@@ -93,9 +93,9 @@ fn real_offline_import_transcribe_index_search_restart_export_delete() {
         Arc::new(move |event| event_sink.lock().unwrap().push(event)),
     )
     .unwrap();
-    s.dispatch("save_settings",json!({"python":env_path("VOXLOOM_TEST_PYTHON",root.join(".venv/bin/python")),"whisper_cli":env_path("VOXLOOM_TEST_WHISPER_CLI",root.join(".runtimes/whisper-build/bin/whisper-cli")),"llama_cli":env_path("VOXLOOM_TEST_LLAMA_CLI",root.join(".runtimes/llama-build/bin/llama-completion")),"models_dir":env_path("VOXLOOM_TEST_MODELS",root.join(".local-data/models"))})).unwrap();
+    s.dispatch("save_settings",json!({"python":env_path("VOXLOOM_TEST_PYTHON",PathBuf::from("python3")),"whisper_cli":env_path("VOXLOOM_TEST_WHISPER_CLI",root.join(".runtimes/whisper-build/bin/whisper-cli")),"llama_cli":env_path("VOXLOOM_TEST_LLAMA_CLI",root.join(".runtimes/llama-build/bin/llama-completion")),"models_dir":env_path("VOXLOOM_TEST_MODELS",root.join(".local-data/models"))})).unwrap();
     assert_eq!(
-        s.dispatch("runtime_status", json!({})).unwrap()["inference"],
+        s.dispatch("runtime_status", json!({})).unwrap()["whisper"],
         true
     );
     s.dispatch("setup", json!({"mode":"recommended","core_only":false}))
@@ -134,44 +134,17 @@ fn real_offline_import_transcribe_index_search_restart_export_delete() {
         .unwrap()
         .to_lowercase()
         .contains("budget")));
-    measured.insert("index".into(), read_metrics("index"));
-    let count: i64 =
-        s.db.lock()
-            .unwrap()
-            .conn
-            .query_row("SELECT count(*) FROM embedding_items", [], |r| r.get(0))
-            .unwrap();
-    s.dispatch("enqueue", json!({"id":id,"kind":"index"}))
-        .unwrap();
-    await_jobs(&s);
-    assert_eq!(
-        s.db.lock()
-            .unwrap()
-            .conn
-            .query_row("SELECT count(*) FROM embedding_items", [], |r| r
-                .get::<_, i64>(0))
-            .unwrap(),
-        count,
-        "Resumed indexing duplicated vectors"
-    );
-    let hits = s
-        .dispatch(
-            "search",
-            json!({"query":"project budget invoice","mode":"semantic","filter":{}}),
-        )
-        .unwrap();
-    assert!(hits
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|v| v["modality"] == "audio"));
-    let exact = s
-        .dispatch(
-            "search",
-            json!({"query":"budget","mode":"exact","filter":{}}),
-        )
-        .unwrap();
-    assert!(!exact.as_array().unwrap().is_empty());
+    // Keyword search over the real transcript: a word, a wildcard, and the
+    // place of each matched word for the page to highlight.
+    let search = |query: &str| s.dispatch("search", json!({"query":query,"filter":{}})).unwrap()["hits"].as_array().unwrap().clone();
+    let hits = search("budget");
+    assert!(!hits.is_empty());
+    for hit in search("budg*").iter().chain(&hits) {
+        let text: Vec<u16> = hit["text"].as_str().unwrap().encode_utf16().collect();
+        let [a, b] = [0, 1].map(|i| hit["marks"][0][i].as_u64().unwrap() as usize);
+        assert!(String::from_utf16(&text[a..b]).unwrap().to_lowercase().starts_with("budg"), "{hit}");
+    }
+    assert!(search("*udget").len() >= hits.len());
     // Nothing is summarised until asked. The person's own note goes to the
     // real model as the NOTES block and must stay exactly as typed.
     assert_eq!(
@@ -196,7 +169,7 @@ fn real_offline_import_transcribe_index_search_restart_export_delete() {
         .strip_prefix(&format!("{typed}\n\n# Summary\n\n"))
         .unwrap_or_else(|| panic!("The summary did not go below the notes: {notes:?}"));
     assert!(added.to_lowercase().contains("budget"), "{added}");
-    let answer=s.dispatch("answer",json!({"query":"What was approved?","evidence":hits.as_array().unwrap().iter().take(2).collect::<Vec<_>>()})).unwrap();
+    let answer=s.dispatch("answer",json!({"query":"What was approved?","evidence":hits.iter().take(2).collect::<Vec<_>>()})).unwrap();
     assert!(answer
         .as_array()
         .unwrap()
@@ -238,8 +211,9 @@ fn real_offline_import_transcribe_index_search_restart_export_delete() {
     let reopened = Service::open(data, cache, root, Arc::new(|_| {})).unwrap();
     let d = reopened.dispatch("detail", json!({"id":id})).unwrap();
     assert!(!d["segments"].as_array().unwrap().is_empty());
+    // A summary keeps a real model resident long enough to be seen.
     let running_job = reopened
-        .dispatch("enqueue", json!({"id":id,"kind":"index"}))
+        .dispatch("enqueue", json!({"id":id,"kind":"summarize"}))
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(20);
     while voxloom_core::metrics::tree_rss_kib(std::process::id()) < 200_000 {
@@ -267,12 +241,9 @@ fn real_offline_import_transcribe_index_search_restart_export_delete() {
     assert_eq!(reopened.dispatch("library", json!({})).unwrap(), json!([]));
     assert_eq!(
         reopened
-            .dispatch(
-                "search",
-                json!({"query":"budget","mode":"exact","filter":{}})
-            )
+            .dispatch("search", json!({"query":"budget","filter":{}}))
             .unwrap(),
-        json!([])
+        json!({"hits":[],"more":false})
     );
     reopened.shutdown();
 }
@@ -303,7 +274,7 @@ fn real_pulse_dual_capture_transcribed_after_stop_pause_resume_shutdown() {
     let whisper = std::env::var_os("VOXLOOM_TEST_WHISPER_CLI")
         .map(PathBuf::from)
         .unwrap_or_else(|| root.join(".runtimes/whisper-build/bin/whisper-cli"));
-    s.dispatch("save_settings",json!({"python":root.join(".venv/bin/python"),"whisper_cli":whisper,"models_dir":PathBuf::from(std::env::var_os("VOXLOOM_TEST_MODELS").unwrap_or_else(|| root.join(".local-data/models").into_os_string()))})).unwrap();
+    s.dispatch("save_settings",json!({"whisper_cli":whisper,"models_dir":PathBuf::from(std::env::var_os("VOXLOOM_TEST_MODELS").unwrap_or_else(|| root.join(".local-data/models").into_os_string()))})).unwrap();
     let result = s
         .dispatch(
             "record",

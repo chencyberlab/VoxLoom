@@ -28,19 +28,6 @@
       "manual_only": true
     },
     {
-      "id": "embedding",
-      "name": "EmbeddingGemma 2 \u00b7 740M \u00b7 audio + text",
-      "repo": "litert-community/embeddinggemma-2-740m-litert-lm",
-      "revision": "24d962e906c7d332c6428e71c9676855024569e2",
-      "filename": "embeddinggemma-2-740m.litertlm",
-      "bytes": 484622336,
-      "sha256": "e7a8a2204b91e0f96e92960e84a09a89212e1633dcb7575a9bf3378b4df77f4c",
-      "license": "Apache-2.0 (upstream repository metadata)",
-      "license_url": "https://huggingface.co/litert-community/embeddinggemma-2-740m-litert-lm/blob/24d962e906c7d332c6428e71c9676855024569e2/README.md",
-      "dimensions": 768,
-      "optional": false
-    },
-    {
       "id": "summary_e2b",
       "name": "Gemma 4 \u00b7 E2B \u00b7 Q4_0",
       "repo": "ggml-org/gemma-4-E2B-it-GGUF",

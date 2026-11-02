@@ -132,7 +132,7 @@ jobs:
         with:
           path: models-cache
           key: models-${{ hashFiles('models/manifest.json') }}
-      - name: Pinned models (Whisper, Parakeet, embeddings, E2B summaries)
+      - name: Pinned models (Whisper, Parakeet, E2B summaries)
         if: steps.models.outputs.cache-hit != 'true'
         run: |
           python worker/provision.py --download --directory models-cache
@@ -142,7 +142,7 @@ jobs:
         with:
           path: models-cache
           key: ${{ steps.models.outputs.cache-primary-key }}
-      - name: Import, transcribe, index, search, summarise, export, delete
+      - name: Import, transcribe, search, summarise, export, delete
         shell: pwsh
         run: |
           # The engines must open models through a path with non-ASCII letters.

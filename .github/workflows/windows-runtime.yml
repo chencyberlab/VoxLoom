@@ -1,4 +1,4 @@
-# The Windows runtime (engines, FFmpeg, Python with LiteRT), cross-built on
+# The Windows runtime (engines, FFmpeg, embeddable Python), cross-built on
 # Linux from pinned sources and cached until its recipe changes. Called by
 # ci.yml and apps.yml, so both use the same cache entry. Uploads it as the
 # "windows-runtime" artifact of the calling run.
@@ -26,12 +26,12 @@ jobs:
         id: runtime
         with:
           path: windows-runtime
-          key: windows-runtime-${{ hashFiles('scripts/build-windows-runtime.sh', 'scripts/setup-runtimes.sh', 'scripts/patch-llama-completion.py', 'worker/requirements.windows.lock.txt') }}
+          key: windows-runtime-${{ hashFiles('scripts/build-windows-runtime.sh', 'scripts/setup-runtimes.sh', 'scripts/patch-llama-completion.py') }}
       - name: Cross-build the runtime
         if: steps.runtime.outputs.cache-hit != 'true'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends mingw-w64 cmake nasm python3-venv
+          sudo apt-get install -y --no-install-recommends mingw-w64 cmake nasm
           bash scripts/build-windows-runtime.sh windows-runtime
           rm -rf windows-runtime/build
       - uses: actions/cache/save@v5

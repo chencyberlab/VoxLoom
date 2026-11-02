@@ -24,3 +24,6 @@
 /* Short windows: keep navigation, Settings and Quit reachable before the decorative card. */
 @media(max-height:800px){.privacy-card{display:none}}.sidebar-footer>span{white-space:nowrap}
 .settings-panel>.section-heading{margin-bottom:6px}.settings-panel>.setting-row:last-child{border-bottom:0;padding-bottom:0}.settings-panel>.setting-row:only-child{padding:0}.settings-panel>.primary,.settings-panel>.secondary{margin-top:18px}
+/* Search: the words that matched, and the query syntax in the help line. */
+.result-card p mark{background:var(--accent-soft);color:var(--accent);font-weight:600;border-radius:3px;padding:0 2px}
+.search-help code{font-family:inherit;font-weight:600;color:var(--text);background:var(--field);border:1px solid var(--line);border-radius:4px;padding:0 4px}

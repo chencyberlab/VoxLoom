@@ -1,16 +1,13 @@
 #!/usr/bin/env bash
-# Explicit, one-time dependency provisioning. No models are downloaded here.
-# --engines-only builds just the pinned whisper.cpp/llama.cpp/transcribe.cpp CPU executables
-# that are bundled into the package (used by scripts/build-app.sh).
+# Explicit, one-time build of the pinned whisper.cpp/llama.cpp/transcribe.cpp CPU
+# executables bundled into the package. No models are downloaded here. The worker
+# needs only the system python3. --engines-only, which earlier versions needed to
+# skip a Python venv for the search model, is still accepted and changes nothing.
 set -euo pipefail
 umask 077
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 runtime_dir="${VOXLOOM_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/voxloom}/runtimes"
 mkdir -p "$runtime_dir"
-if [[ "${1:-}" != "--engines-only" ]]; then
-  python3 -m venv "$runtime_dir/inference"
-  "$runtime_dir/inference/bin/pip" install -r "$repo/worker/requirements.lock.txt"
-fi
 build_engine() {
   local name="$1" version="$2" expected="$3" target="$4" upstream="$5"
   local archive="$runtime_dir/$name.tar.gz"

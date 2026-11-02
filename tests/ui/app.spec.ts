@@ -7,7 +7,7 @@ test('meeting notes render normally and copy as rich text or Markdown',async({pa
     Object.assign(window,{isTauri:true,__exports:[],__TAURI_INTERNALS__:{transformCallback:()=>1,invoke:async(command:string,args:{action?:string;payload?:unknown})=>{
       if(command.startsWith('plugin:event'))return 1;
       if(command==='plugin:dialog|save')return '/tmp/Meeting notes.docx';
-      switch(args?.action){case 'library':return [meeting];case 'jobs':case 'devices':return [];case 'status':return null;case 'runtime_status':return {inference:true,whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models:[{id:'whisper',present:true},{id:'embedding',present:true},{id:'summary_e2b',present:true}]};case 'settings':return {summary_profile:'1b',summary_style:'meeting'};case 'detail':return {meeting,tracks:[],segments:[{id:1,meeting_id:'notes',start_ms:3000,end_ms:6000,source:'system',text:'The workshop covers privacy.'}]};case 'export':(window as unknown as {__exports:unknown[]}).__exports.push(args.payload);return null;default:return null;}
+      switch(args?.action){case 'library':return [meeting];case 'jobs':case 'devices':return [];case 'status':return null;case 'runtime_status':return {whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models:[{id:'whisper',present:true},{id:'summary_e2b',present:true}]};case 'settings':return {summary_profile:'1b',summary_style:'meeting'};case 'detail':return {meeting,tracks:[],segments:[{id:1,meeting_id:'notes',start_ms:3000,end_ms:6000,source:'system',text:'The workshop covers privacy.'}]};case 'export':(window as unknown as {__exports:unknown[]}).__exports.push(args.payload);return null;default:return null;}
     }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
   });
   await page.goto('/');
@@ -50,10 +50,10 @@ for(const choice of ['e2b','e4b','none'] as const){
     // This bridge checks UI requests only. Real provisioning and persistence
     // are covered by the Rust offline setup test with integrity-checked files.
     await page.addInitScript(()=>{
-      const models=[{id:'whisper',bytes:147964211,present:false},{id:'embedding',bytes:484622336,present:false},{id:'summary_e2b',bytes:2841481184,present:false,optional:true},{id:'summary_e4b',bytes:4590807392,present:false,optional:true,manual_only:true}];
+      const models=[{id:'whisper',bytes:147964211,present:false},{id:'summary_e2b',bytes:2841481184,present:false,optional:true},{id:'summary_e4b',bytes:4590807392,present:false,optional:true,manual_only:true}];
       Object.assign(window,{isTauri:true,__setupCalls:[],__TAURI_INTERNALS__:{transformCallback:()=>1,invoke:async(command:string,args:{action?:string;payload?:unknown})=>{
         if(command.startsWith('plugin:event'))return 1;
-        switch(args?.action){case 'library':case 'jobs':case 'devices':return [];case 'status':return null;case 'runtime_status':return {inference:true,whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models};case 'settings':return {summary_profile:'1b'};case 'setup':(window as unknown as {__setupCalls:unknown[]}).__setupCalls.push(args.payload);return null;default:return null;}
+        switch(args?.action){case 'library':case 'jobs':case 'devices':return [];case 'status':return null;case 'runtime_status':return {whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models};case 'settings':return {summary_profile:'1b'};case 'setup':(window as unknown as {__setupCalls:unknown[]}).__setupCalls.push(args.payload);return null;default:return null;}
       }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
     });
     await page.goto('/');
@@ -65,10 +65,10 @@ for(const choice of ['e2b','e4b','none'] as const){
     if(choice==='none'){
       await dialog.getByLabel('Add optional summaries',{exact:false}).uncheck();
       await expect(model).toBeHidden();
-      await expect(dialog.getByText('About 0.8 GB in total',{exact:false})).toBeVisible();
+      await expect(dialog.getByText('About 148 MB in total',{exact:false})).toBeVisible();
     }else{
       await model.selectOption(choice);
-      await expect(dialog.getByText(`About ${{e2b:'3.6',e4b:'5.4'}[choice]} GB in total`,{exact:false})).toBeVisible();
+      await expect(dialog.getByText(`About ${{e2b:'3.0',e4b:'4.7'}[choice]} GB in total`,{exact:false})).toBeVisible();
       if(choice==='e4b')await expect(dialog.getByText('Needs about 6 GB of free memory',{exact:false})).toBeVisible();
     }
     await page.setViewportSize({width:900,height:720});
@@ -90,8 +90,8 @@ test('one notes page: typed in the studio, edited later, a summary added below w
       if(command.startsWith('plugin:event'))return 1;
       const payload=args?.payload||{};
       if(['update','enqueue','stop'].includes(args?.action||''))w.__calls.push({action:args!.action!,payload});
-      switch(args?.action){case 'library':return [meeting()];case 'jobs':case 'devices':return [];case 'status':return w.__capture;case 'runtime_status':return {inference:true,whisper:true,llama:true,disk_free_bytes:1e10};
-        case 'models':return {models:[{id:'whisper',present:true},{id:'embedding',present:true},{id:'summary_e2b',present:true}]};case 'settings':return {summary_style:'counselling'};
+      switch(args?.action){case 'library':return [meeting()];case 'jobs':case 'devices':return [];case 'status':return w.__capture;case 'runtime_status':return {whisper:true,llama:true,disk_free_bytes:1e10};
+        case 'models':return {models:[{id:'whisper',present:true},{id:'summary_e2b',present:true}]};case 'settings':return {summary_style:'counselling'};
         case 'detail':return {meeting:meeting(),tracks:[],segments:w.__segments};
         case 'stop':w.__capture=null;w.__segments=[{id:1,meeting_id:'rec',start_ms:0,end_ms:3000,source:'mic',text:'I feel isolated at school.'}];return null;
         case 'update':{
@@ -139,8 +139,8 @@ test('typing into empty notes keeps the editor open, and the page shows they are
     const meeting=()=>({id:'empty',title:'Quiet check-in',created_at:1,duration_ms:60000,status:'ready',notes:w.__notes,summary:''});
     Object.assign(window,{isTauri:true,__TAURI_INTERNALS__:{transformCallback:()=>1,invoke:async(command:string,args:{action?:string;payload?:Record<string,unknown>})=>{
       if(command.startsWith('plugin:event'))return 1;
-      switch(args?.action){case 'library':return [meeting()];case 'jobs':case 'devices':return [];case 'status':return null;case 'runtime_status':return {inference:true,whisper:true,llama:true,disk_free_bytes:1e10};
-        case 'models':return {models:[{id:'whisper',present:true},{id:'embedding',present:true},{id:'summary_e2b',present:true}]};case 'settings':return {summary_style:'meeting'};
+      switch(args?.action){case 'library':return [meeting()];case 'jobs':case 'devices':return [];case 'status':return null;case 'runtime_status':return {whisper:true,llama:true,disk_free_bytes:1e10};
+        case 'models':return {models:[{id:'whisper',present:true},{id:'summary_e2b',present:true}]};case 'settings':return {summary_style:'meeting'};
         case 'detail':return {meeting:meeting(),tracks:[],segments:[]};
         case 'update':w.__notes=args!.payload!.notes as string;return {notes:w.__notes};
         default:return null;}
@@ -165,7 +165,7 @@ test('summary style defaults to counselling and custom instructions are saved',a
     Object.assign(window,{isTauri:true,__calls:[],__TAURI_INTERNALS__:{transformCallback:()=>1,invoke:async(command:string,args:{action?:string;payload?:unknown})=>{
       if(command.startsWith('plugin:event'))return 1;
       if(args?.action==='save_settings')(window as unknown as {__calls:unknown[]}).__calls.push(args.payload);
-      switch(args?.action){case 'library':return [meeting];case 'jobs':case 'devices':return [];case 'status':return null;case 'runtime_status':return {inference:true,whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models:[{id:'whisper',present:true},{id:'embedding',present:true},{id:'summary_e2b',present:true}]};case 'settings':return {summary_profile:'1b'};case 'detail':return {meeting,tracks:[],segments:[{id:1,meeting_id:'s',start_ms:0,end_ms:3000,source:'mic',text:'I feel isolated at school.'}]};default:return null;}
+      switch(args?.action){case 'library':return [meeting];case 'jobs':case 'devices':return [];case 'status':return null;case 'runtime_status':return {whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models:[{id:'whisper',present:true},{id:'summary_e2b',present:true}]};case 'settings':return {summary_profile:'1b'};case 'detail':return {meeting,tracks:[],segments:[{id:1,meeting_id:'s',start_ms:0,end_ms:3000,source:'mic',text:'I feel isolated at school.'}]};default:return null;}
     }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
   });
   await page.goto('/');await page.getByRole('button',{name:'Untitled recording',exact:false}).click();
@@ -195,10 +195,10 @@ test('summary style defaults to counselling and custom instructions are saved',a
 
 test('first-run setup offers Standard or Accurate transcription',async({page})=>{
   await page.addInitScript(()=>{
-    const models=[{id:'whisper',bytes:147964211,present:false},{id:'parakeet',bytes:600408576,present:false,optional:true,manual_only:true},{id:'embedding',bytes:484622336,present:false},{id:'summary_e2b',bytes:2841481184,present:false,optional:true},{id:'summary_e4b',bytes:4590807392,present:false,optional:true,manual_only:true}];
+    const models=[{id:'whisper',bytes:147964211,present:false},{id:'parakeet',bytes:600408576,present:false,optional:true,manual_only:true},{id:'summary_e2b',bytes:2841481184,present:false,optional:true},{id:'summary_e4b',bytes:4590807392,present:false,optional:true,manual_only:true}];
     Object.assign(window,{isTauri:true,__setupCalls:[],__TAURI_INTERNALS__:{transformCallback:()=>1,invoke:async(command:string,args:{action?:string;payload?:unknown})=>{
       if(command.startsWith('plugin:event'))return 1;
-      switch(args?.action){case 'library':case 'jobs':case 'devices':return [];case 'status':return null;case 'runtime_status':return {inference:true,whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models};case 'settings':return {summary_profile:'e2b'};case 'setup':(window as unknown as {__setupCalls:unknown[]}).__setupCalls.push(args.payload);return null;default:return null;}
+      switch(args?.action){case 'library':case 'jobs':case 'devices':return [];case 'status':return null;case 'runtime_status':return {whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models};case 'settings':return {summary_profile:'e2b'};case 'setup':(window as unknown as {__setupCalls:unknown[]}).__setupCalls.push(args.payload);return null;default:return null;}
     }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
   });
   await page.goto('/');
@@ -208,11 +208,11 @@ test('first-run setup offers Standard or Accurate transcription',async({page})=>
   await expect(choice.locator('option')).toHaveText([/Standard · Fast default · 148 MB/,/Accurate · Fewer misheard words · 600 MB/]);
   const transcriptionSize=dialog.locator('.welcome-model',{has:page.getByLabel('Transcription model',{exact:true})}).locator('.welcome-size');
   await expect(transcriptionSize).toHaveText('148 MB');
-  await expect(dialog.getByText('About 3.6 GB in total',{exact:false})).toBeVisible();
+  await expect(dialog.getByText('About 3.0 GB in total',{exact:false})).toBeVisible();
   await choice.selectOption('accurate');
   await expect(dialog.getByText('Uses about 1 GB of memory while it writes each transcript.',{exact:false})).toBeVisible();
   // Accurate is installed instead of Standard, not as well: 148 MB fewer than Standard + Accurate.
-  await expect(dialog.getByText('About 4.1 GB in total',{exact:false})).toBeVisible();
+  await expect(dialog.getByText('About 3.4 GB in total',{exact:false})).toBeVisible();
   await expect(transcriptionSize).toHaveText('600 MB');
   await page.setViewportSize({width:900,height:720});
   await page.setViewportSize({width:900,height:720});
@@ -226,10 +226,10 @@ test('first-run setup offers Standard or Accurate transcription',async({page})=>
 
 test('model setup shows the saved transcription choice',async({page})=>{
   await page.addInitScript(()=>{
-    const models=[{id:'whisper',bytes:147964211,present:true},{id:'parakeet',bytes:600408576,present:true,optional:true,manual_only:true},{id:'embedding',bytes:484622336,present:true},{id:'summary_e2b',bytes:2841481184,present:true,optional:true}];
+    const models=[{id:'whisper',bytes:147964211,present:true},{id:'parakeet',bytes:600408576,present:true,optional:true,manual_only:true},{id:'summary_e2b',bytes:2841481184,present:true,optional:true}];
     Object.assign(window,{isTauri:true,__TAURI_INTERNALS__:{transformCallback:()=>1,invoke:async(command:string,args:{action?:string;payload?:unknown})=>{
       if(command.startsWith('plugin:event'))return 1;
-      switch(args?.action){case 'library':case 'jobs':case 'devices':return [];case 'status':return null;case 'runtime_status':return {inference:true,whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models};case 'settings':return {summary_profile:'e2b',transcription_profile:'accurate'};default:return null;}
+      switch(args?.action){case 'library':case 'jobs':case 'devices':return [];case 'status':return null;case 'runtime_status':return {whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models};case 'settings':return {summary_profile:'e2b',transcription_profile:'accurate'};default:return null;}
     }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
   });
   await page.goto('/');
@@ -243,13 +243,13 @@ test('model setup shows the saved transcription choice',async({page})=>{
 
 test('updates are checked only when asked, and only the release page opens',async({page})=>{
   await page.addInitScript(()=>{
-    const models=[{id:'whisper',bytes:147964211,present:true},{id:'embedding',bytes:484622336,present:true},{id:'summary_e2b',bytes:2841481184,present:true,optional:true}];
+    const models=[{id:'whisper',bytes:147964211,present:true},{id:'summary_e2b',bytes:2841481184,present:true,optional:true}];
     // Newer, then up to date, then offline.
     const answers:unknown[]=[{current:'0.1.20',latest:'0.9.0',newer:true},{current:'0.1.20',latest:'0.1.20',newer:false},"Couldn't reach GitHub. Check your internet connection and try again."];
     Object.assign(window,{isTauri:true,__calls:[],__TAURI_INTERNALS__:{transformCallback:()=>1,invoke:async(command:string,args:{action?:string;payload?:unknown})=>{
       if(command.startsWith('plugin:event'))return 1;
       if(args?.action==='check_updates'||args?.action==='open_release')(window as unknown as {__calls:unknown[]}).__calls.push({action:args.action,payload:args.payload});
-      switch(args?.action){case 'library':case 'jobs':case 'devices':return [];case 'status':return null;case 'runtime_status':return {inference:true,whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models};case 'settings':return {summary_profile:'e2b'};
+      switch(args?.action){case 'library':case 'jobs':case 'devices':return [];case 'status':return null;case 'runtime_status':return {whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models};case 'settings':return {summary_profile:'e2b'};
         case 'check_updates':{const answer=answers.shift();if(typeof answer==='string')throw answer;return answer;}
         default:return null;}
     }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
@@ -277,10 +277,10 @@ test('updates are checked only when asked, and only the release page opens',asyn
 
 test('Accurate alone is a complete setup, and Standard can be added later',async({page})=>{
   await page.addInitScript(()=>{
-    const models=[{id:'whisper',bytes:147964211,present:false},{id:'parakeet',bytes:600408576,present:true,optional:true,manual_only:true},{id:'embedding',bytes:484622336,present:true},{id:'summary_e2b',bytes:2841481184,present:true,optional:true}];
+    const models=[{id:'whisper',bytes:147964211,present:false},{id:'parakeet',bytes:600408576,present:true,optional:true,manual_only:true},{id:'summary_e2b',bytes:2841481184,present:true,optional:true}];
     Object.assign(window,{isTauri:true,__TAURI_INTERNALS__:{transformCallback:()=>1,invoke:async(command:string,args:{action?:string;payload?:unknown})=>{
       if(command.startsWith('plugin:event'))return 1;
-      switch(args?.action){case 'library':case 'jobs':case 'devices':return [];case 'status':return null;case 'runtime_status':return {inference:true,whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models};case 'settings':return {summary_profile:'e2b',transcription_profile:'accurate'};default:return null;}
+      switch(args?.action){case 'library':case 'jobs':case 'devices':return [];case 'status':return null;case 'runtime_status':return {whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models};case 'settings':return {summary_profile:'e2b',transcription_profile:'accurate'};default:return null;}
     }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
   });
   await page.goto('/');
@@ -304,10 +304,10 @@ test('Accurate alone is a complete setup, and Standard can be added later',async
 test('with Accurate alone, removing it and an empty transcript name the model actually in use',async({page})=>{
   await page.addInitScript(()=>{
     const meeting={id:'a',title:'Before setup',created_at:1,duration_ms:60000,status:'ready',notes:'',summary:''};
-    const models=[{id:'whisper',bytes:147964211,present:false},{id:'parakeet',bytes:600408576,disk_bytes:600408576,present:true,optional:true,manual_only:true},{id:'embedding',bytes:484622336,present:true}];
+    const models=[{id:'whisper',bytes:147964211,present:false},{id:'parakeet',bytes:600408576,disk_bytes:600408576,present:true,optional:true,manual_only:true}];
     Object.assign(window,{isTauri:true,__TAURI_INTERNALS__:{transformCallback:()=>1,invoke:async(command:string,args:{action?:string;payload?:unknown})=>{
       if(command.startsWith('plugin:event'))return 1;
-      switch(args?.action){case 'library':return [meeting];case 'jobs':case 'devices':return [];case 'status':return null;case 'runtime_status':return {inference:true,whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models};case 'settings':return {summary_profile:'e2b',transcription_profile:'accurate'};case 'detail':return {meeting,tracks:[],segments:[]};default:return null;}
+      switch(args?.action){case 'library':return [meeting];case 'jobs':case 'devices':return [];case 'status':return null;case 'runtime_status':return {whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models};case 'settings':return {summary_profile:'e2b',transcription_profile:'accurate'};case 'detail':return {meeting,tracks:[],segments:[]};default:return null;}
     }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
   });
   await page.goto('/');
@@ -327,11 +327,11 @@ test('with Accurate alone, removing it and an empty transcript name the model ac
 
 test('accurate transcription is an explicit download and setting',async({page})=>{
   await page.addInitScript(()=>{
-    const models=[{id:'whisper',bytes:147964211,present:true},{id:'parakeet',bytes:600408576,present:false,optional:true,manual_only:true},{id:'embedding',bytes:484622336,present:true},{id:'summary_e2b',bytes:2841481184,present:true,optional:true}];
+    const models=[{id:'whisper',bytes:147964211,present:true},{id:'parakeet',bytes:600408576,present:false,optional:true,manual_only:true},{id:'summary_e2b',bytes:2841481184,present:true,optional:true}];
     Object.assign(window,{isTauri:true,__calls:[],__TAURI_INTERNALS__:{transformCallback:()=>1,invoke:async(command:string,args:{action?:string;payload?:unknown})=>{
       if(command.startsWith('plugin:event'))return 1;
       if(args?.action==='save_settings'||args?.action==='setup')(window as unknown as {__calls:unknown[]}).__calls.push({action:args.action,payload:args.payload});
-      switch(args?.action){case 'library':case 'jobs':case 'devices':return [];case 'status':return null;case 'runtime_status':return {inference:true,whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models};case 'settings':return {summary_profile:'1b',transcription_profile:'standard'};default:return null;}
+      switch(args?.action){case 'library':case 'jobs':case 'devices':return [];case 'status':return null;case 'runtime_status':return {whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models};case 'settings':return {summary_profile:'1b',transcription_profile:'standard'};default:return null;}
     }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
   });
   await page.goto('/');
@@ -360,7 +360,7 @@ test('each part plays from the host\'s copy, from memory when the webview cannot
     Object.assign(window,{isTauri:true,__calls:calls,__TAURI_INTERNALS__:{transformCallback:()=>1,convertFileSrc:(path:string)=>`/fixtures/${path.split('/').pop()}`,invoke:async(command:string,args:{action?:string;payload?:{id?:string};id?:string})=>{
       if(command.startsWith('plugin:event'))return 1;
       if(command==='playback_bytes'){calls.push(['bytes',args.id]);return wav.buffer.slice(0);}
-      switch(args?.action){case 'library':return [meeting];case 'jobs':return [];case 'status':return null;case 'runtime_status':return {inference:true,whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models:[{id:'whisper',present:true},{id:'embedding',present:true}]};case 'settings':return {};case 'devices':return [];case 'detail':return {meeting,tracks,segments:[]};case 'playback':calls.push(['playback',args.payload?.id]);return {path:'/cache/playback/fixture/one.wav'};default:return null;}
+      switch(args?.action){case 'library':return [meeting];case 'jobs':return [];case 'status':return null;case 'runtime_status':return {whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models:[{id:'whisper',present:true}]};case 'settings':return {};case 'devices':return [];case 'detail':return {meeting,tracks,segments:[]};case 'playback':calls.push(['playback',args.payload?.id]);return {path:'/cache/playback/fixture/one.wav'};default:return null;}
     }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
   });
   await page.route('**/fixtures/one.wav',route=>route.fulfill({status:200,contentType:'audio/wav',body:'not audio'}));
@@ -382,7 +382,7 @@ for(const [stage,delays] of [['while the host prepares the part',{playback:700,b
       Object.assign(window,{isTauri:true,__TAURI_INTERNALS__:{transformCallback:()=>1,convertFileSrc:(path:string)=>`/fixtures/${path.split('/').pop()}`,invoke:async(command:string,args:{action?:string})=>{
         if(command.startsWith('plugin:event'))return 1;
         if(command==='playback_bytes'){await later(delays.bytes);return wav.buffer.slice(0);}
-        switch(args?.action){case 'library':return [meeting];case 'jobs':return [];case 'status':return null;case 'runtime_status':return {inference:true,whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models:[{id:'whisper',present:true},{id:'embedding',present:true}]};case 'settings':return {};case 'devices':return [];case 'detail':return {meeting,tracks,segments:[]};case 'playback':await later(delays.playback);return {path:'/cache/playback/fixture/one.wav'};default:return null;}
+        switch(args?.action){case 'library':return [meeting];case 'jobs':return [];case 'status':return null;case 'runtime_status':return {whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models:[{id:'whisper',present:true}]};case 'settings':return {};case 'devices':return [];case 'detail':return {meeting,tracks,segments:[]};case 'playback':await later(delays.playback);return {path:'/cache/playback/fixture/one.wav'};default:return null;}
       }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
     },delays);
     // As in WebKitGTK, the asset: URL cannot be played; the bytes can.
@@ -408,7 +408,7 @@ const playbackHost=async(page:Page,options:{bytesDelay:number;failFirstCopy:bool
     Object.assign(window,{isTauri:true,__calls:calls,__TAURI_INTERNALS__:{transformCallback:()=>1,convertFileSrc:(path:string)=>`/fixtures/${path.split('/').pop()}`,invoke:async(command:string,args:{action?:string})=>{
       if(command.startsWith('plugin:event'))return 1;
       if(command==='playback_bytes'){calls.push('bytes');await new Promise(r=>setTimeout(r,options.bytesDelay));if(options.failFirstBytes&&reads++===0)throw 'This part of the recording could not be sent for playback.';return wav.buffer.slice(0);}
-      switch(args?.action){case 'library':return [meeting];case 'jobs':return [];case 'status':return null;case 'runtime_status':return {inference:true,whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models:[{id:'whisper',present:true},{id:'embedding',present:true}]};case 'settings':return {};case 'devices':return [];case 'detail':return {meeting,tracks,segments};
+      switch(args?.action){case 'library':return [meeting];case 'jobs':return [];case 'status':return null;case 'runtime_status':return {whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models:[{id:'whisper',present:true}]};case 'settings':return {};case 'devices':return [];case 'detail':return {meeting,tracks,segments};
         case 'playback':calls.push('playback');if(options.failFirstCopy&&copies++===0)throw 'This part of the recording could not be read for playback.';return {path:'/cache/playback/fixture/one.wav'};default:return null;}
     }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
   },options);
@@ -474,10 +474,10 @@ test('progress stays visible at the top while scrolling a long transcript',async
   await page.addInitScript(()=>{
     const meeting={id:'long',title:'Long conversation',created_at:1,duration_ms:3600000,status:'ready',notes:'',summary:''};
     const segments=Array.from({length:120},(_,i)=>({id:i,meeting_id:'long',start_ms:i*30000,end_ms:i*30000+5000,source:'mic',text:`Sentence number ${i} of a long conversation.`}));
-    Object.assign(window,{isTauri:true,__calls:[],__jobs:[{id:'sum',meeting_id:'long',kind:'summarize',status:'running',progress:0.4,error:null},{id:'idx',meeting_id:'long',kind:'index',status:'pending',progress:0,error:null}],__TAURI_INTERNALS__:{transformCallback:()=>1,invoke:async(command:string,args:{action?:string;payload?:unknown})=>{
+    Object.assign(window,{isTauri:true,__calls:[],__jobs:[{id:'sum',meeting_id:'long',kind:'summarize',status:'running',progress:0.4,error:null},{id:'tr',meeting_id:'long',kind:'transcribe',status:'pending',progress:0,error:null}],__TAURI_INTERNALS__:{transformCallback:()=>1,invoke:async(command:string,args:{action?:string;payload?:unknown})=>{
       if(command.startsWith('plugin:event'))return 1;
       const w=window as unknown as {__calls:unknown[];__jobs:unknown[]};
-      switch(args?.action){case 'library':return [meeting];case 'jobs':return w.__jobs;case 'devices':return [];case 'status':return null;case 'runtime_status':return {inference:true,whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models:[{id:'whisper',present:true},{id:'embedding',present:true},{id:'summary_e2b',present:true}]};case 'settings':return {summary_profile:'1b'};case 'detail':return {meeting,tracks:[],segments};
+      switch(args?.action){case 'library':return [meeting];case 'jobs':return w.__jobs;case 'devices':return [];case 'status':return null;case 'runtime_status':return {whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models:[{id:'whisper',present:true},{id:'summary_e2b',present:true}]};case 'settings':return {summary_profile:'1b'};case 'detail':return {meeting,tracks:[],segments};
         case 'cancel':case 'enqueue':w.__calls.push({action:args.action,payload:args.payload});return null;default:return null;}
     }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
   });
@@ -494,8 +494,8 @@ test('progress stays visible at the top while scrolling a long transcript',async
   await expect(panel).toBeInViewport();await expect(panel).toContainText('Long conversation · Waiting');
   await page.screenshot({path:'test-results/activity.png'});
   const calls=()=>page.evaluate(()=>(window as unknown as {__calls:unknown[]}).__calls);
-  await panel.locator('.job-row',{hasText:'Preparing search'}).getByRole('button',{name:'Cancel',exact:true}).click();
-  await expect.poll(calls).toEqual([{action:'cancel',payload:{id:'idx'}}]);
+  await panel.locator('.job-row',{hasText:'Transcribing'}).getByRole('button',{name:'Cancel',exact:true}).click();
+  await expect.poll(calls).toEqual([{action:'cancel',payload:{id:'tr'}}]);
   await page.keyboard.press('Escape');await expect(panel).toBeHidden();
   await page.evaluate(()=>{(window as unknown as {__jobs:unknown[]}).__jobs=[{id:'sum',meeting_id:'long',kind:'summarize',status:'completed',progress:1,error:null}];});
   await expect(chip).toContainText('All done');
@@ -504,7 +504,7 @@ test('progress stays visible at the top while scrolling a long transcript',async
   await expect(chip).toContainText('Transcribing failed');await expect(chip).toHaveClass(/is-failed/);
   await chip.click();await expect(panel).toContainText('Long conversation: Local model not installed.');
   await panel.getByRole('button',{name:'Retry',exact:true}).click();
-  await expect.poll(calls).toEqual([{action:'cancel',payload:{id:'idx'}},{action:'enqueue',payload:{id:'long',kind:'transcribe'}},{action:'cancel',payload:{id:'bad'}}]);
+  await expect.poll(calls).toEqual([{action:'cancel',payload:{id:'tr'}},{action:'enqueue',payload:{id:'long',kind:'transcribe'}},{action:'cancel',payload:{id:'bad'}}]);
 });
 
 test('nothing is transcribed while recording; the transcript is written after Stop',async({page})=>{
@@ -515,7 +515,7 @@ test('nothing is transcribed while recording; the transcript is written after St
       __TAURI_INTERNALS__:{transformCallback:()=>1,invoke:async(command:string,args:{action?:string})=>{
       if(command.startsWith('plugin:event'))return 1;
       const w=window as unknown as {__capture:unknown;__jobs:unknown[]};
-      switch(args?.action){case 'library':return meetings;case 'jobs':return w.__jobs;case 'devices':return [];case 'status':return w.__capture;case 'runtime_status':return {inference:true,whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models:[{id:'whisper',present:true},{id:'embedding',present:true}]};case 'settings':return {};
+      switch(args?.action){case 'library':return meetings;case 'jobs':return w.__jobs;case 'devices':return [];case 'status':return w.__capture;case 'runtime_status':return {whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models:[{id:'whisper',present:true}]};case 'settings':return {};
         case 'detail':return {meeting:meetings[0],tracks:[],segments:[]};default:return null;}
     }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
   });
@@ -555,7 +555,7 @@ test('a blocked microphone points to its Windows setting, and device changes sho
     Object.assign(window,{isTauri:true,__calls:[],__capture:null,__TAURI_INTERNALS__:{transformCallback:()=>1,invoke:async(command:string,args:{action?:string})=>{
       if(command.startsWith('plugin:event'))return 1;
       const w=window as unknown as {__calls:string[];__capture:unknown};w.__calls.push(args?.action||command);
-      switch(args?.action){case 'library':case 'jobs':return [];case 'devices':return [{name:'mic-1',label:'Headset Microphone',monitor:false,default:true},{name:'out-1',label:'Speakers',monitor:true,default:true}];case 'status':return w.__capture;case 'record':throw blocked;case 'runtime_status':return {inference:true,whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models:[{id:'whisper',present:true},{id:'embedding',present:true}]};case 'settings':return {};default:return null;}
+      switch(args?.action){case 'library':case 'jobs':return [];case 'devices':return [{name:'mic-1',label:'Headset Microphone',monitor:false,default:true},{name:'out-1',label:'Speakers',monitor:true,default:true}];case 'status':return w.__capture;case 'record':throw blocked;case 'runtime_status':return {whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models:[{id:'whisper',present:true}]};case 'settings':return {};default:return null;}
     }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
   });
   await page.goto('/');await page.getByRole('navigation').getByRole('button',{name:'New recording'}).click();
@@ -575,10 +575,10 @@ test('downloaded models can be removed to free space, keeping recordings',async(
   // Mocked bridge: real file removal and its safety checks are covered by the
   // Rust removing_models test.
   await page.addInitScript(()=>{
-    let models=[{id:'whisper',name:'Whisper',bytes:147964211,disk_bytes:147964211,present:true},{id:'embedding',name:'Embedding',bytes:484622336,disk_bytes:484622336,present:true},{id:'summary_e2b',name:'E2B',bytes:2841481184,disk_bytes:0,present:false,optional:true},{id:'summary_e4b',name:'E4B',bytes:4590807392,disk_bytes:1000000000,present:false,optional:true,manual_only:true},{id:'summary_1b',name:'Gemma 3 · 1B · QAT Q4_0',filename:'gemma-3-1b-it-qat-Q4_0.gguf',bytes:720425600,disk_bytes:720425600,present:false,retired:true}];
+    let models=[{id:'whisper',name:'Whisper',bytes:147964211,disk_bytes:147964211,present:true},{id:'parakeet',name:'Parakeet',bytes:600408576,disk_bytes:600408576,present:true,optional:true,manual_only:true},{id:'summary_e2b',name:'E2B',bytes:2841481184,disk_bytes:0,present:false,optional:true},{id:'summary_e4b',name:'E4B',bytes:4590807392,disk_bytes:1000000000,present:false,optional:true,manual_only:true},{id:'summary_1b',name:'Gemma 3 · 1B · QAT Q4_0',filename:'gemma-3-1b-it-qat-Q4_0.gguf',bytes:720425600,disk_bytes:720425600,present:false,retired:true}];
     Object.assign(window,{isTauri:true,__removed:[],__TAURI_INTERNALS__:{transformCallback:()=>1,invoke:async(command:string,args:{action?:string;payload?:{ids:string[]}})=>{
       if(command.startsWith('plugin:event'))return 1;
-      switch(args?.action){case 'library':case 'jobs':case 'devices':return [];case 'status':return null;case 'runtime_status':return {inference:true,whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models};case 'settings':return {summary_profile:'e4b'};
+      switch(args?.action){case 'library':case 'jobs':case 'devices':return [];case 'status':return null;case 'runtime_status':return {whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models};case 'settings':return {summary_profile:'e4b'};
         case 'remove_models':{const ids=args.payload!.ids;(window as unknown as {__removed:string[][]}).__removed.push(ids);const freed=models.filter(m=>ids.includes(m.id)).reduce((sum,m)=>sum+m.disk_bytes,0);models=models.filter(m=>!(m.retired&&ids.includes(m.id))).map(m=>ids.includes(m.id)?{...m,disk_bytes:0,present:false}:m);return {freed_bytes:freed};}
         default:return null;}
     }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
@@ -590,7 +590,7 @@ test('downloaded models can be removed to free space, keeping recordings',async(
   const e4b=page.locator('article.model',{hasText:'Summaries · highest quality'});
   await expect(e4b).toContainText('4.59 GB');await expect(e4b).toContainText('Incomplete download');
   await expect(page.locator('article.model',{hasText:/^Summaries\d/}).getByRole('button',{name:'Remove',exact:false})).toHaveCount(0);
-  await expect(page.getByText('Downloaded models use 2.35 GB.',{exact:false})).toBeVisible();
+  await expect(page.getByText('Downloaded models use 2.47 GB.',{exact:false})).toBeVisible();
   const removed=()=>page.evaluate(()=>(window as unknown as {__removed:string[][]}).__removed);
   // A model earlier versions installed: it can only be removed, never downloaded.
   const old=page.locator('article.model',{hasText:'Gemma 3 · 1B'});
@@ -599,7 +599,7 @@ test('downloaded models can be removed to free space, keeping recordings',async(
   await expect(page.getByRole('dialog')).toContainText('VoxLoom no longer uses this model.');
   await page.getByRole('dialog').getByRole('button',{name:'Remove model',exact:true}).click();
   await expect.poll(removed).toEqual([['summary_1b']]);await expect(old).toHaveCount(0);
-  await expect(page.getByText('Downloaded models use 1.63 GB.',{exact:false})).toBeVisible();
+  await expect(page.getByText('Downloaded models use 1.75 GB.',{exact:false})).toBeVisible();
   await e4b.getByRole('button',{name:'Remove Summaries · highest quality',exact:true}).click();
   const dialog=page.getByRole('dialog');
   await expect(dialog.getByRole('heading')).toHaveText('Remove “Summaries · highest quality”?');
@@ -613,10 +613,10 @@ test('downloaded models can be removed to free space, keeping recordings',async(
   await expect(e4b).toContainText('Not downloaded');
   await page.getByRole('button',{name:'Remove all models',exact:true}).click();
   await expect(dialog.getByRole('heading')).toHaveText('Remove all models?');
-  await expect(dialog).toContainText('Transcription, search and summaries stop until you download the models again');
+  await expect(dialog).toContainText('Transcription and summaries stop until you download the models again');
   await page.setViewportSize({width:900,height:720});await page.screenshot({path:'test-results/remove-models.png',fullPage:true});
   await dialog.getByRole('button',{name:'Remove models',exact:true}).click();
-  await expect.poll(removed).toEqual([['summary_1b'],['summary_e4b'],['whisper','embedding']]);
+  await expect.poll(removed).toEqual([['summary_1b'],['summary_e4b'],['whisper','parakeet']]);
   await expect(page.getByText('No models are stored on this device.',{exact:true})).toBeVisible();
   await expect(page.getByRole('button',{name:'Remove all models',exact:true})).toBeDisabled();
 });
@@ -627,7 +627,7 @@ test('appearance follows the desktop until chosen, then persists',async({page})=
       if(command.startsWith('plugin:event'))return 1;
       // The library keeps the saved choice across a reload, like the real settings table.
       if(args?.action==='save_settings'){(window as unknown as {__saved:unknown[]}).__saved.push(args.payload);sessionStorage.setItem('saved-appearance',(args.payload as {appearance:string}).appearance);}
-      switch(args?.action){case 'library':case 'jobs':case 'devices':return [];case 'status':return null;case 'runtime_status':return {inference:true,whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models:[{id:'whisper',present:true},{id:'embedding',present:true}]};case 'settings':return {appearance:sessionStorage.getItem('saved-appearance')||'system'};default:return null;}
+      switch(args?.action){case 'library':case 'jobs':case 'devices':return [];case 'status':return null;case 'runtime_status':return {whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models:[{id:'whisper',present:true}]};case 'settings':return {appearance:sessionStorage.getItem('saved-appearance')||'system'};default:return null;}
     }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
   });
   await page.emulateMedia({colorScheme:'dark'});
@@ -657,7 +657,7 @@ test('honest empty library, navigation, local assets and responsive layout',asyn
   await page.getByRole('button',{name:'New recording',exact:true}).first().click();await expect(page.getByRole('heading',{name:'Recording studio.'})).toBeVisible();
   await expect(page.getByRole('button',{name:'Start recording',exact:true})).toBeDisabled();await expect(page.getByText('Summaries are always on demand.',{exact:false})).toBeVisible();
   await page.getByRole('button',{name:'Settings',exact:true}).click();await page.getByLabel('Summary model',{exact:true}).selectOption('e4b');await expect(page.getByText('E4B is the largest option',{exact:false})).toBeVisible();
-  await page.getByRole('button',{name:'Model setup',exact:true}).click();await expect(page.getByRole('dialog')).toBeVisible();await expect(page.getByRole('button',{name:'Download & set up',exact:true})).toBeVisible();await expect(page.getByRole('button',{name:'Install search runtime',exact:true})).toBeHidden();await expect(page.getByLabel('Add optional summaries',{exact:false})).toBeChecked();
+  await page.getByRole('button',{name:'Model setup',exact:true}).click();await expect(page.getByRole('dialog')).toBeVisible();await expect(page.getByRole('button',{name:'Download & set up',exact:true})).toBeVisible();await expect(page.getByLabel('Add optional summaries',{exact:false})).toBeChecked();
   await page.getByRole('button',{name:'Close model setup'}).click();await page.getByRole('button',{name:'Search',exact:true}).first().click();await expect(page.getByRole('heading',{name:'Find the moment.'})).toBeVisible();
   await page.setViewportSize({width:900,height:720});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBeTruthy();expect(outbound).toEqual([]);
   await page.screenshot({path:'test-results/search.png',fullPage:true});
@@ -672,7 +672,7 @@ const floatingHost=async(page:Page,capture:Record<string,unknown>|null,holdMoves
       if(command.startsWith('plugin:event'))return 1;
       if(['float_size','float_move','pause','resume','stop'].includes(args?.action||''))calls.push([args.action,args.payload]);
       if(args?.action==='float_move'&&holdMoves){await new Promise<void>(land=>held.push(land));return null;}
-      switch(args?.action){case 'library':case 'jobs':case 'devices':return [];case 'status':return capture;case 'runtime_status':return {inference:true,whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models:[]};case 'settings':return {};case 'float_size':return {left:false};default:return null;}
+      switch(args?.action){case 'library':case 'jobs':case 'devices':return [];case 'status':return capture;case 'runtime_status':return {whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models:[]};case 'settings':return {};case 'float_size':return {left:false};default:return null;}
     }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
   },[capture,holdMoves] as const);
 };
@@ -768,7 +768,7 @@ test('the floating controls close by themselves 4 s after the pointer leaves',as
 
 // Quit asks first only when it would interrupt something, and says what happens to it.
 // Its events reach the page's listeners through __emit, as the host's would.
-const quitHost=async(page:Page,host:{capture?:Record<string,unknown>|null;jobs?:Record<string,unknown>[];answer?:'hang';runtime?:false;models?:false})=>{
+const quitHost=async(page:Page,host:{capture?:Record<string,unknown>|null;jobs?:Record<string,unknown>[];answer?:'hang';models?:false})=>{
   await page.addInitScript(host=>{
     const calls:unknown[]=[];const meeting={id:'m',title:'Session',created_at:1,duration_ms:60000,status:'ready',notes:'',summary:''};
     const callbacks:((event:unknown)=>void)[]=[];let listeners:{event:string;handler:number;id:number}[]=[];let next=0;const present=host.models!==false;
@@ -780,8 +780,8 @@ const quitHost=async(page:Page,host:{capture?:Record<string,unknown>|null;jobs?:
       if(command.startsWith('plugin:event'))return 1;
       if(command==='plugin:dialog|open')return '/tmp/model files';
       if(['quit','quit_heard','window_mode','answer','setup'].includes(args?.action||''))calls.push([args.action,args.payload]);
-      switch(args?.action){case 'library':return [meeting];case 'jobs':if((window as unknown as {__failJobs:boolean}).__failJobs)throw 'The library is busy.';return host.jobs||[];case 'devices':return [];case 'status':return host.capture||null;case 'runtime_status':return {inference:host.runtime!==false,whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models:[{id:'whisper',bytes:147964211,present},{id:'embedding',bytes:484622336,present},{id:'summary_e2b',bytes:2841481184,present,optional:true}]};case 'settings':return {summary_profile:'e2b'};
-        case 'search':return [{meeting_id:'m',title:'Session',created_at:1,start_ms:0,end_ms:3000,text:'We agreed to meet weekly.',modality:'text',source:'mic'}];
+      switch(args?.action){case 'library':return [meeting];case 'jobs':if((window as unknown as {__failJobs:boolean}).__failJobs)throw 'The library is busy.';return host.jobs||[];case 'devices':return [];case 'status':return host.capture||null;case 'runtime_status':return {whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models:[{id:'whisper',bytes:147964211,present},{id:'summary_e2b',bytes:2841481184,present,optional:true}]};case 'settings':return {summary_profile:'e2b'};
+        case 'search':return {hits:[{meeting_id:'m',title:'Session',created_at:1,start_ms:0,end_ms:3000,text:'We agreed to meet weekly.',source:'mic',marks:[[13,17]]}],more:false};
         case 'answer':return host.answer==='hang'?new Promise(()=>{}):[];default:return null;}
     }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
   },host);
@@ -860,34 +860,50 @@ test('A quit that cannot check what is running still asks, and can still quit',a
 });
 
 test('Quit during setup names the setup that is running',async({page})=>{
-  await quitHost(page,{runtime:false});await page.goto('/');
-  const dialog=page.getByRole('alertdialog',{name:'Quit VoxLoom?'});const quitButton=page.getByRole('button',{name:'Quit VoxLoom',exact:true});
-  await page.getByRole('button',{name:'Set up later · you can still record'}).click();
+  await quitHost(page,{});await page.goto('/');
+  const dialog=page.getByRole('alertdialog',{name:'Quit VoxLoom?'});
   await page.getByRole('button',{name:'Settings',exact:true}).click();
-  await page.getByText('More setup options').click();await page.getByRole('button',{name:'Install search runtime'}).click();
-  await quitButton.click();
-  await expect(dialog).toContainText('The search runtime is being installed. Quitting stops it, and setup installs it again from the start next time.');
-  await expect(dialog).not.toContainText('download');
-  await dialog.getByRole('button',{name:'Keep VoxLoom open'}).click();
-  await hostEmit(page,'voxloom',{type:'setup_done'});
   await page.getByRole('button',{name:'Import',exact:true}).first().click();
-  await expect.poll(async()=>(await quitCalls(page)).filter(c=>c[0]==='setup').map(c=>(c[1] as {mode:string}).mode)).toEqual(['runtime','import']);
-  await quitButton.click();
+  await expect.poll(async()=>(await quitCalls(page)).filter(c=>c[0]==='setup').map(c=>(c[1] as {mode:string}).mode)).toEqual(['import']);
+  await page.getByRole('button',{name:'Quit VoxLoom',exact:true}).click();
   await expect(dialog).toContainText('A model is being imported from your files. Quitting stops it; import the file again next time.');
   await expect(dialog).not.toContainText('download');
 });
 
-test('Closing during first-run setup follows its steps: the runtime install, then the downloads',async({page})=>{
-  await quitHost(page,{runtime:false,models:false});await page.goto('/');
+test('Closing during first-run setup says the models are downloading',async({page})=>{
+  await quitHost(page,{models:false});await page.goto('/');
   await page.getByRole('dialog').getByRole('button',{name:'Download & set up',exact:true}).click();
-  await hostEmit(page,'voxloom',{type:'setup_progress',value:{model:'runtime',status:'installing_pinned_dependencies'}});
-  await expect.poll(()=>hostEmit(page,'quit-requested',1)).toBe(1);
-  const dialog=page.getByRole('alertdialog',{name:'Quit VoxLoom?'});
-  await expect(dialog).toContainText('The search runtime is being installed.');
-  await dialog.getByRole('button',{name:'Keep VoxLoom open'}).click();
   await hostEmit(page,'voxloom',{type:'setup_progress',value:{model:'whisper',status:'downloading',received:1e6,total:147964211}});
-  await hostEmit(page,'quit-requested',2);
-  await expect(dialog).toContainText('Models are downloading. Setup carries on from what is already downloaded when you run it again.');
+  await expect.poll(()=>hostEmit(page,'quit-requested',1)).toBe(1);
+  await expect(page.getByRole('alertdialog',{name:'Quit VoxLoom?'})).toContainText('Models are downloading. Setup carries on from what is already downloaded when you run it again.');
+});
+
+test('Keyword search sends the words as typed and highlights what matched',async({page})=>{
+  await page.addInitScript(()=>{
+    const meeting={id:'m',title:'Budget review',created_at:1792100000,duration_ms:300000,status:'ready',notes:'',summary:''};
+    const hits=Array.from({length:100},(_,i)=>({meeting_id:'m',title:'Budget review',created_at:1792100000,start_ms:i*3000,end_ms:i*3000+2000,text:`The budget for item ${i} was approved.`,source:i%2?'system':'mic',marks:[[4,10],[`The budget for item ${i} `.length,`The budget for item ${i} was approved`.length]]}));
+    Object.assign(window,{isTauri:true,__searches:[],__TAURI_INTERNALS__:{transformCallback:()=>1,invoke:async(command:string,args:{action?:string;payload?:unknown})=>{
+      if(command.startsWith('plugin:event'))return 1;
+      switch(args?.action){case 'library':return [meeting];case 'jobs':case 'devices':return [];case 'status':return null;case 'runtime_status':return {whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models:[{id:'whisper',present:true}]};case 'settings':return {};
+        case 'search':(window as unknown as {__searches:unknown[]}).__searches.push(args.payload);return {hits,more:true};default:return null;}
+    }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
+  });
+  await page.goto('/');
+  await page.getByRole('button',{name:'Search',exact:true}).first().click();
+  // One kind of search: no modes to choose, and the help says how to write a query.
+  await expect(page.getByRole('button',{name:'Meaning',exact:true})).toHaveCount(0);
+  await expect(page.getByText('Every word must appear.',{exact:false})).toBeVisible();
+  await expect(page.getByLabel('Filter by source').locator('option')).toHaveText(['All sources','Microphone','System audio','Imported audio']);
+  await page.getByLabel('Search your conversations').fill('budg* "was approved"');await page.keyboard.press('Enter');
+  await expect.poll(()=>page.evaluate(()=>(window as unknown as {__searches:unknown[]}).__searches)).toEqual([{query:'budg* "was approved"',filter:{source:'all',meeting_id:'all'}}]);
+  await expect(page.getByRole('heading',{name:'100+ moments found'})).toBeVisible();
+  await expect(page.getByText('Showing the newest 100. Add a word or choose a recording to narrow the search.')).toBeVisible();
+  const first=page.locator('.result-card').first();
+  await expect(first).toContainText('The budget for item 0 was approved.');
+  await expect(first.locator('mark')).toHaveText(['budget','was approved']);
+  await expect(first).toContainText('Microphone');await expect(page.locator('.result-card').nth(1)).toContainText('System audio');
+  await page.setViewportSize({width:900,height:720});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBeTruthy();
+  await page.screenshot({path:'test-results/search-results.png'});
 });
 
 test('home visual and compact recorder have real actions and labels',async({page})=>{
@@ -906,7 +922,7 @@ test('continuous playback advances across stored audio chunks and seeks globally
     const tracks=[{id:'one',meeting_id:'fixture',source:'imported',path:'first.wav',offset_ms:0},{id:'two',meeting_id:'fixture',source:'imported',path:'second.wav',offset_ms:1000}];
     Object.assign(window,{isTauri:true,__TAURI_INTERNALS__:{transformCallback:()=>1,convertFileSrc:(path:string)=>`/fixtures/${path}`,invoke:async(command:string,args:{action?:string})=>{
       if(command.startsWith('plugin:event'))return 1;
-      switch(args?.action){case 'library':return [meeting];case 'jobs':return [];case 'status':return null;case 'runtime_status':return {inference:true,whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models:[{id:'whisper',present:true},{id:'embedding',present:true}]};case 'settings':return {};case 'devices':return [];case 'detail':return {meeting,tracks,segments:[]};default:return null;}
+      switch(args?.action){case 'library':return [meeting];case 'jobs':return [];case 'status':return null;case 'runtime_status':return {whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models:[{id:'whisper',present:true}]};case 'settings':return {};case 'devices':return [];case 'detail':return {meeting,tracks,segments:[]};default:return null;}
     }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
   });
   const wav=Buffer.alloc(44+32000);wav.write('RIFF',0);wav.writeUInt32LE(wav.length-8,4);wav.write('WAVEfmt ',8);wav.writeUInt32LE(16,16);wav.writeUInt16LE(1,20);wav.writeUInt16LE(1,22);wav.writeUInt32LE(16000,24);wav.writeUInt32LE(32000,28);wav.writeUInt16LE(2,32);wav.writeUInt16LE(16,34);wav.write('data',36);wav.writeUInt32LE(32000,40);
