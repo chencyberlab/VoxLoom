@@ -18,6 +18,14 @@ Meaningful unit checks cover pause-aligned chunk planning, skipped-speech retrie
 
 Version 0.1.1 added a first-run 1B/E2B summary selector. Six browser tests pass, including the request payload, displayed estimate and locked selection during setup for 1B, E2B and no summaries. These use an explicitly mocked bridge, without downloading models. A separate Rust regression executes the real offline provisioning script with tiny SHA-256-checked fixture files and a stubbed runtime readiness probe. It verifies core plus only the chosen summary model, saved E2B selection after success, core-only setup, missing-summary failure without changing the saved selection, and rejection of an unknown profile. Native checks on the final 0.1.1 package also passed launch, compact/expand and Quit, with all three observed processes released. The setup action remains fully visible at 900×720 in the browser checks. No user library or installed app data is reset during updates.
 
+## Version 0.3.3: setup says when it is finished; a simpler home page
+
+- **Browser check (new):** "First-run setup says when it is finished and offers one way on". Setup downloads; the transcription model is verified and the summary model fails. Setup still offers Download & set up, with Continue as the small link; unticking summaries shows "VoxLoom is ready."; ticking them again and finishing the summary download shows it again while the mocked host still reports both models missing (verified downloads count at once). Download & set up, Use files from this device, the size line and the Gemma terms are gone; Continue to VoxLoom is the one primary button, focused, fully visible at 900×720, and Enter closes setup.
+- **Browser check (changed):** the home page shows "Record or import a conversation" and exactly one New recording and one Import button in the page.
+- **Visual tour:** home, narrow home and setup in light and dark. The home page's recording list starts about 400 px higher at 1280×860 (heading at 247 px instead of 671 px).
+
+Validation: TypeScript/privacy/version (0.3.3), 55 Python checks, 44 browser checks (2 visual-tour checks skipped). Not run: the Rust checks and clippy (no Rust change), the native checks, Windows.
+
 ## Version 0.3.2: names with ø, ł or đ are found (issue #18)
 
 The finding was confirmed against the bundled SQLite before fixing. Each letter of 0.3.0's fold table, in small and capital form, was put in a row of an FTS5 table and searched by its folded spelling: 14 were not found, đ ħ ı ŀ ł ŉ ø ŧ and Đ Ħ Ŀ Ł Ø Ŧ. Every other letter of the table matched. Those letters have no decomposition, so unicode61 keeps them, while the search folded them before asking the index.

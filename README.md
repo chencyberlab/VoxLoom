@@ -22,7 +22,9 @@ VoxLoom records a conversation on your own computer and keeps the words so you c
 
 **Open it.** After VoxLoom is installed, it appears in the applications menu on Linux or the Start menu on Windows.
 
-**First time.** Choose **Download & set up** if you want transcripts and summaries. That download happens once, and only when you ask. You can skip it and still record; the text can be prepared later.
+**First time.** Choose **Download & set up** if you want transcripts and summaries. That download happens once, and only when you ask. When it is done, setup says **VoxLoom is ready**; choose **Continue to VoxLoom**. You can skip it and still record; the text can be prepared later.
+
+**Home.** **New recording** opens the recording studio, and **Import audio / video** brings in a file you already have. Your latest recordings are listed below.
 
 **Record.** Choose **New recording**, then **Microphone** (people in the room), **System audio** (a call or a video playing on this computer), or **Both**. On Windows, allow desktop apps to use the microphone in Settings → Privacy & security → Microphone → **Let desktop apps access your microphone**; VoxLoom offers to open that page if it is off. People should know you are recording. Type notes in the studio while you listen if you like. Press **Stop** when you are done: VoxLoom then writes the transcript, which takes a few minutes for an hour of speech.
 

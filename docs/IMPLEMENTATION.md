@@ -363,3 +363,10 @@ Verified: see TESTING.md, "Version 0.3.2".
 Release result: built by the Apps workflow when this version reaches main, on the draft release v0.3.2. Not built locally as a package.
 Known limitations: "soren" does not find "Søren", and "dang" does not find "Đặng" (letters with two accents are kept by the index too). VoxLoom is built for English; making these fold would mean rebuilding the index with another tokenizer, not done.
 Next: the user searches real recordings for names.
+
+Version 0.3.3: setup says when it is finished; a simpler home page
+Implemented: once everything setup shows is installed (the chosen transcription model, and the summary model if ticked), the setup window says "VoxLoom is ready." and offers one full-width Continue to VoxLoom, focused so Enter continues. The download, offline import, size and Gemma terms lines are hidden until something is missing again: choosing a model that is not downloaded, or ticking summaries, brings the download back. Before, a finished setup still led with Download & set up and left Continue to VoxLoom as small text at the bottom. A model counts as installed as soon as its download is verified, so setup never offers the download again while the model list reloads. The home page's large heading and illustrated card are replaced by one compact card, "Record or import a conversation", with New recording and Import audio / video; Import was on the page twice. The All recordings page is unchanged.
+Verified: see TESTING.md, "Version 0.3.3".
+Release result: built by the Apps workflow when this version reaches main, on the draft release v0.3.3. Not built locally as a package.
+Known limitations: a partly finished setup (transcription ready, the ticked summary model missing) still leads with Download & set up and keeps Continue to VoxLoom as the small link, since there is something left to fetch. The sidebar's privacy card stays.
+Next: the user runs first-run setup on a fresh library and uses the new home page on Linux and Windows.
