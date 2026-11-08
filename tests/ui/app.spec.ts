@@ -652,7 +652,9 @@ test('appearance follows the desktop until chosen, then persists',async({page})=
 
 test('honest empty library, navigation, local assets and responsive layout',async({page})=>{
   const outbound:string[]=[];page.on('request',r=>{if(!r.url().startsWith('http://127.0.0.1:1420')&&!r.url().startsWith('data:'))outbound.push(r.url());});
-  await page.goto('/');await expect(page.getByRole('heading',{name:'Good conversations. Nothing forgotten.'})).toBeVisible();
+  await page.goto('/');await expect(page.getByRole('heading',{name:'Record or import a conversation'})).toBeVisible();
+  // Home offers each way in once: one New recording and one Import in the page (the sidebar has its own New recording).
+  await expect(page.locator('main').getByRole('button',{name:'New recording',exact:true})).toHaveCount(1);await expect(page.locator('main').getByRole('button',{name:/^Import/})).toHaveCount(1);
   await expect(page.getByText('A space for your next conversation.')).toBeVisible();await expect(page.getByText('Browser preview')).toBeVisible();
   await page.getByRole('button',{name:'New recording',exact:true}).first().click();await expect(page.getByRole('heading',{name:'Recording studio.'})).toBeVisible();
   await expect(page.getByRole('button',{name:'Start recording',exact:true})).toBeDisabled();await expect(page.getByText('Summaries are always on demand.',{exact:false})).toBeVisible();
@@ -876,6 +878,34 @@ test('Closing during first-run setup says the models are downloading',async({pag
   await hostEmit(page,'voxloom',{type:'setup_progress',value:{model:'whisper',status:'downloading',received:1e6,total:147964211}});
   await expect.poll(()=>hostEmit(page,'quit-requested',1)).toBe(1);
   await expect(page.getByRole('alertdialog',{name:'Quit VoxLoom?'})).toContainText('Models are downloading. Setup carries on from what is already downloaded when you run it again.');
+});
+
+test('First-run setup says when it is finished and offers one way on',async({page})=>{
+  await quitHost(page,{models:false});await page.goto('/');
+  const dialog=page.getByRole('dialog');const download=dialog.getByRole('button',{name:'Download & set up',exact:true});
+  const verified=(model:string,bytes:number)=>hostEmit(page,'voxloom',{type:'setup_progress',value:{model,status:'verified',received:bytes,total:bytes}});
+  await download.click();
+  await expect.poll(()=>verified('whisper',147964211)).toBe(1);
+  await hostEmit(page,'voxloom',{type:'setup_done',error:'The summary model could not be downloaded.'});
+  // Transcription works, but the summary model ticked is missing: setup still offers it, and a way on without it.
+  await expect(download).toBeEnabled();
+  await expect(dialog.getByRole('heading',{name:'A little setup. A lot more privacy.'})).toBeVisible();
+  await expect(dialog.locator('.welcome-later')).toBeEnabled();
+  await dialog.getByLabel('Add optional summaries',{exact:false}).uncheck();
+  await expect(dialog.getByRole('heading',{name:'VoxLoom is ready.'})).toBeVisible();
+  await dialog.getByLabel('Add optional summaries',{exact:false}).check();
+  await download.click();await verified('summary_e2b',2841481184);await hostEmit(page,'voxloom',{type:'setup_done'});
+  // The host's model list still says missing here: verified downloads count at once, so the download is never offered again.
+  await expect(dialog.getByRole('heading',{name:'VoxLoom is ready.'})).toBeVisible();
+  for(const name of ['Download & set up','Use files from this device'])await expect(dialog.getByRole('button',{name,exact:true})).toHaveCount(0);
+  await expect(dialog.getByText('in total',{exact:false})).toHaveCount(0);
+  await expect(dialog.getByText('Gemma’s terms',{exact:false})).toHaveCount(0);
+  const go=dialog.getByRole('button',{name:'Continue to VoxLoom',exact:true});
+  await expect(go).toHaveCount(1);await expect(go).toHaveClass(/primary/);await expect(go).toBeFocused();
+  await page.setViewportSize({width:900,height:720});await expect(go).toBeInViewport({ratio:1});
+  await page.screenshot({path:'test-results/setup-ready.png',fullPage:true});
+  await page.keyboard.press('Enter');
+  await expect(dialog).toBeHidden();
 });
 
 test('Keyword search sends the words as typed and highlights what matched',async({page})=>{
