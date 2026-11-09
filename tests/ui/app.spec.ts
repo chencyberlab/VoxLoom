@@ -556,6 +556,12 @@ test('nothing is transcribed while recording; the transcript is written after St
   await page.keyboard.press('Escape');
   await page.getByRole('navigation').getByRole('button',{name:'New recording',exact:true}).click();
   await expect(page.getByText('Recording. The transcript is written when you stop.')).toBeVisible();
+  // A narrow window: the sidebar still fits "New recording" and its recording dot, and the recorder fits the page.
+  await page.setViewportSize({width:900,height:720});
+  expect(await page.locator('.sidebar').evaluate(el=>el.scrollWidth<=el.clientWidth)).toBeTruthy();
+  expect((await page.getByRole('navigation').locator('.live-dot').boundingBox())?.width).toBe(6);
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBeTruthy();
+  await page.setViewportSize({width:1280,height:720});
   await expect(page.locator('.transcript-panel .transcript-list')).toHaveCount(0);
   await page.screenshot({path:'test-results/recording-waits.png'});
   // A new object, as every status reply is: the same one changed in place would not re-render.

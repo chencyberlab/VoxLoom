@@ -14,7 +14,11 @@ The pictures below use sample titles so you can see the layout. Your own library
 
 ![Home, dark theme](docs/images/home-dark.png)
 
+![The recording studio](docs/images/studio.png)
+
 ![A transcript you can read and correct](docs/images/transcript.png)
+
+![Search finds the moment a word was said](docs/images/search.png)
 
 ## For everyday use
 

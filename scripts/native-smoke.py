@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Real Tauri/WebKit smoke in an isolated Xvfb display; no private screen read.
 
-Tests main -> floating bubble (drag, bar opening away from the screen edge) -> main -> Quit and asserts all observed descendants exit.
+Tests main -> floating bubble (drag, bar opening away from the screen edge) -> main -> the bubble again where it was
+-> main -> Quit and asserts all observed descendants exit.
 Run xvfb-run -a python3 scripts/native-smoke.py <native executable>.
 """
 import ctypes
@@ -156,6 +157,14 @@ with tempfile.TemporaryDirectory(prefix="voxloom-native-") as directory:
         # Back from the screen edge, the studio opens centred and whole.
         left, top = origin('"VoxLoom"')
         assert (left, top) == (20, 102), windows()
+        # Floating again, the bubble goes back where it was, not to the studio's corner.
+        click(left + 1185, top + 34)
+        assert shows('VoxLoom · Recorder', '64x64+1200+100'), windows()
+        click(1232, 132)
+        assert shows('200x64+1064+100'), windows()
+        click(1064 + 52, 132)
+        assert shows('"VoxLoom"', '1240x820'), windows()
+        assert origin('"VoxLoom"') == (left, top), windows()
         peak = max(peak, measure.sample(app.pid)[0])
         # Main restored; explicit Quit in the sidebar.
         for attempt in range(2):

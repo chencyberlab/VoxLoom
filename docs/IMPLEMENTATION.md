@@ -377,3 +377,10 @@ Verified: see TESTING.md, "Version 0.3.4".
 Release result: built by the Apps workflow when this version reaches main, on the draft release v0.3.4. Not built locally as a package. The v0.3.3 draft predates these changes.
 Known limitations: custom summary instructions typed and never left (the window closed while the box has the focus) are not saved. The sidebar's privacy card hides on screens under 800 px tall, as before, so short screens show no privacy note.
 Next: the user tries the new pages on Linux and Windows.
+
+Version 0.3.5: a compact recorder; the floating bubble comes back where it was
+Implemented: the recording studio's two tall cards (audio sources, recorder) are one panel: the source choice, the device lists with their level meters underneath and refresh on top, then the recording's name, the clock and Start (Pause and Stop while recording) on one row, and one line of tips that names only what applies to the sources chosen. The notes below start higher, so they are in view while recording. Expand now remembers where the floating bubble was, and the next Floating recorder puts it back there instead of the studio's top-left corner, kept inside the work area of the screen it is on; if that screen is gone it opens at the studio's corner as before. In narrow windows the recording dot beside New recording in the sidebar was squeezed to nothing; it keeps its size now. README screenshots show the current interface.
+Verified: see TESTING.md, "Version 0.3.5".
+Release result: built by the Apps workflow when this version reaches main, on the draft release v0.3.5. Not built locally as a package.
+Known limitations: the bubble's place is remembered for this run of the app only; a new launch opens it at the studio's corner. Not checked on Windows or with two screens.
+Next: the user moves the bubble, expands and floats again on Linux and Windows.

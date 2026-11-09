@@ -18,6 +18,14 @@ Meaningful unit checks cover pause-aligned chunk planning, skipped-speech retrie
 
 Version 0.1.1 added a first-run 1B/E2B summary selector. Six browser tests pass, including the request payload, displayed estimate and locked selection during setup for 1B, E2B and no summaries. These use an explicitly mocked bridge, without downloading models. A separate Rust regression executes the real offline provisioning script with tiny SHA-256-checked fixture files and a stubbed runtime readiness probe. It verifies core plus only the chosen summary model, saved E2B selection after success, core-only setup, missing-summary failure without changing the saved selection, and rejection of an unknown profile. Native checks on the final 0.1.1 package also passed launch, compact/expand and Quit, with all three observed processes released. The setup action remains fully visible at 900×720 in the browser checks. No user library or installed app data is reset during updates.
 
+## Version 0.3.5: a compact recorder; the floating bubble comes back where it was
+
+- **Native check (debug build, WebKitGTK under Xvfb 1280×1024, X11 test input):** `scripts/native-smoke.py` now floats the window again after Expand. The bubble came back at 64x64+1200+100, where it had been dragged; on the build without the fix it came back at 64x64+20+102, the studio's corner, and the check failed. The rest of the smoke passed: launch, drag, the bar opening leftwards, Expand centring the studio, Quit with all 3 observed processes released (idle peak sample 451,628 KiB).
+- **Browser checks (changed):** while recording at 900 px wide, the sidebar's recording dot is 6 px wide (0 px before: the fails-before check), the sidebar has no overflow and the page does not scroll sideways.
+- **Recorder (screenshots, 1280 px wide):** the recorder panel is about 220 px tall instead of about 405 px; idle and recording, at 1280 and 900 px wide, every control is on screen.
+
+Validation: TypeScript/privacy/version (0.3.5), 55 Python checks, 45 browser checks (2 visual-tour checks skipped), 43 Rust unit checks plus the offline setup integration check, clippy. Not run: Windows, a real second screen.
+
 ## Version 0.3.4: a calmer, more compact interface
 
 - **Browser checks (new):** a settings save the host refuses shows its message and puts the summary style back to the saved one. Setup's "Getting VoxLoom ready" notice shows during setup and is gone after it fails and after it finishes (fails on 0.3.3).
