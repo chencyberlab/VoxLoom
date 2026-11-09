@@ -21,6 +21,13 @@ static BAR_LEFT: AtomicBool = AtomicBool::new(false);
 /// The window is the floating recorder. Bubble requests that arrive after it
 /// became the studio again (a bar's close timer) must not shrink the studio.
 static FLOATING: AtomicBool = AtomicBool::new(false);
+/// Drags of the bubble and openings of its bar: a late re-placement must never undo one.
+static TOUCHED: AtomicU64 = AtomicU64::new(0);
+/// The press the window follows the cursor for, and the newest press that has ended.
+static FOLLOWING: AtomicU64 = AtomicU64::new(0);
+static FOLLOW_ENDED: AtomicU64 = AtomicU64::new(0);
+/// Where a press ended, as the page saw it (logical pixels): the window's last place for that drag.
+static FOLLOW_END_AT: Mutex<Option<(u64, f64, f64)>> = Mutex::new(None);
 /// Closes the page was asked about while something ran, and the last one whose
 /// question it showed. Tauri's emit succeeds even when no page listens (it is
 /// still starting, or stuck), so a close the page does not answer in time quits.
@@ -30,6 +37,61 @@ const QUIT_ANSWER: Duration = Duration::from_secs(3);
 /// Where the bubble was when the studio opened, and its size then (physical pixels): the next
 /// floating recorder goes back there instead of the studio's corner. Only for this run of the app.
 static BUBBLE_AT: Mutex<Option<((i32, i32), i32)>> = Mutex::new(None);
+/// Where the floating window is, in the terms `set_position` takes. On Linux that moves the window
+/// itself, while GNOME's window manager reports its outer position with the title bar it had as the
+/// studio (37 px): reading that back moved the bubble up each time the bar opened leftwards and each
+/// time Expand remembered it. Elsewhere both are the outer position.
+fn float_position(main: &tauri::WebviewWindow) -> tauri::Result<tauri::PhysicalPosition<i32>> {
+    if cfg!(target_os = "linux") {
+        main.inner_position()
+    } else {
+        main.outer_position()
+    }
+}
+/// Moves the floating window under the cursor until press `n` ends, once the cursor has gone 5 px
+/// (the page tells a click from a drag the same way). `x`, `y`: where the press was in the window,
+/// in CSS pixels. Under GNOME the page stopped hearing the pointer once a quick move left the 64 px
+/// window, and the bubble stopped part-way along the pointer's path; the cursor is read here instead,
+/// and the window under it keeps the page hearing the release. False where the cursor cannot be read
+/// (Wayland reports 0, 0): the page then moves the window itself (`float_move`).
+fn follow(main: tauri::WebviewWindow, n: u64, x: f64, y: f64) -> bool {
+    let (Ok(start), Ok(scale)) = (main.cursor_position(), main.scale_factor()) else {
+        return false;
+    };
+    if (start.x, start.y) == (0., 0.) || FOLLOW_ENDED.load(Ordering::SeqCst) >= n {
+        return false;
+    }
+    FOLLOWING.store(n, Ordering::SeqCst);
+    std::thread::spawn(move || {
+        let (began, mut moving, mut last) = (std::time::Instant::now(), false, None);
+        // A press whose end never arrives stops after two minutes.
+        while FLOATING.load(Ordering::SeqCst)
+            && FOLLOWING.load(Ordering::SeqCst) == n
+            && FOLLOW_ENDED.load(Ordering::SeqCst) < n
+            && began.elapsed() < Duration::from_secs(120)
+        {
+            if let Ok(now) = main.cursor_position() {
+                moving = moving || (now.x - start.x).hypot(now.y - start.y) >= 5. * scale;
+                let at = tauri::PhysicalPosition::new((now.x - x * scale).round() as i32, (now.y - y * scale).round() as i32);
+                if moving && last != Some(at) {
+                    let _ = main.set_position(at);
+                    last = Some(at);
+                }
+            }
+            std::thread::sleep(Duration::from_millis(8));
+        }
+        // A release can come before the last read of the cursor: the drag ends where the page saw it end.
+        if moving && FOLLOWING.load(Ordering::SeqCst) == n {
+            match *FOLLOW_END_AT.lock().unwrap() {
+                Some((end, x, y)) if end == n => {
+                    let _ = main.set_position(tauri::LogicalPosition::new(x, y));
+                }
+                _ => {}
+            }
+        }
+    });
+    true
+}
 fn float_size(main: &tauri::WebviewWindow, (width, height): (f64, f64)) -> tauri::Result<()> {
     let size = tauri::LogicalSize::new(width, height);
     main.set_max_size(None::<tauri::LogicalSize<f64>>)?;
@@ -67,12 +129,26 @@ async fn dispatch(
         QUIT_HEARD.fetch_max(ask, Ordering::SeqCst);
         return Ok(serde_json::Value::Null);
     }
-    if action == "float_size" || action == "float_move" {
+    if action == "float_size" || action == "float_move" || action == "float_follow" {
         if !FLOATING.load(Ordering::SeqCst) {
             return Ok(serde_json::Value::Null);
         }
+        TOUCHED.fetch_add(1, Ordering::SeqCst);
         let main = app.get_webview_window("main").ok_or("The window is not open")?;
         let p = payload.unwrap_or_default();
+        if action == "float_follow" {
+            // Presses are numbered, so an end that arrives before its start still ends it.
+            let n = p["n"].as_u64().unwrap_or(0);
+            if p["stop"].as_bool() == Some(true) {
+                if let (Some(x), Some(y)) = (p["x"].as_f64(), p["y"].as_f64()) {
+                    *FOLLOW_END_AT.lock().unwrap() = Some((n, x, y));
+                }
+                FOLLOW_ENDED.fetch_max(n, Ordering::SeqCst);
+                return Ok(serde_json::json!({ "following": false }));
+            }
+            let (x, y) = (p["x"].as_f64().unwrap_or(0.), p["y"].as_f64().unwrap_or(0.));
+            return Ok(serde_json::json!({ "following": follow(main, n, x, y) }));
+        }
         if action == "float_move" {
             let (x, y) = (p["x"].as_f64().unwrap_or(0.), p["y"].as_f64().unwrap_or(0.));
             main.set_position(tauri::LogicalPosition::new(x, y))
@@ -81,7 +157,7 @@ async fn dispatch(
         }
         let bar = p["bar"].as_bool().unwrap_or(false);
         let scale = main.scale_factor().map_err(|e| e.to_string())?;
-        let at = main.outer_position().map_err(|e| e.to_string())?;
+        let at = float_position(&main).map_err(|e| e.to_string())?;
         let grow = ((BAR.0 - BUBBLE.0) * scale).round() as i32;
         // The bar opens away from the nearer screen edge, so the bubble's tile stays
         // where it was; closing it moves the window back the same way.
@@ -125,12 +201,27 @@ async fn dispatch(
                 let back = *BUBBLE_AT.lock().unwrap();
                 if let Some(at) = back.and_then(|back| bubble_on_screen(&main, back)) {
                     main.set_position(at).map_err(|e| e.to_string())?;
+                    // GNOME's window manager rebuilds the frame when the title bar goes, after this
+                    // move, and leaves the bubble at the studio's corner. Put it back once the window
+                    // has settled, unless it was dragged, its bar opened or the studio came back.
+                    let (window, touched) = (main.clone(), TOUCHED.load(Ordering::SeqCst));
+                    std::thread::spawn(move || {
+                        for wait in [100, 250, 500, 1000] {
+                            std::thread::sleep(Duration::from_millis(wait));
+                            if !FLOATING.load(Ordering::SeqCst) || TOUCHED.load(Ordering::SeqCst) != touched {
+                                return;
+                            }
+                            if float_position(&window).is_ok_and(|now| now != at) {
+                                let _ = window.set_position(at);
+                            }
+                        }
+                    });
                 }
             } else {
                 // Remember the bubble's tile and its size on this screen: a bar open leftwards
                 // starts 136 px (logical) left of it.
                 if FLOATING.load(Ordering::SeqCst) {
-                    if let (Ok(at), Ok(scale)) = (main.outer_position(), main.scale_factor()) {
+                    if let (Ok(at), Ok(scale)) = (float_position(&main), main.scale_factor()) {
                         let grow = if BAR_LEFT.load(Ordering::SeqCst) {
                             ((BAR.0 - BUBBLE.0) * scale).round() as i32
                         } else {

@@ -18,6 +18,17 @@ Meaningful unit checks cover pause-aligned chunk planning, skipped-speech retrie
 
 Version 0.1.1 added a first-run 1B/E2B summary selector. Six browser tests pass, including the request payload, displayed estimate and locked selection during setup for 1B, E2B and no summaries. These use an explicitly mocked bridge, without downloading models. A separate Rust regression executes the real offline provisioning script with tiny SHA-256-checked fixture files and a stubbed runtime readiness probe. It verifies core plus only the chosen summary model, saved E2B selection after success, core-only setup, missing-summary failure without changing the saved selection, and rejection of an unknown profile. Native checks on the final 0.1.1 package also passed launch, compact/expand and Quit, with all three observed processes released. The setup action remains fully visible at 900×720 in the browser checks. No user library or installed app data is reset during updates.
 
+## Version 0.3.7: the floating bubble under GNOME
+
+The user saw, on Ubuntu 24.04 (GNOME on Xorg), the bubble come back near the top after Expand and Floating recorder, and quick drags stop part-way. The smoke check has no window manager, where every move lands. GNOME Shell 46 was run as the window manager of an Xvfb display (1280×1024, `gnome-shell --x11 --replace` inside `dbus-run-session`, with the user's own shell settings and extensions: top bar, dock, desktop icons), and the debug build driven by X11 test input:
+
+- **Before the fix:** a bubble parked at (1200, 900) came back at (40, 167), inside the studio's corner, in 5 of 5 rounds. Logging showed GNOME re-placing the window there about 100 ms after the switch, after the app's move. With that put right, it came back at (1200, 826): GNOME reports the outer position 37 px above the window, with the title bar it had as the studio, and the bar opening leftwards and Expand each read that back. Drags: 1 move was sent for a whole flick (200 px every 2 ms), and 4 of 15 drags at 5 speeds stopped part-way, e.g. at (1066, 716) on the way to (900, 300).
+- **After:** 6 of 6 rounds came back exactly where parked (bars opening both ways; top, middle and bottom of the screen; every Expand on the first click), and 15 of 15 drags ended where the pointer let go, from 16 px every 30 ms to 400 px every 1 ms. In steady drags at about 800 and 2,000 px/s the bubble was under the pointer at every sample (0 px behind).
+- **Browser check (new):** where the host follows the cursor, a press sends `float_follow` with where it was pressed, the page sends no `float_move`, the end carries where the window belongs, the drag's click opens nothing and a plain click still opens the bar. The existing drag checks now cover the page moving the window (Wayland).
+- **Native check (debug build, Xvfb, no window manager):** `scripts/native-smoke.py` still passes with the host following the cursor (idle peak sample 454,656 KiB).
+
+Validation: TypeScript/privacy/version (0.3.7), 55 Python checks, 47 browser checks (2 visual-tour checks skipped), 44 Rust unit checks plus the offline setup integration check, clippy. Not run: Windows, GNOME on Wayland (the app runs through XWayland there), other desktops.
+
 ## Version 0.3.6: fixes from the review of 0.3.5 (issue #19)
 
 Both findings were confirmed before fixing.

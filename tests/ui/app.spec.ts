@@ -720,16 +720,18 @@ test('honest empty library, navigation, local assets and responsive layout',asyn
 
 // The floating recorder: a bubble that opens a bar of controls on click, moves with a drag, and closes by itself.
 // With holdMoves a move lands only when the test calls __land().
-const floatingHost=async(page:Page,capture:Record<string,unknown>|null,holdMoves=false)=>{
-  await page.addInitScript(([capture,holdMoves])=>{
+// With follow the host moves the window under the cursor itself (Linux and Windows); without it the page does (Wayland).
+const floatingHost=async(page:Page,capture:Record<string,unknown>|null,holdMoves=false,follow=false)=>{
+  await page.addInitScript(([capture,holdMoves,follow])=>{
     const calls:unknown[]=[];const held:(()=>void)[]=[];
     Object.assign(window,{isTauri:true,__calls:calls,__land:()=>held.splice(0).forEach(land=>land()),__TAURI_INTERNALS__:{transformCallback:()=>1,invoke:async(command:string,args:{action?:string;payload?:unknown})=>{
       if(command.startsWith('plugin:event'))return 1;
-      if(['float_size','float_move','pause','resume','stop'].includes(args?.action||''))calls.push([args.action,args.payload]);
+      if(['float_size','float_move','float_follow','pause','resume','stop'].includes(args?.action||''))calls.push([args.action,args.payload]);
+      if(args?.action==='float_follow')return {following:follow&&!(args.payload as {stop?:boolean}).stop};
       if(args?.action==='float_move'&&holdMoves){await new Promise<void>(land=>held.push(land));return null;}
       switch(args?.action){case 'library':case 'jobs':case 'devices':return [];case 'status':return capture;case 'runtime_status':return {whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models:[]};case 'settings':return {};case 'float_size':return {left:false};default:return null;}
     }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
-  },[capture,holdMoves] as const);
+  },[capture,holdMoves,follow] as const);
 };
 const floatCalls=(page:Page)=>page.evaluate(()=>(window as unknown as {__calls:[string,Record<string,unknown>][]}).__calls);
 
@@ -805,6 +807,30 @@ test('a drag on a slow host sends one move at a time and ends where the pointer 
   expect((await moves())[1]).toEqual({x:offset.x+90-32,y:offset.y+50-32});
   await page.evaluate(()=>(window as unknown as {__land:()=>void}).__land());await page.waitForTimeout(300);
   expect(await moves()).toHaveLength(2);
+});
+
+test('where the host follows the cursor, the page sends no moves, and the drag ends where the pointer let go',async({page})=>{
+  await floatingHost(page,null,false,true);
+  await page.setViewportSize({width:64,height:64});await page.goto('/?mini=1');
+  const bubble=page.getByRole('button',{name:'VoxLoom recorder. Show recorder controls'});await bubble.waitFor();
+  await page.evaluate(()=>window.addEventListener('pointerdown',e=>Object.assign(window,{__offset:{x:e.screenX-e.clientX,y:e.screenY-e.clientY}}),{once:true}));
+  await page.mouse.move(32,32);await page.mouse.down();
+  await expect.poll(async()=>(await floatCalls(page)).filter(c=>c[0]==='float_follow').length).toBe(1);
+  await page.mouse.move(60,40,{steps:6});await page.mouse.move(90,50,{steps:6});await page.mouse.up();
+  const offset=await page.evaluate(()=>(window as unknown as {__offset:{x:number;y:number}}).__offset);
+  const follows=async()=>(await floatCalls(page)).filter(c=>c[0]==='float_follow').map(c=>c[1]);
+  // One press: started with where it was pressed in the window, ended with where the window belongs.
+  await expect.poll(follows).toHaveLength(2);
+  const [start,end]=await follows();
+  expect(start).toEqual({n:start.n,x:32,y:32});
+  expect(end).toEqual({n:start.n,stop:true,x:offset.x+90-32,y:offset.y+50-32});
+  expect((await floatCalls(page)).filter(c=>c[0]==='float_move')).toEqual([]);
+  // The drag's click opened nothing; a plain click is still a click, and its press ends without a place.
+  await expect(page.getByRole('button',{name:'Expand recorder'})).toHaveCount(0);
+  await bubble.click();
+  await expect(page.getByRole('button',{name:'Expand recorder'})).toBeVisible();
+  const last=(await follows()).at(-1)!;
+  expect(last.stop).toBe(true);expect(last.x).toBeUndefined();expect(Number(last.n)).toBeGreaterThan(Number(start.n));
 });
 
 test('the floating controls close by themselves 4 s after the pointer leaves',async({page})=>{
