@@ -42,6 +42,8 @@ test('meeting notes render normally and copy as rich text or Markdown',async({pa
   await page.setViewportSize({width:900,height:720});expect(await page.locator('.meeting-notes').evaluate(element=>element.scrollWidth<=element.clientWidth)).toBeTruthy();
   await page.screenshot({path:'test-results/meeting-notes.png',fullPage:true});
   await page.getByRole('button',{name:'Transcript',exact:true}).click();await expect(page.getByText('The workshop covers privacy.',{exact:true})).toBeVisible();
+  // Sources are named as the player and search name them.
+  await expect(page.locator('.segment small')).toHaveText(['System audio']);
   await expect(page.getByLabel('Export transcript').locator('option')).not.toContainText(['MD','JSON']);
 });
 
@@ -189,8 +191,28 @@ test('summary style defaults to counselling and custom instructions are saved',a
   await expect(page.getByRole('button',{name:'Replace mine with Team meeting',exact:true})).toBeVisible();
   await box.fill('List the goals the client named.');await expect(page.getByText('32 / 2,000',{exact:false})).toBeVisible();
   await page.setViewportSize({width:900,height:720});await page.screenshot({path:'test-results/summary-style.png',fullPage:true});
-  await page.getByRole('button',{name:'Save settings',exact:true}).click();
-  await expect.poll(()=>page.evaluate(()=>(window as unknown as {__calls:Record<string,unknown>[]}).__calls.at(-1))).toMatchObject({summary_style:'custom',summary_prompt:'List the goals the client named.'});
+  // No Save button: the style saved when chosen, an example when used, and typed instructions when the box is left.
+  await expect(page.getByRole('button',{name:'Save settings',exact:true})).toHaveCount(0);
+  const saves=()=>page.evaluate(()=>(window as unknown as {__calls:Record<string,unknown>[]}).__calls);
+  await box.blur();
+  await expect.poll(saves).toEqual([{summary_style:'custom'},{summary_prompt:expect.stringMatching(/^This is a one-to-one counselling session\./)},{summary_prompt:'List the goals the client named.'}]);
+  // Leaving the box without a change saves nothing.
+  await box.focus();await box.blur();await page.waitForTimeout(200);expect(await saves()).toHaveLength(3);
+});
+
+test('a setting the host refuses says why and goes back to what is saved',async({page})=>{
+  await page.addInitScript(()=>{
+    Object.assign(window,{isTauri:true,__TAURI_INTERNALS__:{transformCallback:()=>1,invoke:async(command:string,args:{action?:string})=>{
+      if(command.startsWith('plugin:event'))return 1;
+      switch(args?.action){case 'library':case 'jobs':case 'devices':return [];case 'status':return null;case 'runtime_status':return {whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models:[{id:'whisper',present:true}]};case 'settings':return {summary_style:'counselling'};
+        case 'save_settings':throw 'The library could not be saved.';default:return null;}
+    }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
+  });
+  await page.goto('/');await page.getByRole('button',{name:'Settings',exact:true}).click();
+  const style=page.getByLabel('Summary style',{exact:true});await expect(style).toHaveValue('counselling');
+  await style.selectOption('meeting');
+  await expect(page.getByRole('alert')).toContainText('The library could not be saved.');
+  await expect(style).toHaveValue('counselling');
 });
 
 test('first-run setup offers Standard or Accurate transcription',async({page})=>{
@@ -340,7 +362,6 @@ test('accurate transcription is an explicit download and setting',async({page})=
   await expect(choice).toHaveValue('standard');
   await choice.selectOption('accurate');
   await expect(page.getByText('Until then, Standard is used.',{exact:false})).toBeVisible();
-  await page.getByRole('button',{name:'Save settings',exact:true}).click();
   const calls=()=>page.evaluate(()=>(window as unknown as {__calls:{action:string;payload:Record<string,unknown>}[]}).__calls);
   await expect.poll(async()=>(await calls()).find(c=>c.action==='save_settings')?.payload.transcription_profile).toBe('accurate');
   const accurate=page.locator('article.model',{hasText:'Transcription · more accurate'});
@@ -520,6 +541,11 @@ test('nothing is transcribed while recording; the transcript is written after St
     }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
   });
   await page.goto('/');
+  // Rows say what is unfinished, in words, and a plain length; never the library's own "ready".
+  const rows=page.locator('.recording-row');
+  await expect(rows.filter({hasText:'Team call'}).locator('small')).toHaveText(/Recording now$/);
+  const older=rows.filter({hasText:'Older meeting'}).locator('small');
+  await expect(older).toContainText('1 min');await expect(older).toContainText('Transcript waiting');await expect(rows).not.toContainText(['ready']);
   // Queued work waits for the recording: no spinner, no progress, no claim that anything runs.
   const chip=page.locator('.activity-chip');
   await expect(chip).toHaveText('Waits until you stop recording+1 more');
@@ -656,11 +682,11 @@ test('honest empty library, navigation, local assets and responsive layout',asyn
   // Home offers each way in once: one New recording and one Import in the page (the sidebar has its own New recording).
   await expect(page.locator('main').getByRole('button',{name:'New recording',exact:true})).toHaveCount(1);await expect(page.locator('main').getByRole('button',{name:/^Import/})).toHaveCount(1);
   await expect(page.getByText('A space for your next conversation.')).toBeVisible();await expect(page.getByText('Browser preview')).toBeVisible();
-  await page.getByRole('button',{name:'New recording',exact:true}).first().click();await expect(page.getByRole('heading',{name:'Recording studio.'})).toBeVisible();
+  await page.getByRole('button',{name:'New recording',exact:true}).first().click();await expect(page.getByRole('heading',{name:'Recording studio',exact:true})).toBeVisible();
   await expect(page.getByRole('button',{name:'Start recording',exact:true})).toBeDisabled();await expect(page.getByText('Summaries are always on demand.',{exact:false})).toBeVisible();
   await page.getByRole('button',{name:'Settings',exact:true}).click();await page.getByLabel('Summary model',{exact:true}).selectOption('e4b');await expect(page.getByText('E4B is the largest option',{exact:false})).toBeVisible();
   await page.getByRole('button',{name:'Model setup',exact:true}).click();await expect(page.getByRole('dialog')).toBeVisible();await expect(page.getByRole('button',{name:'Download & set up',exact:true})).toBeVisible();await expect(page.getByLabel('Add optional summaries',{exact:false})).toBeChecked();
-  await page.getByRole('button',{name:'Close model setup'}).click();await page.getByRole('button',{name:'Search',exact:true}).first().click();await expect(page.getByRole('heading',{name:'Find the moment.'})).toBeVisible();
+  await page.getByRole('button',{name:'Close model setup'}).click();await page.getByRole('button',{name:'Search',exact:true}).first().click();await expect(page.getByRole('heading',{name:'Search',exact:true})).toBeVisible();
   await page.setViewportSize({width:900,height:720});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBeTruthy();expect(outbound).toEqual([]);
   await page.screenshot({path:'test-results/search.png',fullPage:true});
 });
@@ -884,9 +910,12 @@ test('First-run setup says when it is finished and offers one way on',async({pag
   await quitHost(page,{models:false});await page.goto('/');
   const dialog=page.getByRole('dialog');const download=dialog.getByRole('button',{name:'Download & set up',exact:true});
   const verified=(model:string,bytes:number)=>hostEmit(page,'voxloom',{type:'setup_progress',value:{model,status:'verified',received:bytes,total:bytes}});
-  await download.click();
+  const working=page.getByText('Getting VoxLoom ready. You can cancel at any time.',{exact:true});
+  await download.click();await expect(working).toBeVisible();
   await expect.poll(()=>verified('whisper',147964211)).toBe(1);
   await hostEmit(page,'voxloom',{type:'setup_done',error:'The summary model could not be downloaded.'});
+  // Setup's "in progress" notice ends with setup, whether it failed or finished.
+  await expect(working).toHaveCount(0);
   // Transcription works, but the summary model ticked is missing: setup still offers it, and a way on without it.
   await expect(download).toBeEnabled();
   await expect(dialog.getByRole('heading',{name:'A little setup. A lot more privacy.'})).toBeVisible();
@@ -894,7 +923,8 @@ test('First-run setup says when it is finished and offers one way on',async({pag
   await dialog.getByLabel('Add optional summaries',{exact:false}).uncheck();
   await expect(dialog.getByRole('heading',{name:'VoxLoom is ready.'})).toBeVisible();
   await dialog.getByLabel('Add optional summaries',{exact:false}).check();
-  await download.click();await verified('summary_e2b',2841481184);await hostEmit(page,'voxloom',{type:'setup_done'});
+  await download.click();await expect(working).toBeVisible();await verified('summary_e2b',2841481184);await hostEmit(page,'voxloom',{type:'setup_done'});
+  await expect(working).toHaveCount(0);
   // The host's model list still says missing here: verified downloads count at once, so the download is never offered again.
   await expect(dialog.getByRole('heading',{name:'VoxLoom is ready.'})).toBeVisible();
   for(const name of ['Download & set up','Use files from this device'])await expect(dialog.getByRole('button',{name,exact:true})).toHaveCount(0);
@@ -928,10 +958,13 @@ test('Keyword search sends the words as typed and highlights what matched',async
   await expect.poll(()=>page.evaluate(()=>(window as unknown as {__searches:unknown[]}).__searches)).toEqual([{query:'budg* "was approved"',filter:{source:'all',meeting_id:'all'}}]);
   await expect(page.getByRole('heading',{name:'100+ moments found'})).toBeVisible();
   await expect(page.getByText('Showing the newest 100. Add a word or choose a recording to narrow the search.')).toBeVisible();
-  const first=page.locator('.result-card').first();
+  // A compact list: moments from one recording sit under its name, one line each.
+  await expect(page.locator('.result-group')).toHaveCount(1);await expect(page.locator('.result-group h3')).toHaveText(/^Budget review/);
+  const rows=page.locator('.result-row');await expect(rows).toHaveCount(100);
+  const first=rows.first();
   await expect(first).toContainText('The budget for item 0 was approved.');
   await expect(first.locator('mark')).toHaveText(['budget','was approved']);
-  await expect(first).toContainText('Microphone');await expect(page.locator('.result-card').nth(1)).toContainText('System audio');
+  await expect(first).toContainText('Microphone');await expect(rows.nth(1)).toContainText('System audio');
   await page.setViewportSize({width:900,height:720});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBeTruthy();
   await page.screenshot({path:'test-results/search-results.png'});
 });
