@@ -18,6 +18,17 @@ Meaningful unit checks cover pause-aligned chunk planning, skipped-speech retrie
 
 Version 0.1.1 added a first-run 1B/E2B summary selector. Six browser tests pass, including the request payload, displayed estimate and locked selection during setup for 1B, E2B and no summaries. These use an explicitly mocked bridge, without downloading models. A separate Rust regression executes the real offline provisioning script with tiny SHA-256-checked fixture files and a stubbed runtime readiness probe. It verifies core plus only the chosen summary model, saved E2B selection after success, core-only setup, missing-summary failure without changing the saved selection, and rejection of an unknown profile. Native checks on the final 0.1.1 package also passed launch, compact/expand and Quit, with all three observed processes released. The setup action remains fully visible at 900×720 in the browser checks. No user library or installed app data is reset during updates.
 
+## Version 0.3.6: fixes from the review of 0.3.5 (issue #19)
+
+Both findings were confirmed before fixing.
+
+- **Rust check (new):** `the_bubble_goes_back_to_the_screen_it_was_on` lists a 200% screen before the 100% screen to its left. A bubble flush against their shared edge at (1856, 100) stays at (1856, 100); 0.3.5's logic, run in the same test, put it at (1920, 100) on the other screen. A bubble on the 200% screen keeps its place at its size there, one over a panel comes back just above it on either screen, and one whose screen is gone gets no place.
+- **Browser check (new):** the sidebar in DejaVu Sans (Verdana on Windows) with 42 recordings while recording, at 900, 1000 and 1280 px: no part overflows, "All recordings" is not shortened, the recording dot is 6 px and Quit is wholly on screen. On 0.3.5 it failed at 900 px: sidebar 175/169, footer 162/143, "All recordings 42" 157/143.
+- **Measured (Chrome, recording, 9 to 1,234 recordings):** nothing in the sidebar overflows at 900, 1000 or 1280 px in the default font, Noto Sans (the font WebKitGTK uses on this machine, where Inter is not installed), DejaVu Sans or Verdana. "All recordings" is shown in full for every count in the default font and Noto Sans, and up to 99 recordings in DejaVu Sans (up to 999 at 1280 px).
+- **Native check (debug build, Xvfb):** `scripts/native-smoke.py` passed: launch, drag, the bar opening leftwards, Expand, the bubble back at 64x64+1200+100 after floating again, Expand, Quit with all 3 observed processes released (idle peak sample 451,928 KiB).
+
+Validation: TypeScript/privacy/version (0.3.6), 55 Python checks, 46 browser checks (2 visual-tour checks skipped), 44 Rust unit checks plus the offline setup integration check, clippy. Not run: Windows, real screens of different scales.
+
 ## Version 0.3.5: a compact recorder; the floating bubble comes back where it was
 
 - **Native check (debug build, WebKitGTK under Xvfb 1280×1024, X11 test input):** `scripts/native-smoke.py` now floats the window again after Expand. The bubble came back at 64x64+1200+100, where it had been dragged; on the build without the fix it came back at 64x64+20+102, the studio's corner, and the check failed. The rest of the smoke passed: launch, drag, the bar opening leftwards, Expand centring the studio, Quit with all 3 observed processes released (idle peak sample 451,628 KiB).

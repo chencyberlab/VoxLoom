@@ -384,3 +384,10 @@ Verified: see TESTING.md, "Version 0.3.5".
 Release result: built by the Apps workflow when this version reaches main, on the draft release v0.3.5. Not built locally as a package.
 Known limitations: the bubble's place is remembered for this run of the app only; a new launch opens it at the studio's corner. Not checked on Windows or with two screens.
 Next: the user moves the bubble, expands and floats again on Linux and Windows.
+
+Version 0.3.6: fixes from the review of 0.3.5 (issue #19)
+Implemented: the floating bubble goes back to the screen it was on when screens have different scales. 0.3.5 worked out the bubble's centre again at each screen's own scale, so a bubble flush against the edge of a 100% screen counted as on its 200% neighbour when that screen was listed first, and came back on the wrong screen. Expand now saves the bubble's size as well as its place; the screen is the one that held its centre at that size (`platform::bubble_place`, which has unit tests), and the bubble is kept inside that screen's work area. The sidebar fits wider fonts: the stylesheet asks for Inter, but the app uses whatever is installed (Noto Sans here, DejaVu Sans on many Linux desktops), and at 900 px the footer's Quit button was pushed past the sidebar's edge and cut off, and "All recordings" with its count spilled over. The narrow sidebar is 196 px (was 170) and the medium one 200 px (was 190), items and the footer are a little tighter, and a label still too long for a very wide font ends in "…" while its count and the recording dot keep their size.
+Verified: see TESTING.md, "Version 0.3.6".
+Release result: built by the Apps workflow when this version reaches main, on the draft release v0.3.6. Not built locally as a package.
+Known limitations: with DejaVu Sans or Verdana and 100 recordings or more, "All recordings" is shortened in windows under 1,120 px. Mixed-scale screens were checked with the placement function's tests, not on real screens.
+Next: the user tries the bubble across two screens on Windows, if one is at hand.

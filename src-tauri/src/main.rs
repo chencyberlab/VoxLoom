@@ -27,9 +27,9 @@ static FLOATING: AtomicBool = AtomicBool::new(false);
 static QUIT_ASKED: AtomicU64 = AtomicU64::new(0);
 static QUIT_HEARD: AtomicU64 = AtomicU64::new(0);
 const QUIT_ANSWER: Duration = Duration::from_secs(3);
-/// Where the bubble was when the studio opened: the next floating recorder goes back
-/// there instead of the studio's corner. Only for this run of the app.
-static BUBBLE_AT: Mutex<Option<tauri::PhysicalPosition<i32>>> = Mutex::new(None);
+/// Where the bubble was when the studio opened, and its size then (physical pixels): the next
+/// floating recorder goes back there instead of the studio's corner. Only for this run of the app.
+static BUBBLE_AT: Mutex<Option<((i32, i32), i32)>> = Mutex::new(None);
 fn float_size(main: &tauri::WebviewWindow, (width, height): (f64, f64)) -> tauri::Result<()> {
     let size = tauri::LogicalSize::new(width, height);
     main.set_max_size(None::<tauri::LogicalSize<f64>>)?;
@@ -37,28 +37,18 @@ fn float_size(main: &tauri::WebviewWindow, (width, height): (f64, f64)) -> tauri
     main.set_max_size(Some(size))?;
     main.set_size(size)
 }
-/// The remembered bubble, kept wholly inside the work area of the screen its centre is on.
-/// None when no screen holds it now (one was unplugged): the bubble then stays where it is.
-fn bubble_on_screen(
-    main: &tauri::WebviewWindow,
-    at: tauri::PhysicalPosition<i32>,
-) -> Option<tauri::PhysicalPosition<i32>> {
-    main.available_monitors().ok()?.iter().find_map(|m| {
-        let side = (BUBBLE.0 * m.scale_factor()).round() as i32;
-        let (centre_x, centre_y) = (at.x + side / 2, at.y + side / 2);
-        let (screen, size) = (m.position(), m.size());
-        let on = centre_x >= screen.x
-            && centre_x < screen.x + size.width as i32
-            && centre_y >= screen.y
-            && centre_y < screen.y + size.height as i32;
-        on.then(|| {
-            let area = m.work_area();
-            let (left, top) = (area.position.x, area.position.y);
-            let right = (left + area.size.width as i32 - side).max(left);
-            let bottom = (top + area.size.height as i32 - side).max(top);
-            tauri::PhysicalPosition::new(at.x.clamp(left, right), at.y.clamp(top, bottom))
-        })
-    })
+/// The remembered bubble on today's screens (`platform::bubble_place`). None when no screen
+/// holds it now (one was unplugged): the bubble then stays where it is.
+fn bubble_on_screen(main: &tauri::WebviewWindow, (at, side): ((i32, i32), i32)) -> Option<tauri::PhysicalPosition<i32>> {
+    let screens: Vec<_> = main.available_monitors().ok()?.iter().map(|m| {
+        let (position, size, work) = (m.position(), m.size(), m.work_area());
+        voxloom_core::platform::Screen {
+            bounds: [position.x, position.y, size.width as i32, size.height as i32],
+            work: [work.position.x, work.position.y, work.size.width as i32, work.size.height as i32],
+            scale: m.scale_factor(),
+        }
+    }).collect();
+    voxloom_core::platform::bubble_place(at, side, BUBBLE.0, &screens).map(|(x, y)| tauri::PhysicalPosition::new(x, y))
 }
 #[tauri::command]
 async fn dispatch(
@@ -133,11 +123,12 @@ async fn dispatch(
                 main.set_title("VoxLoom · Recorder")
                     .map_err(|e| e.to_string())?;
                 let back = *BUBBLE_AT.lock().unwrap();
-                if let Some(at) = back.and_then(|at| bubble_on_screen(&main, at)) {
+                if let Some(at) = back.and_then(|back| bubble_on_screen(&main, back)) {
                     main.set_position(at).map_err(|e| e.to_string())?;
                 }
             } else {
-                // Remember the bubble's tile: a bar open leftwards starts 136 px left of it.
+                // Remember the bubble's tile and its size on this screen: a bar open leftwards
+                // starts 136 px (logical) left of it.
                 if FLOATING.load(Ordering::SeqCst) {
                     if let (Ok(at), Ok(scale)) = (main.outer_position(), main.scale_factor()) {
                         let grow = if BAR_LEFT.load(Ordering::SeqCst) {
@@ -145,7 +136,8 @@ async fn dispatch(
                         } else {
                             0
                         };
-                        *BUBBLE_AT.lock().unwrap() = Some(tauri::PhysicalPosition::new(at.x + grow, at.y));
+                        let side = (BUBBLE.0 * scale).round() as i32;
+                        *BUBBLE_AT.lock().unwrap() = Some(((at.x + grow, at.y), side));
                     }
                 }
                 FLOATING.store(false, Ordering::SeqCst);

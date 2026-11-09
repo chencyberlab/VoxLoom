@@ -581,6 +581,27 @@ test('nothing is transcribed while recording; the transcript is written after St
   await expect(page.getByRole('button',{name:'Transcribe this recording'})).toHaveCount(0);
 });
 
+// Issue #19: a check that passes in CI's fonts failed with Inter. The widest common fonts stand in for any of them.
+test('the sidebar holds its labels, count, recording dot and footer in a wide font, at every width',async({page})=>{
+  await page.addInitScript(()=>{
+    const meetings=Array.from({length:42},(_,i)=>({id:`m${i}`,title:`Call ${i}`,created_at:1,duration_ms:60000,status:'ready',notes:'',summary:''}));
+    Object.assign(window,{isTauri:true,__TAURI_INTERNALS__:{transformCallback:()=>1,invoke:async(command:string,args:{action?:string})=>{
+      if(command.startsWith('plugin:event'))return 1;
+      switch(args?.action){case 'library':return meetings;case 'jobs':case 'devices':return [];case 'status':return {meeting_id:'m0',elapsed_ms:1000,paused:false,failed:false,levels:[]};case 'runtime_status':return {whisper:true,llama:true,disk_free_bytes:1e10};case 'models':return {models:[{id:'whisper',present:true}]};case 'settings':return {};default:return null;}
+    }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
+  });
+  await page.goto('/');await expect(page.locator('.nav-count')).toHaveText('42');
+  await page.addStyleTag({content:'*{font-family:"DejaVu Sans",Verdana,sans-serif !important}'});
+  for(const width of [900,1000,1280]){
+    await page.setViewportSize({width,height:720});
+    const fit=await page.locator('.sidebar').evaluate(sidebar=>{const edge=sidebar.getBoundingClientRect().left+sidebar.clientWidth;
+      return [...(sidebar.scrollWidth>sidebar.clientWidth?[`sidebar ${sidebar.scrollWidth}/${sidebar.clientWidth}`]:[]),...[...sidebar.querySelectorAll('.brand,.nav-item,.nav-label,.sidebar-footer')].filter(e=>e.scrollWidth>e.clientWidth||e.getBoundingClientRect().right>edge+.5).map(e=>`${e.className} "${e.textContent}" ${e.scrollWidth}/${e.clientWidth}`)];});
+    expect(fit,`${width} px`).toEqual([]);
+    expect((await page.getByRole('navigation').locator('.live-dot').boundingBox())?.width).toBe(6);
+    await expect(page.getByRole('button',{name:'Quit VoxLoom',exact:true})).toBeInViewport({ratio:1});
+  }
+});
+
 test('a blocked microphone points to its Windows setting, and device changes show while recording',async({page})=>{
   await page.addInitScript(()=>{
     const blocked='Windows is blocking VoxLoom from using the microphone. Turn on Settings → Privacy & security → Microphone → Let desktop apps access your microphone, then start again.';

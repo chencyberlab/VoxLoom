@@ -216,9 +216,57 @@ pub fn on_path(program: impl Into<OsString>) -> bool {
         .unwrap_or(false)
 }
 
+/// A screen as the window system reports it, in physical pixels: `[x, y, width, height]`
+/// of the whole screen and of its work area (without panels and taskbars).
+pub struct Screen {
+    pub bounds: [i32; 4],
+    pub work: [i32; 4],
+    pub scale: f64,
+}
+
+/// Where the floating bubble goes back to. `at` is its top-left and `side` its size when it was
+/// last seen, in physical pixels. The screen that held its centre then keeps it, wholly inside
+/// that screen's work area at that screen's size (`logical` × its scale). The centre is found
+/// once, at the size the bubble had: found again at each screen's own scale, a bubble against
+/// the edge of a 100% screen could count as on its 200% neighbour (issue #19). None when no
+/// screen holds it now (one was unplugged).
+pub fn bubble_place(at: (i32, i32), side: i32, logical: f64, screens: &[Screen]) -> Option<(i32, i32)> {
+    let (x, y) = (at.0 + side / 2, at.1 + side / 2);
+    let screen = screens.iter().find(|s| {
+        let [left, top, width, height] = s.bounds;
+        x >= left && x < left + width && y >= top && y < top + height
+    })?;
+    let own = (logical * screen.scale).round() as i32;
+    let [left, top, width, height] = screen.work;
+    Some((
+        at.0.clamp(left, (left + width - own).max(left)),
+        at.1.clamp(top, (top + height - own).max(top)),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn screen(bounds: [i32; 4], scale: f64) -> Screen {
+        // A 40 px panel along the bottom of each screen.
+        Screen { bounds, work: [bounds[0], bounds[1], bounds[2], bounds[3] - 40], scale }
+    }
+
+    #[test]
+    fn the_bubble_goes_back_to_the_screen_it_was_on() {
+        // A 100% screen on the left, its 200% neighbour on the right listed first.
+        let screens = [screen([1920, 0, 3840, 2160], 2.), screen([0, 0, 1920, 1080], 1.)];
+        // Flush with the shared edge: its centre (1888, 132) is on the 100% screen.
+        assert_eq!(bubble_place((1856, 100), 64, 64., &screens), Some((1856, 100)));
+        // On the 200% screen, at its size there.
+        assert_eq!(bubble_place((2400, 300), 128, 64., &screens), Some((2400, 300)));
+        // Over the panel, it comes back just above it.
+        assert_eq!(bubble_place((600, 1030), 64, 64., &screens), Some((600, 976)));
+        assert_eq!(bubble_place((5650, 2050), 128, 64., &screens), Some((5632, 1992)));
+        // Its screen was unplugged.
+        assert_eq!(bubble_place((-900, 100), 64, 64., &screens), None);
+    }
 
     #[test]
     fn free_space_is_unknown_for_a_missing_volume_and_measured_for_a_real_one() {
