@@ -18,6 +18,14 @@ Meaningful unit checks cover pause-aligned chunk planning, skipped-speech retrie
 
 Version 0.1.1 added a first-run 1B/E2B summary selector. Six browser tests pass, including the request payload, displayed estimate and locked selection during setup for 1B, E2B and no summaries. These use an explicitly mocked bridge, without downloading models. A separate Rust regression executes the real offline provisioning script with tiny SHA-256-checked fixture files and a stubbed runtime readiness probe. It verifies core plus only the chosen summary model, saved E2B selection after success, core-only setup, missing-summary failure without changing the saved selection, and rejection of an unknown profile. Native checks on the final 0.1.1 package also passed launch, compact/expand and Quit, with all three observed processes released. The setup action remains fully visible at 900×720 in the browser checks. No user library or installed app data is reset during updates.
 
+## Version 0.3.8: a quick flick of the floating bubble lands (issue #20)
+
+The finding was confirmed before fixing.
+
+- **Native check (changed, debug build, Xvfb):** `scripts/native-smoke.py` now flicks the bubble from (200, 100) to (500, 300) with no pause between press, move and release, so the gesture is over before the app first reads the cursor, then checks the window is 64x64+500+300 (moved, and its bar not opened). On 0.3.7 it failed 3 of 3 runs; with the fix it passed 3 of 3, with the rest of the smoke unchanged (idle peak samples 456,120 to 457,404 KiB, all 3 observed processes released).
+
+Validation: TypeScript/privacy/version (0.3.8), 55 Python checks, 47 browser checks (2 visual-tour checks skipped), 44 Rust unit checks plus the offline setup integration check, clippy. Not run: the GNOME Shell session (the change is in the app's own drag logic, the same with or without a window manager), Windows.
+
 ## Version 0.3.7: the floating bubble under GNOME
 
 The user saw, on Ubuntu 24.04 (GNOME on Xorg), the bubble come back near the top after Expand and Floating recorder, and quick drags stop part-way. The smoke check has no window manager, where every move lands. GNOME Shell 46 was run as the window manager of an Xvfb display (1280×1024, `gnome-shell --x11 --replace` inside `dbus-run-session`, with the user's own shell settings and extensions: top bar, dock, desktop icons), and the debug build driven by X11 test input:

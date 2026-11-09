@@ -80,8 +80,10 @@ fn follow(main: tauri::WebviewWindow, n: u64, x: f64, y: f64) -> bool {
             }
             std::thread::sleep(Duration::from_millis(8));
         }
-        // A release can come before the last read of the cursor: the drag ends where the page saw it end.
-        if moving && FOLLOWING.load(Ordering::SeqCst) == n {
+        // The drag ends where the page saw it end. The page sends that place only after its own 5 px
+        // test, so it counts even when the cursor never moved here: a quick flick can be over before
+        // the first read above, and its release can come before the last (issue #20).
+        if FOLLOWING.load(Ordering::SeqCst) == n {
             match *FOLLOW_END_AT.lock().unwrap() {
                 Some((end, x, y)) if end == n => {
                     let _ = main.set_position(tauri::LogicalPosition::new(x, y));

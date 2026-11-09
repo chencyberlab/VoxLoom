@@ -398,3 +398,10 @@ Verified: see TESTING.md, "Version 0.3.7".
 Release result: built by the Apps workflow when this version reaches main, on the draft release v0.3.7. Not built locally as a package.
 Known limitations: the GNOME checks ran GNOME Shell 46 under X11 on a hidden display, with the user's own shell settings and extensions; Wayland sessions run the app through XWayland, which was not checked, and other desktops (KDE, Xfce) were not tried. Windows uses the same cursor-following drag and was not checked by hand.
 Next: the user drags, expands and floats the bubble on Ubuntu, and on Windows if one is at hand.
+
+Version 0.3.8: a quick flick of the floating bubble lands (issue #20)
+Implemented: a flick over before the app first read the cursor left the bubble where it was and swallowed the click. While a press lasts the app keeps the window under the cursor, counting a drag only once its own reads see the cursor move 5 px; when the press, the move and the release all came before its first read, the cursor never moved for it, and the release point the page sent with the end was used only for a drag the app had counted. The page sends that point only after its own 5 px test, so the app now always puts the bubble there. A plain click sends no point and still opens the bar.
+Verified: see TESTING.md, "Version 0.3.8".
+Release result: built by the Apps workflow when this version reaches main, on the draft release v0.3.8. Not built locally as a package.
+Known limitations: as for 0.3.7: checked with no window manager and, for 0.3.7, under GNOME on X11; not by hand on Windows, Wayland or KDE.
+Next: the user's checks on Windows, Ubuntu 26 (Wayland) and Kubuntu.

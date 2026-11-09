@@ -57,6 +57,16 @@ def drag(start, end, step=16):
     time.sleep(1.2)
 
 
+def flick(start, end):
+    # Press, jump and release with no pause: the gesture is over before the app first reads the cursor.
+    xtst.XTestFakeMotionEvent(display, -1, start[0], start[1], 0)
+    xtst.XTestFakeButtonEvent(display, 1, 1, 0)
+    xtst.XTestFakeMotionEvent(display, -1, end[0], end[1], 0)
+    xtst.XTestFakeButtonEvent(display, 1, 0, 0)
+    x11.XFlush(display)
+    time.sleep(1.2)
+
+
 def windows():
     return subprocess.check_output(["xwininfo", "-root", "-tree"], text=True)
 
@@ -140,9 +150,13 @@ with tempfile.TemporaryDirectory(prefix="voxloom-native-") as directory:
             time.sleep(.3)
         time.sleep(.6)
         assert '64x64+200+100' in windows(), windows()
+        # A flick over before the app reads the cursor still lands where it was let
+        # go, and opens nothing (issue #20).
+        flick((232, 132), (532, 332))
+        assert shows('64x64+500+300'), windows()
         # Near the right edge its bar (200x64) opens leftwards, so the bubble's
         # tile stays put; closing the bar puts the bubble back where it was.
-        drag((232, 132), (1232, 132))
+        drag((532, 332), (1232, 132))
         assert shows('64x64+1200+100'), windows()
         click(1232, 132)
         assert shows('200x64+1064+100'), windows()
