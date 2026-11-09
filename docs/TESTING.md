@@ -18,6 +18,14 @@ Meaningful unit checks cover pause-aligned chunk planning, skipped-speech retrie
 
 Version 0.1.1 added a first-run 1B/E2B summary selector. Six browser tests pass, including the request payload, displayed estimate and locked selection during setup for 1B, E2B and no summaries. These use an explicitly mocked bridge, without downloading models. A separate Rust regression executes the real offline provisioning script with tiny SHA-256-checked fixture files and a stubbed runtime readiness probe. It verifies core plus only the chosen summary model, saved E2B selection after success, core-only setup, missing-summary failure without changing the saved selection, and rejection of an unknown profile. Native checks on the final 0.1.1 package also passed launch, compact/expand and Quit, with all three observed processes released. The setup action remains fully visible at 900×720 in the browser checks. No user library or installed app data is reset during updates.
 
+## Version 0.3.4: a calmer, more compact interface
+
+- **Browser checks (new):** a settings save the host refuses shows its message and puts the summary style back to the saved one. Setup's "Getting VoxLoom ready" notice shows during setup and is gone after it fails and after it finishes (fails on 0.3.3).
+- **Browser checks (changed):** the summary style, an example and typed instructions save without a Save button, in that order, and leaving the box unchanged saves nothing; the Accurate choice saves when chosen. Search results come as one group under "Budget review" with 100 rows, highlights and source names as before. Recording rows say "Recording now", "1 min" and "Transcript waiting", never "ready"; transcript rows say "System audio". Page titles are "Recording studio" and "Search".
+- **Visual tour (light and dark, 1280 px wide):** the recording studio fits within 860 px (it needed about 1,190 px); five search results take about 265 px instead of about 650; every page title sits on one line at the same height, with its action on the right.
+
+Validation: TypeScript/privacy/version (0.3.4), 55 Python checks, 45 browser checks (2 visual-tour checks skipped). Not run: the Rust checks and clippy (no Rust change), the native checks, Windows.
+
 ## Version 0.3.3: setup says when it is finished; a simpler home page
 
 - **Browser check (new):** "First-run setup says when it is finished and offers one way on". Setup downloads; the transcription model is verified and the summary model fails. Setup still offers Download & set up, with Continue as the small link; unticking summaries shows "VoxLoom is ready."; ticking them again and finishing the summary download shows it again while the mocked host still reports both models missing (verified downloads count at once). Download & set up, Use files from this device, the size line and the Gemma terms are gone; Continue to VoxLoom is the one primary button, focused, fully visible at 900×720, and Enter closes setup.
