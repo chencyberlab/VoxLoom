@@ -18,6 +18,16 @@ Meaningful unit checks cover pause-aligned chunk planning, skipped-speech retrie
 
 Version 0.1.1 added a first-run 1B/E2B summary selector. Six browser tests pass, including the request payload, displayed estimate and locked selection during setup for 1B, E2B and no summaries. These use an explicitly mocked bridge, without downloading models. A separate Rust regression executes the real offline provisioning script with tiny SHA-256-checked fixture files and a stubbed runtime readiness probe. It verifies core plus only the chosen summary model, saved E2B selection after success, core-only setup, missing-summary failure without changing the saved selection, and rejection of an unknown profile. Native checks on the final 0.1.1 package also passed launch, compact/expand and Quit, with all three observed processes released. The setup action remains fully visible at 900×720 in the browser checks. No user library or installed app data is reset during updates.
 
+## Version 0.3.9: a long summary no longer fails at its final merge
+
+The user's Meeting-style summary of a 25-minute call (17,005 transcript characters, no notes) failed twice on 0.3.8 with Gemma 4 E2B. Replayed outside the app on a copy of the library, with the installed `llama-completion` and the same flags on two threads: 4 note passes and 3 merge passes. The first 6 passes were accepted (50-82 s each). The final merge (1,512 prompt tokens) generated 767 of its 768 tokens and stopped mid-sentence in Decisions, without `[end of text]` or a closing wrapper; the retry with a random seed did the same (3,907 and 3,930 characters). The process exited 0: not a crash, a timeout or a format problem. The job's progress showed 0 because a failed job's progress is reset, not because the first pass failed.
+
+- **Fixed:** notes passes get `-n 1536`. The same final pass at seed 42 finished at 925 tokens (76 s of generation, 34 s of prompt), 727 words, and went through `split_title` and `normalise_meeting_notes` with a 5-word title and all six Meeting sections.
+- **No regression on the long recording:** the 37-minute podcast (35,448 characters, with the person's notes) summarised completely: 15 passes, all accepted first time, 961 s on two threads (39-95 s per pass; 935 s on 0.2.6). The largest prompt, the final merge, was 1,709 tokens, so prompt plus budget (3,245) stays inside the 4,096-token context.
+- **Found, not fixed:** merge outputs grow (2,061-2,356 characters in the first round, 3,422 and 3,640 in the second), and the final merge's input of 7,063 characters was cut to 6,500.
+
+Validation: privacy/version (0.3.9), 57 Python checks (two new: a reply cut off by the budget says so, and notes get 1,536 tokens while answers keep 768). Not run: TypeScript and browser checks (no `node_modules` in this checkout; no UI code changed). Rust unchanged. Not run: Windows.
+
 ## Version 0.3.8: a quick flick of the floating bubble lands (issue #20)
 
 The finding was confirmed before fixing.

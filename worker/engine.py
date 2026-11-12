@@ -680,6 +680,9 @@ def final_response(reply, allow_plain=False):
         # 37-minute podcast's notes and then the opening tag just before the end.
         candidate = re.sub(r"</?voxloom_result>", "", reply.split("[end of text]", 1)[0])
     if not candidate.strip() or re.search(r"<\|[^>]*>|<think>|Thinking Process:|Analyze the Request", candidate, flags=re.I):
+        if "[end of text]" not in reply and "</voxloom_result>" not in reply:
+            # No end at all: the token budget or the context ran out mid-answer.
+            raise ValueError("The model ran out of room before finishing the summary. Please try again or select the other summary model.")
         raise ValueError("The model did not return a finished summary. Please try again or select the other summary model.")
     return candidate.strip()
 
@@ -798,7 +801,12 @@ def generate(request, content, scratch, meeting_notes=False, title=False, notes=
             + ("<NOTES>\n" + notes + "\n</NOTES>\n" if meeting_notes and notes else "") + content)
     path = scratch / "prompt.txt"
     path.write_text(text, encoding="utf-8")
-    argv = [request["llama_cli"], "-m", model, "-f", str(path), "-n", "768", "-c", "4096", "-t", str(request["threads"]),
+    # E2B ignores the word limit: the final merge of a 25-minute call wrote 727
+    # words (925 tokens), and 768 cut it off on every seed. Prompts stay under
+    # about 2,500 tokens, so 1536 still fits the context; a fuller one stops
+    # without an end marker and is rejected, never shown cut short.
+    budget = "1536" if meeting_notes else "768"
+    argv = [request["llama_cli"], "-m", model, "-f", str(path), "-n", budget, "-c", "4096", "-t", str(request["threads"]),
             "-ngl", "0", "-b", "512", "-ub", "128", "--temp", "0.1",
             "--offline", "--jinja", "--reasoning", "off", "--no-display-prompt", "--simple-io", "--single-turn"]
     # A seed decodes the same reply every time, so Retry alone would repeat a

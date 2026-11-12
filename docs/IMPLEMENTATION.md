@@ -405,3 +405,10 @@ Verified: see TESTING.md, "Version 0.3.8".
 Release result: built by the Apps workflow when this version reaches main, on the draft release v0.3.8. Not built locally as a package.
 Known limitations: as for 0.3.7: checked with no window manager and, for 0.3.7, under GNOME on X11; not by hand on Windows, Wayland or KDE.
 Next: the user's checks on Windows, Ubuntu 26 (Wayland) and Kubuntu.
+
+Version 0.3.9: a long summary no longer fails at its final merge
+Implemented: a summary of a 25-minute call failed twice with "The model did not return a finished summary". Its final merge pass wrote 727 words and was cut off at the 768-token generation cap, with no end marker; the retry with another seed, at temperature 0.1, was cut off at the same place. Notes passes may now write 1,536 tokens (answers keep 768). A reply cut off without any end now says "The model ran out of room before finishing the summary" instead of the generic message.
+Verified: see TESTING.md, "Version 0.3.9". The failing recording's final pass now finishes, and the 37-minute podcast still summarises completely.
+Release result: built by the Apps workflow when this version reaches main, on the draft release v0.3.9. Not built locally as a package.
+Known limitations: E2B ignores the 300-word target, so merged notes run long (727 words here). Each merge pass reads at most 6,500 characters of the two notes it combines: the podcast's final merge had 7,063 and lost the last 562 characters of the second half's notes, unnoticed (true before this version too).
+Next: merge inputs that do not fit, without dropping the end of the second note (a larger context, after measuring its memory and time on the 4-core laptop, or a shorter merge reply).

@@ -28,6 +28,23 @@ class MeetingNotesTests(unittest.TestCase):
         with self.assertRaises(ValueError):engine.final_response(reply)
         with self.assertRaises(ValueError):engine.final_response('Overview\ncut off <voxloom_result>',allow_plain=True)
 
+    def test_reply_cut_off_by_the_token_budget_says_so(self):
+        # The final merge of a 25-minute call stopped mid-sentence at 768 tokens, without an end marker.
+        for reply in ['Overview\nA call.\n\nDecisions\nDocuments should\n\n','<voxloom_result>Overview\nA call.']:
+            with self.assertRaisesRegex(ValueError,'ran out of room'):engine.final_response(reply,allow_plain=True)
+        with self.assertRaisesRegex(ValueError,'did not return a finished summary'):engine.final_response('<voxloom_result></voxloom_result> [end of text]',allow_plain=True)
+
+    def test_notes_get_a_larger_token_budget_than_answers(self):
+        budgets=[]
+        def run(argv,**_):
+            budgets.append(argv[argv.index('-n')+1])
+            return b'<voxloom_result>Overview\nThe workshop was approved [00:00:01].</voxloom_result>'
+        request={'models':{'summary':'fixture'},'llama_cli':'fixture','threads':2,'summary_style':'meeting'}
+        with tempfile.TemporaryDirectory() as directory,patch.object(engine,'ensure_model',return_value='fixture'),patch.object(engine,'run',side_effect=run):
+            engine.generate(request,'<EVIDENCE>The workshop was approved.</EVIDENCE>',Path(directory),meeting_notes=True)
+            engine.generate(request,'<EVIDENCE>[00:00:01] The workshop was approved.</EVIDENCE>',Path(directory))
+        self.assertEqual(budgets,['1536','768'])
+
     def test_rejected_reply_is_decoded_once_more_with_another_seed(self):
         seeds=[]
         def run(argv,**_):
